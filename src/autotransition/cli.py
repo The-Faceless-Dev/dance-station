@@ -84,7 +84,7 @@ def run(
     runtime_config = RuntimeConfig(api_host=runtime_host, api_port=runtime_port)
     managed_runtime_pid: int | None = None
     if not ui_only and not no_runtime_autostart:
-        start_result = ensure_runtime_api(runtime_config)
+        start_result = ensure_runtime_api(runtime_config, status_callback=typer.echo)
         typer.echo(start_result.message)
         if not start_result.started and not start_result.already_running:
             raise typer.Exit(1)

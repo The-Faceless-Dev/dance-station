@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Callable
 
 from autotransition.config import RuntimeConfig
 
@@ -65,6 +66,9 @@ class RuntimeCheck:
 class RuntimeProcess:
     pid: int
     command_line: str
+
+
+StartupStatusCallback = Callable[[str], None]
 
 
 def runtime_pid_path() -> Path:
@@ -375,7 +379,10 @@ def runtime_doctor(config: RuntimeConfig = RuntimeConfig()) -> list[RuntimeCheck
 start_api = start_api_background
 
 
-def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> RuntimeStartResult:
+def ensure_runtime_api(
+    config: RuntimeConfig = RuntimeConfig(),
+    status_callback: StartupStatusCallback | None = None,
+) -> RuntimeStartResult:
     if api_health(config):
         return RuntimeStartResult(
             started=False,
@@ -399,6 +406,8 @@ def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> RuntimeStartR
 
     existing = find_runtime_processes(config)
     if existing:
+        _emit_startup_status(status_callback, "ACE-Step process is running; waiting for API readiness.")
+        status_reporter = _StartupStatusReporter(status_callback)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if api_health(config):
@@ -410,8 +419,10 @@ def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> RuntimeStartR
                     message="ACE-Step API is already running.",
                     managed_by_current_run=False,
                 )
+            status_reporter.report()
             time.sleep(2)
         pid_list = ", ".join(str(process.pid) for process in existing)
+        latest = status_reporter.latest_message()
         return RuntimeStartResult(
             started=False,
             already_running=False,
@@ -419,15 +430,19 @@ def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> RuntimeStartR
             pid=existing[0].pid,
             message=(
                 "ACE-Step process is already running but the API is not reachable. "
-                f"Existing process id(s): {pid_list}. Stop the stale runtime, then run `autotransition run` again."
+                f"Existing process id(s): {pid_list}. {latest} "
+                "Stop the stale runtime, then run `autotransition run` again."
             ),
             managed_by_current_run=False,
         )
 
     process = start_api_background(config)
+    _emit_startup_status(status_callback, f"Started ACE-Step runtime process {process.pid}; waiting for API readiness.")
+    status_reporter = _StartupStatusReporter(status_callback)
     deadline = time.monotonic() + config.api_startup_timeout_seconds
     while time.monotonic() < deadline:
         if api_health(config):
+            status_reporter.report(force=True)
             return RuntimeStartResult(
                 started=True,
                 already_running=False,
@@ -438,6 +453,7 @@ def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> RuntimeStartR
             )
         if process.poll() is not None:
             _clear_runtime_pid(process.pid)
+            latest = status_reporter.latest_message()
             return RuntimeStartResult(
                 started=False,
                 already_running=False,
@@ -445,14 +461,16 @@ def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> RuntimeStartR
                 pid=process.pid,
                 message=(
                     "ACE-Step API failed to start. Check data/logs/ace-step-api.err.log. "
-                    f"Process exited with code {process.returncode}."
+                    f"Process exited with code {process.returncode}. {latest}"
                 ),
                 managed_by_current_run=False,
             )
+        status_reporter.report()
         time.sleep(2)
 
     stop_runtime_process_tree(process.pid, config)
     _clear_runtime_pid(process.pid)
+    latest = status_reporter.latest_message()
     return RuntimeStartResult(
         started=False,
         already_running=False,
@@ -460,7 +478,39 @@ def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> RuntimeStartR
         pid=process.pid,
         message=(
             "ACE-Step API did not become ready before the startup timeout. "
-            "Check data/logs/ace-step-api.log and data/logs/ace-step-api.err.log, then run `autotransition run` again."
+            f"{latest} Check data/logs/ace-step-api.log and data/logs/ace-step-api.err.log, "
+            "then run `autotransition run` again."
         ),
         managed_by_current_run=False,
     )
+
+
+class _StartupStatusReporter:
+    def __init__(self, callback: StartupStatusCallback | None) -> None:
+        self.callback = callback
+        self.last_key: tuple[str, str] | None = None
+        self.last_message = "No ACE-Step startup activity has been reported yet."
+
+    def report(self, force: bool = False) -> None:
+        if self.callback is None:
+            return
+        from autotransition.ui.activity import summarize_runtime_activity
+
+        activity = summarize_runtime_activity()
+        message = activity.message
+        if activity.detail:
+            message = f"{message} ({activity.detail})"
+        key = (activity.phase, message)
+        self.last_message = f"Last runtime status: {activity.phase} - {message}"
+        if not force and key == self.last_key:
+            return
+        self.last_key = key
+        self.callback(f"ACE-Step startup: {activity.phase} - {message}")
+
+    def latest_message(self) -> str:
+        return self.last_message
+
+
+def _emit_startup_status(callback: StartupStatusCallback | None, message: str) -> None:
+    if callback is not None:
+        callback(message)

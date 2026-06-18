@@ -199,6 +199,42 @@ def test_ensure_runtime_api_stops_process_when_startup_times_out(tmp_path: Path,
     assert "startup timeout" in result.message
 
 
+def test_ensure_runtime_api_reports_startup_activity(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "ACE-Step-1.5"
+    runtime_dir.mkdir()
+    (runtime_dir / "pyproject.toml").write_text("[project]\nname = 'ace-step'\n", encoding="utf-8")
+    log_dir = tmp_path / "data/logs"
+    log_dir.mkdir(parents=True)
+    (log_dir / "ace-step-api.err.log").write_text(
+        "2026-06-18 INFO Initializing ACE-Step models\n",
+        encoding="utf-8",
+    )
+    config = RuntimeConfig(ace_step_dir=runtime_dir, api_startup_timeout_seconds=2)
+    messages = []
+
+    class Process:
+        pid = 4321
+        returncode = None
+
+        def poll(self):
+            return None
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ace_step_runtime, "api_health", lambda config: False)
+    monkeypatch.setattr(ace_step_runtime, "find_runtime_processes", lambda config: [])
+    monkeypatch.setattr(ace_step_runtime, "start_api_background", lambda config: Process())
+    monkeypatch.setattr(ace_step_runtime, "stop_runtime_process_tree", lambda pid, config: True)
+    monotonic_values = iter([0, 1, 3])
+    monkeypatch.setattr(ace_step_runtime.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(ace_step_runtime.time, "sleep", lambda seconds: None)
+
+    result = ensure_runtime_api(config, status_callback=messages.append)
+
+    assert any("Started ACE-Step runtime process 4321" in message for message in messages)
+    assert any("initializing" in message.lower() for message in messages)
+    assert "Last runtime status: initializing" in result.message
+
+
 def test_stop_runtime_process_tree_clears_matching_pid_file(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     pid_path = tmp_path / "data/runtime/ace-step-api.pid"
