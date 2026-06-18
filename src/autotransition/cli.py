@@ -98,7 +98,7 @@ def run(
     except ImportError as exc:
         raise typer.BadParameter("uvicorn is required to run the UI. Install project dependencies.") from exc
     try:
-        uvicorn.run(create_app(models_dir=models_dir), host=host, port=port)
+        uvicorn.run(create_app(models_dir=models_dir, runtime_config=runtime_config), host=host, port=port)
     finally:
         if managed_runtime_pid is not None:
             typer.echo("Stopping managed ACE-Step runtime...")

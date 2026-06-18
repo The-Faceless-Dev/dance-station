@@ -425,7 +425,7 @@ def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> RuntimeStartR
         )
 
     process = start_api_background(config)
-    deadline = time.monotonic() + 90
+    deadline = time.monotonic() + config.api_startup_timeout_seconds
     while time.monotonic() < deadline:
         if api_health(config):
             return RuntimeStartResult(
@@ -451,11 +451,16 @@ def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> RuntimeStartR
             )
         time.sleep(2)
 
+    stop_runtime_process_tree(process.pid, config)
+    _clear_runtime_pid(process.pid)
     return RuntimeStartResult(
-        started=True,
+        started=False,
         already_running=False,
         api_url=config.api_base_url,
         pid=process.pid,
-        message="ACE-Step API is still starting in the background. Check runtime status before generating.",
-        managed_by_current_run=True,
+        message=(
+            "ACE-Step API did not become ready before the startup timeout. "
+            "Check data/logs/ace-step-api.log and data/logs/ace-step-api.err.log, then run `autotransition run` again."
+        ),
+        managed_by_current_run=False,
     )

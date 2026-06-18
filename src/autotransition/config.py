@@ -36,6 +36,7 @@ class RuntimeConfig:
     api_host: str = "127.0.0.1"
     api_port: int = 8001
     api_timeout_seconds: float = 10.0
+    api_startup_timeout_seconds: float = 600.0
     poll_interval_seconds: float = 2.0
     generation_timeout_seconds: float = 1800.0
 

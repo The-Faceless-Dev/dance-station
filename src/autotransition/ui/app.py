@@ -66,8 +66,8 @@ class GenerateSelectionRequest(SelectionScaffoldRequest):
     auto_install: bool = False
 
 
-def create_app(models_dir: Path = Path("models")) -> FastAPI:
-    runtime_config = RuntimeConfig()
+def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig | None = None) -> FastAPI:
+    runtime_config = runtime_config or RuntimeConfig()
     app = FastAPI(title="Autotransition", version="0.1.0")
     static_dir = Path(__file__).parent / "static"
     ui_log = UiLog()

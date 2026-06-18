@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
+from autotransition.config import RuntimeConfig
 from autotransition.ui import create_app
 
 
@@ -60,6 +61,20 @@ def test_ui_runtime_status_endpoint_returns_setup_commands(tmp_path: Path) -> No
     assert "uv sync" in data["install_commands"]
     assert data["simple_setup_command"] == "autotransition runtime setup"
     assert data["simple_start_command"] == "autotransition runtime start"
+
+
+def test_ui_runtime_status_uses_configured_runtime_port(tmp_path: Path) -> None:
+    client = TestClient(
+        create_app(
+            models_dir=tmp_path,
+            runtime_config=RuntimeConfig(ace_step_dir=tmp_path / "runtime", api_port=9101),
+        )
+    )
+
+    response = client.get("/api/runtime/status")
+
+    assert response.status_code == 200
+    assert response.json()["api_url"] == "http://127.0.0.1:9101"
 
 
 def test_ui_scaffold_endpoint_validates_missing_source(tmp_path: Path) -> None:
