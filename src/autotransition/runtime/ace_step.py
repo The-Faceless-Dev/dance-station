@@ -210,7 +210,13 @@ def api_health(config: RuntimeConfig = RuntimeConfig()) -> bool:
         import httpx
 
         response = httpx.get(f"{config.api_base_url}/health", timeout=config.api_timeout_seconds)
-        return response.status_code < 500
+        if response.status_code != 200:
+            return False
+        content_type = response.headers.get("content-type", "").lower()
+        body_preview = response.text[:200].lower()
+        if "text/html" in content_type or "<html" in body_preview or "<!doctype html" in body_preview:
+            return False
+        return True
     except Exception:
         return False
 

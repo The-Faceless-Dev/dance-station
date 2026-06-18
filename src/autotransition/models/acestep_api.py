@@ -62,7 +62,7 @@ class AceStepApiClient:
                 data=_stringify_form_fields(payload),
                 files={"src_audio": (plan.scaffold_path.name, scaffold_file, "audio/wav")},
                 timeout=self.config.api_timeout_seconds,
-        )
+            )
         _raise_api_status(release, "release_task")
         release_body = _response_json(release, "release_task")
         if release_body.get("error"):
@@ -235,16 +235,26 @@ def _raise_api_status(response: Any, operation: str) -> None:
     try:
         detail = response.json()
     except Exception:
-        detail = response.text
-    raise AceStepApiError(f"ACE-Step {operation} failed with HTTP {response.status_code}: {detail}")
+        detail = _response_text_preview(response)
+    request = getattr(response, "request", None)
+    method = getattr(request, "method", "")
+    url = getattr(request, "url", "")
+    target = f" {method} {url}" if method and url else ""
+    raise AceStepApiError(f"ACE-Step {operation}{target} failed with HTTP {response.status_code}: {detail}")
 
 
 def _response_json(response: Any, operation: str) -> dict[str, Any]:
     try:
         body = response.json()
     except Exception as exc:
-        detail = getattr(response, "text", "")
+        detail = _response_text_preview(response)
         raise AceStepApiError(f"ACE-Step {operation} returned a non-JSON response: {detail[:500]}") from exc
     if not isinstance(body, dict):
         raise AceStepApiError(f"ACE-Step {operation} returned unexpected JSON: {body}")
     return body
+
+
+def _response_text_preview(response: Any, limit: int = 500) -> str:
+    text = getattr(response, "text", "")
+    compact = " ".join(str(text).split())
+    return compact[:limit]

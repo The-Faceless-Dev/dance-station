@@ -3,9 +3,34 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from autotransition.config import RuntimeConfig
-from autotransition.models.acestep_api import AceStepApiClient, _extract_audio_path, _extract_task_result
+from autotransition.models.acestep_api import AceStepApiClient, AceStepApiError, _extract_audio_path, _extract_task_result, _raise_api_status
 from autotransition.models.registry import get_model_profile
 from autotransition.pipeline import SourceSelectionPlan
+
+
+def test_api_status_error_includes_method_url_and_compact_body() -> None:
+    class Request:
+        method = "POST"
+        url = "http://127.0.0.1:8001/v1/init"
+
+    class Response:
+        status_code = 405
+        text = "<!DOCTYPE html>\n<html>\nMethod Not Allowed\n</html>"
+        request = Request()
+
+        def json(self):
+            raise ValueError("No JSON")
+
+    try:
+        _raise_api_status(Response(), "v1/init")
+    except AceStepApiError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("Expected AceStepApiError")
+
+    assert "POST http://127.0.0.1:8001/v1/init" in message
+    assert "HTTP 405" in message
+    assert "<!DOCTYPE html> <html> Method Not Allowed </html>" in message
 
 
 def test_extract_task_result_parses_result_json_string() -> None:

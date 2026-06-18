@@ -1,8 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from autotransition.config import RuntimeConfig
 from autotransition.runtime.ace_step import (
     RuntimeProcess,
+    api_health,
     build_runtime_env,
     build_debug_start_api_command,
     build_install_commands,
@@ -77,6 +79,36 @@ def test_runtime_status_reports_missing_install(tmp_path: Path) -> None:
     assert not status.installed
     assert not status.api_running
     assert "not installed" in status.message
+
+
+def test_api_health_rejects_html_proxy_response(monkeypatch) -> None:
+    class Response:
+        status_code = 200
+        text = "<!DOCTYPE html><html><title>502 | README | RunPod</title></html>"
+        headers = {"content-type": "text/html; charset=utf-8"}
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "httpx",
+        SimpleNamespace(get=lambda *args, **kwargs: Response()),
+    )
+
+    assert not api_health()
+
+
+def test_api_health_rejects_method_error(monkeypatch) -> None:
+    class Response:
+        status_code = 405
+        text = '{"detail":"Method Not Allowed"}'
+        headers = {"content-type": "application/json"}
+
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "httpx",
+        SimpleNamespace(get=lambda *args, **kwargs: Response()),
+    )
+
+    assert not api_health()
 
 
 def test_ensure_runtime_api_reports_missing_install(tmp_path: Path) -> None:
