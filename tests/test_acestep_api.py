@@ -105,3 +105,75 @@ def test_repaint_uploads_scaffold_as_multipart_file(tmp_path: Path, monkeypatch)
 
     assert result.output_path.read_bytes() == b"generated"
     assert any(call[1].endswith("/release_task") for call in calls)
+
+
+def test_repaint_initializes_when_model_list_is_non_json(tmp_path: Path, monkeypatch) -> None:
+    scaffold = tmp_path / "scaffold.wav"
+    scaffold.write_bytes(b"audio")
+    plan = SourceSelectionPlan(
+        transition_id="test-generation",
+        source_path=tmp_path / "source.mp3",
+        source_extension=".mp3",
+        source_format="MP3",
+        source_duration_seconds=60.0,
+        continuation_point_seconds=30.0,
+        tail_start_seconds=9.0,
+        tail_end_seconds=30.0,
+        scaffold_path=scaffold,
+        metadata_path=tmp_path / "metadata.json",
+        caption="cinematic horror",
+        context_seconds=18.0,
+        repaint_overlap_seconds=3.0,
+        new_section_seconds=36.0,
+        requested_continuation_seconds=36.0,
+        effective_continuation_seconds=None,
+        repainting_start_seconds=18.0,
+        repainting_end_seconds=-1.0,
+        audio_format="wav",
+        bpm_hint=None,
+        key_hint=None,
+        seed=None,
+    )
+    calls = []
+
+    class Response:
+        def __init__(self, body=None, status_code=200, content=b"", text="") -> None:
+            self._body = body
+            self.status_code = status_code
+            self.content = content
+            self.text = text or str(body)
+
+        def json(self):
+            if self._body is None:
+                raise ValueError("No JSON")
+            return self._body
+
+    def fake_get(url, **kwargs):
+        calls.append(("get", url, kwargs))
+        if url.endswith("/v1/models"):
+            return Response(None, text="")
+        if url.endswith("/v1/audio"):
+            return Response({}, content=b"generated")
+        return Response({})
+
+    def fake_post(url, **kwargs):
+        calls.append(("post", url, kwargs))
+        if url.endswith("/v1/init"):
+            return Response({})
+        if url.endswith("/release_task"):
+            return Response({"data": {"task_id": "task-1"}})
+        if url.endswith("/query_result"):
+            return Response({"data": [{"task_id": "task-1", "status": 1, "file": "generated.wav"}]})
+        return Response({})
+
+    fake_httpx = SimpleNamespace(get=fake_get, post=fake_post)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    result = AceStepApiClient(RuntimeConfig()).repaint(
+        plan=plan,
+        profile=get_model_profile("acestep-v15-turbo"),
+        save_dir=tmp_path / "generated",
+    )
+
+    assert result.output_path.read_bytes() == b"generated"
+    assert any(call[1].endswith("/v1/init") for call in calls)

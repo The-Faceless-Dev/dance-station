@@ -62,9 +62,9 @@ class AceStepApiClient:
                 data=_stringify_form_fields(payload),
                 files={"src_audio": (plan.scaffold_path.name, scaffold_file, "audio/wav")},
                 timeout=self.config.api_timeout_seconds,
-            )
+        )
         _raise_api_status(release, "release_task")
-        release_body = release.json()
+        release_body = _response_json(release, "release_task")
         if release_body.get("error"):
             raise AceStepApiError(str(release_body["error"]))
 
@@ -80,7 +80,7 @@ class AceStepApiClient:
                 timeout=self.config.api_timeout_seconds,
             )
             _raise_api_status(query, "query_result")
-            query_body = query.json()
+            query_body = _response_json(query, "query_result")
             if query_body.get("error"):
                 raise AceStepApiError(str(query_body["error"]))
 
@@ -123,9 +123,14 @@ class AceStepApiClient:
         import httpx
         from autotransition.runtime.checkpoints import repair_incomplete_checkpoint
 
-        models = httpx.get(f"{self.config.api_base_url}/v1/models", timeout=self.config.api_timeout_seconds)
-        _raise_api_status(models, "v1/models")
-        body = models.json()
+        body: dict[str, Any] = {}
+        try:
+            models = httpx.get(f"{self.config.api_base_url}/v1/models", timeout=self.config.api_timeout_seconds)
+            _raise_api_status(models, "v1/models")
+            body = _response_json(models, "v1/models")
+        except AceStepApiError as exc:
+            print(f"[Autotransition] ACE-Step model list unavailable; initializing directly. {exc}")
+
         model_data = body.get("data") or {}
         model_items = model_data.get("models", []) if isinstance(model_data, dict) else model_data
         available = {
@@ -146,7 +151,7 @@ class AceStepApiClient:
             timeout=self.config.generation_timeout_seconds,
         )
         _raise_api_status(init, "v1/init")
-        init_body = init.json()
+        init_body = _response_json(init, "v1/init")
         if init_body.get("error"):
             raise AceStepApiError(str(init_body["error"]))
 
@@ -232,3 +237,14 @@ def _raise_api_status(response: Any, operation: str) -> None:
     except Exception:
         detail = response.text
     raise AceStepApiError(f"ACE-Step {operation} failed with HTTP {response.status_code}: {detail}")
+
+
+def _response_json(response: Any, operation: str) -> dict[str, Any]:
+    try:
+        body = response.json()
+    except Exception as exc:
+        detail = getattr(response, "text", "")
+        raise AceStepApiError(f"ACE-Step {operation} returned a non-JSON response: {detail[:500]}") from exc
+    if not isinstance(body, dict):
+        raise AceStepApiError(f"ACE-Step {operation} returned unexpected JSON: {body}")
+    return body
