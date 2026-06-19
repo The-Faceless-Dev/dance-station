@@ -394,8 +394,12 @@ def start_api_background(config: RuntimeConfig = RuntimeConfig()) -> subprocess.
         raise RuntimeError("uv.exe was not found. Run `autotransition setup` first.")
     log_dir = Path("data/logs")
     log_dir.mkdir(parents=True, exist_ok=True)
-    stdout = (log_dir / "ace-step-api.log").open("ab")
-    stderr = (log_dir / "ace-step-api.err.log").open("ab")
+    stdout_path = log_dir / "ace-step-api.log"
+    stderr_path = log_dir / "ace-step-api.err.log"
+    _rotate_runtime_log(stdout_path)
+    _rotate_runtime_log(stderr_path)
+    stdout = stdout_path.open("wb")
+    stderr = stderr_path.open("wb")
     process = subprocess.Popen(
         [str(uv), "run", "acestep-api", "--host", config.api_host, "--port", str(config.api_port)],
         cwd=config.ace_step_dir,
@@ -420,6 +424,14 @@ def start_api_foreground(config: RuntimeConfig = RuntimeConfig()) -> int:
         env=build_runtime_env(),
     )
     return process.returncode
+
+
+def _rotate_runtime_log(path: Path) -> None:
+    if not path.exists():
+        return
+    previous = path.with_name(f"{path.name}.previous")
+    previous.unlink(missing_ok=True)
+    path.replace(previous)
 
 
 def stop_runtime_process_tree(pid: int, config: RuntimeConfig = RuntimeConfig()) -> bool:

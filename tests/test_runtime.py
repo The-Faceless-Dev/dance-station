@@ -17,6 +17,7 @@ from autotransition.runtime.ace_step import (
     read_runtime_pid,
     resolve_uv_executable,
     runtime_status,
+    start_api_background,
     stop_runtime_process_tree,
 )
 import autotransition.runtime.ace_step as ace_step_runtime
@@ -196,6 +197,40 @@ def test_runtime_env_allows_explicit_hf_transfer(monkeypatch) -> None:
     env = build_runtime_env()
 
     assert env["HF_HUB_ENABLE_HF_TRANSFER"] == "1"
+
+
+def test_start_api_background_rotates_previous_logs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    runtime_dir = tmp_path / "ACE-Step-1.5"
+    runtime_dir.mkdir()
+    (runtime_dir / "pyproject.toml").write_text("[project]\nname = 'ace-step'\n", encoding="utf-8")
+    log_dir = tmp_path / "data/logs"
+    log_dir.mkdir(parents=True)
+    stdout_path = log_dir / "ace-step-api.log"
+    stderr_path = log_dir / "ace-step-api.err.log"
+    stdout_path.write_text("old stdout\n", encoding="utf-8")
+    stderr_path.write_text("old stderr\nTraceback (most recent call last):\nKeyboardInterrupt\n", encoding="utf-8")
+
+    class Process:
+        pid = 1234
+
+    def fake_popen(args, **kwargs):
+        kwargs["stdout"].write(b"new stdout\n")
+        kwargs["stderr"].write(b"new stderr\n")
+        kwargs["stdout"].close()
+        kwargs["stderr"].close()
+        return Process()
+
+    monkeypatch.setattr(ace_step_runtime, "resolve_uv_executable", lambda: Path("uv"))
+    monkeypatch.setattr(ace_step_runtime.subprocess, "Popen", fake_popen)
+
+    process = start_api_background(RuntimeConfig(ace_step_dir=runtime_dir))
+
+    assert process.pid == 1234
+    assert stdout_path.read_text(encoding="utf-8") == "new stdout\n"
+    assert stderr_path.read_text(encoding="utf-8") == "new stderr\n"
+    assert (log_dir / "ace-step-api.log.previous").read_text(encoding="utf-8") == "old stdout\n"
+    assert "KeyboardInterrupt" in (log_dir / "ace-step-api.err.log.previous").read_text(encoding="utf-8")
 
 
 def test_ensure_runtime_api_reports_existing_unhealthy_process(tmp_path: Path, monkeypatch) -> None:
