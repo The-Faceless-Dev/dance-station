@@ -48,6 +48,7 @@ class AceStepApiClient:
             "inference_steps": profile.default_inference_steps,
             "thinking": False,
         }
+        payload.update(_repaint_defaults_for_profile(profile))
         if plan.seed is not None:
             payload["use_random_seed"] = False
             payload["seed"] = plan.seed
@@ -227,6 +228,29 @@ def _stringify_form_fields(payload: dict[str, Any]) -> dict[str, str]:
         else:
             fields[key] = str(value)
     return fields
+
+
+def _repaint_defaults_for_profile(profile: ModelProfile) -> dict[str, Any]:
+    is_turbo = "turbo" in profile.slug
+    if is_turbo:
+        return {
+            "infer_method": "ode",
+            "guidance_scale": 1.0,
+            "shift": 3.0,
+            "repaint_mode": "balanced",
+            "repaint_strength": 0.45,
+            "repaint_latent_crossfade_frames": 16,
+            "repaint_wav_crossfade_sec": 0.25,
+        }
+    return {
+        "infer_method": "ode",
+        "guidance_scale": 7.0,
+        "shift": 3.0,
+        "repaint_mode": "balanced",
+        "repaint_strength": 0.3,
+        "repaint_latent_crossfade_frames": 24,
+        "repaint_wav_crossfade_sec": 0.5,
+    }
 
 
 def _raise_api_status(response: Any, operation: str) -> None:

@@ -33,7 +33,7 @@ ACE_STEP_MODELS: dict[str, ModelProfile] = {
         quality_label="Medium",
         speed_label="Standard",
         vram_guidance="2B DiT profile; use this when compatibility matters more than speed.",
-        default_inference_steps=50,
+        default_inference_steps=64,
         notes="Foundation 2B model with the broadest task support in the non-XL family.",
     ),
     "acestep-v15-sft": ModelProfile(
@@ -46,7 +46,7 @@ ACE_STEP_MODELS: dict[str, ModelProfile] = {
         quality_label="High",
         speed_label="Standard",
         vram_guidance="2B DiT profile for users who want higher quality than base.",
-        default_inference_steps=50,
+        default_inference_steps=64,
         notes="Good default for quality-focused repaint workflows on consumer GPUs.",
     ),
     "acestep-v15-turbo": ModelProfile(
@@ -72,7 +72,7 @@ ACE_STEP_MODELS: dict[str, ModelProfile] = {
         quality_label="High",
         speed_label="Large",
         vram_guidance="XL 4B profile; expects at least 12GB VRAM with offload/quantization, 20GB preferred.",
-        default_inference_steps=50,
+        default_inference_steps=64,
         notes="Larger foundation profile for high-quality output when hardware allows.",
     ),
     "acestep-v15-xl-sft": ModelProfile(
@@ -85,7 +85,7 @@ ACE_STEP_MODELS: dict[str, ModelProfile] = {
         quality_label="Very high",
         speed_label="Large",
         vram_guidance="XL 4B profile; expects at least 12GB VRAM with offload/quantization, 20GB preferred.",
-        default_inference_steps=50,
+        default_inference_steps=64,
         notes="Quality-focused XL profile for users with stronger GPUs.",
     ),
     "acestep-v15-xl-turbo": ModelProfile(

@@ -3,7 +3,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from autotransition.config import RuntimeConfig
-from autotransition.models.acestep_api import AceStepApiClient, AceStepApiError, _extract_audio_path, _extract_task_result, _raise_api_status
+from autotransition.models.acestep_api import (
+    AceStepApiClient,
+    AceStepApiError,
+    _extract_audio_path,
+    _extract_task_result,
+    _raise_api_status,
+    _repaint_defaults_for_profile,
+)
 from autotransition.models.registry import get_model_profile
 from autotransition.pipeline import SourceSelectionPlan
 
@@ -52,6 +59,24 @@ def test_extract_audio_path_reads_file_download_url() -> None:
     path = _extract_audio_path({"file": "/v1/audio?path=C%3A%2Ftmp%2Fgenerated.wav"})
 
     assert path == "C:/tmp/generated.wav"
+
+
+def test_repaint_defaults_are_conservative_for_base_model() -> None:
+    defaults = _repaint_defaults_for_profile(get_model_profile("acestep-v15-base"))
+
+    assert defaults["guidance_scale"] == 7.0
+    assert defaults["shift"] == 3.0
+    assert defaults["repaint_strength"] == 0.3
+    assert defaults["repaint_latent_crossfade_frames"] == 24
+    assert defaults["repaint_wav_crossfade_sec"] == 0.5
+
+
+def test_repaint_defaults_use_faster_turbo_settings() -> None:
+    defaults = _repaint_defaults_for_profile(get_model_profile("acestep-v15-turbo"))
+
+    assert defaults["guidance_scale"] == 1.0
+    assert defaults["repaint_strength"] == 0.45
+    assert defaults["repaint_latent_crossfade_frames"] == 16
 
 
 def test_repaint_uploads_scaffold_as_multipart_file(tmp_path: Path, monkeypatch) -> None:
@@ -109,6 +134,9 @@ def test_repaint_uploads_scaffold_as_multipart_file(tmp_path: Path, monkeypatch)
             assert kwargs["data"]["task_type"] == "repaint"
             assert kwargs["data"]["batch_size"] == "1"
             assert kwargs["data"]["thinking"] == "false"
+            assert kwargs["data"]["repaint_mode"] == "balanced"
+            assert kwargs["data"]["repaint_strength"] == "0.45"
+            assert kwargs["data"]["repaint_wav_crossfade_sec"] == "0.25"
             assert "src_audio" in kwargs["files"]
             filename, file_obj, mime = kwargs["files"]["src_audio"]
             assert filename == "scaffold.wav"
