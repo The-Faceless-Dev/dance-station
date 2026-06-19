@@ -406,6 +406,7 @@ def start_api_background(config: RuntimeConfig = RuntimeConfig()) -> subprocess.
         stdout=stdout,
         stderr=stderr,
         env=build_runtime_env(),
+        **_subprocess_group_kwargs(),
     )
     _write_runtime_pid(process.pid)
     return process
@@ -432,6 +433,12 @@ def _rotate_runtime_log(path: Path) -> None:
     previous = path.with_name(f"{path.name}.previous")
     previous.unlink(missing_ok=True)
     path.replace(previous)
+
+
+def _subprocess_group_kwargs() -> dict[str, object]:
+    if sys.platform == "win32":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
 
 
 def stop_runtime_process_tree(pid: int, config: RuntimeConfig = RuntimeConfig()) -> bool:

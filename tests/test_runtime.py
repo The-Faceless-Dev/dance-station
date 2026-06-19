@@ -233,6 +233,31 @@ def test_start_api_background_rotates_previous_logs(tmp_path: Path, monkeypatch)
     assert "KeyboardInterrupt" in (log_dir / "ace-step-api.err.log.previous").read_text(encoding="utf-8")
 
 
+def test_start_api_background_isolates_process_group(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    runtime_dir = tmp_path / "ACE-Step-1.5"
+    runtime_dir.mkdir()
+    (runtime_dir / "pyproject.toml").write_text("[project]\nname = 'ace-step'\n", encoding="utf-8")
+    popen_kwargs = {}
+
+    class Process:
+        pid = 1234
+
+    def fake_popen(args, **kwargs):
+        popen_kwargs.update(kwargs)
+        kwargs["stdout"].close()
+        kwargs["stderr"].close()
+        return Process()
+
+    monkeypatch.setattr(ace_step_runtime, "resolve_uv_executable", lambda: Path("uv"))
+    monkeypatch.setattr(ace_step_runtime.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ace_step_runtime.sys, "platform", "linux")
+
+    start_api_background(RuntimeConfig(ace_step_dir=runtime_dir))
+
+    assert popen_kwargs["start_new_session"] is True
+
+
 def test_ensure_runtime_api_reports_existing_unhealthy_process(tmp_path: Path, monkeypatch) -> None:
     runtime_dir = tmp_path / "ACE-Step-1.5"
     runtime_dir.mkdir()
