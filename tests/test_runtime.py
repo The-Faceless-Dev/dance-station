@@ -184,19 +184,23 @@ def test_ensure_runtime_api_reports_port_conflict(tmp_path: Path, monkeypatch) -
 def test_runtime_env_disables_hf_transfer_by_default(monkeypatch) -> None:
     monkeypatch.setenv("HF_HUB_ENABLE_HF_TRANSFER", "1")
     monkeypatch.delenv("AUTOTRANSITION_ALLOW_HF_TRANSFER", raising=False)
+    monkeypatch.delenv("UV_LINK_MODE", raising=False)
 
     env = build_runtime_env()
 
     assert env["HF_HUB_ENABLE_HF_TRANSFER"] == "0"
+    assert env["UV_LINK_MODE"] == "copy"
 
 
 def test_runtime_env_allows_explicit_hf_transfer(monkeypatch) -> None:
     monkeypatch.setenv("HF_HUB_ENABLE_HF_TRANSFER", "1")
     monkeypatch.setenv("AUTOTRANSITION_ALLOW_HF_TRANSFER", "1")
+    monkeypatch.setenv("UV_LINK_MODE", "clone")
 
     env = build_runtime_env()
 
     assert env["HF_HUB_ENABLE_HF_TRANSFER"] == "1"
+    assert env["UV_LINK_MODE"] == "clone"
 
 
 def test_start_api_background_rotates_previous_logs(tmp_path: Path, monkeypatch) -> None:

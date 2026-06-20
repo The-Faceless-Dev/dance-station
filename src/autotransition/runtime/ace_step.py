@@ -132,6 +132,7 @@ def build_runtime_env() -> dict[str, str]:
     env = os.environ.copy()
     if env.get("AUTOTRANSITION_ALLOW_HF_TRANSFER") != "1":
         env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+    env.setdefault("UV_LINK_MODE", "copy")
     return env
 
 
@@ -383,7 +384,7 @@ def run_install(config: RuntimeConfig = RuntimeConfig()) -> None:
     else:
         subprocess.run(build_install_commands(config)[1], shell=True, check=True)
 
-    subprocess.run([str(uv), "sync"], check=True, cwd=config.ace_step_dir)
+    subprocess.run([str(uv), "sync"], check=True, cwd=config.ace_step_dir, env=build_runtime_env())
 
 
 def start_api_background(config: RuntimeConfig = RuntimeConfig()) -> subprocess.Popen[bytes]:
