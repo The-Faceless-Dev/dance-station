@@ -474,38 +474,8 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
         plan.metadata_path.parent.mkdir(parents=True, exist_ok=True)
         plan.metadata_path.write_text(json.dumps(plan.to_dict(), indent=2), encoding="utf-8")
 
-        status = resolve_model_status(profile.slug, models_dir=models_dir)
-        if status.state != InstallState.READY:
-            if not request.auto_install:
-                message = f"Model '{profile.display_name}' is not installed. Install it before generating."
-                ui_log.add("error", message)
-                result = GenerationResult(
-                    generation_id=generation_id,
-                    status=GenerationStatus.FAILED,
-                    message=message,
-                    model_slug=profile.slug,
-                    scaffold_path=plan.scaffold_path,
-                    scaffold_metadata_path=plan.metadata_path,
-                )
-                return {"result": result.to_dict(), "plan": plan.to_dict()}
-
-            try:
-                ui_log.add("info", f"Auto-installing model '{profile.slug}' before generation.")
-                install_model(profile.slug, models_dir=models_dir)
-            except ModelInstallError as exc:
-                ui_log.add("error", str(exc))
-                result = GenerationResult(
-                    generation_id=generation_id,
-                    status=GenerationStatus.FAILED,
-                    message=str(exc),
-                    model_slug=profile.slug,
-                    scaffold_path=plan.scaffold_path,
-                    scaffold_metadata_path=plan.metadata_path,
-                )
-                return {"result": result.to_dict(), "plan": plan.to_dict()}
-
         try:
-            ui_log.add("info", f"Running ACE-Step text-to-music continuation with model '{profile.slug}'.")
+            ui_log.add("info", "Running ACE-Step text-to-music continuation with the active runtime model.")
             adapter = AceStepRepaintAdapter(
                 profile=profile,
                 model_path=local_model_path(profile, models_dir),

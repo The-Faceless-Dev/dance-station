@@ -250,17 +250,13 @@ def test_text2music_generates_prompted_section_without_source_audio(tmp_path: Pa
     def fake_post(url, **kwargs):
         calls.append(("post", url, kwargs))
         if url.endswith("/v1/init"):
-            assert kwargs["json"] == {
-                "model": "acestep-v15-turbo",
-                "init_llm": True,
-                "lm_model_path": DEFAULT_LM_MODEL_PATH,
-            }
-            return Response({"data": {"loaded_model": "acestep-v15-turbo", "llm_initialized": True}})
+            raise AssertionError("text2music should use the active ACE-Step runtime model without forcing init")
         if url.endswith("/release_task"):
             assert "files" not in kwargs or kwargs["files"] is None
             assert "data" not in kwargs
             payload = kwargs["json"]
             assert payload["task_type"] == "text2music"
+            assert "model" not in payload
             assert payload["thinking"] is True
             assert payload["prompt"] == "instrumental cinematic horror"
             assert payload["lyrics"] == "[Instrumental]"
@@ -308,7 +304,7 @@ def test_text2music_generates_prompted_section_without_source_audio(tmp_path: Pa
     assert (tmp_path / "generated" / "ace-request.json").exists()
     assert (tmp_path / "generated" / "ace-release-response.json").exists()
     assert (tmp_path / "generated" / "ace-query-response-final.json").exists()
-    assert any(call[1].endswith("/v1/init") for call in calls)
+    assert not any(call[1].endswith("/v1/init") for call in calls)
 
 
 def test_text2music_uses_working_bpm_and_key_defaults_when_ui_omits_them(tmp_path: Path, monkeypatch) -> None:
@@ -349,16 +345,7 @@ def test_text2music_uses_working_bpm_and_key_defaults_when_ui_omits_them(tmp_pat
 
     def fake_get(url, **kwargs):
         if url.endswith("/v1/model_inventory"):
-            return Response(
-                {
-                    "data": {
-                        "models": [{"name": "acestep-v15-xl-base", "is_loaded": True}],
-                        "lm_models": [{"name": DEFAULT_LM_MODEL_PATH, "is_loaded": True}],
-                        "loaded_lm_model": DEFAULT_LM_MODEL_PATH,
-                        "llm_initialized": True,
-                    }
-                }
-            )
+            raise AssertionError("text2music should not check model inventory before generation")
         if url.endswith("/v1/audio"):
             return Response({}, content=b"generated")
         return Response({})
@@ -366,6 +353,7 @@ def test_text2music_uses_working_bpm_and_key_defaults_when_ui_omits_them(tmp_pat
     def fake_post(url, **kwargs):
         if url.endswith("/release_task"):
             payload = kwargs["json"]
+            assert "model" not in payload
             assert payload["bpm"] == DEFAULT_TEXT2MUSIC_BPM
             assert payload["key_scale"] == DEFAULT_TEXT2MUSIC_KEY_SCALE
             assert payload["audio_duration"] == 30.0
@@ -463,7 +451,7 @@ def test_text2music_skips_init_when_dit_and_lm_are_loaded(tmp_path: Path, monkey
     assert not any(call[1].endswith("/v1/init") for call in calls)
 
 
-def test_text2music_fails_when_lm_init_is_not_confirmed(tmp_path: Path, monkeypatch) -> None:
+def test_text2music_surfaces_runtime_lm_errors_without_forcing_init(tmp_path: Path, monkeypatch) -> None:
     plan = SourceSelectionPlan(
         transition_id="test-generation",
         source_path=tmp_path / "source.mp3",
@@ -501,14 +489,15 @@ def test_text2music_fails_when_lm_init_is_not_confirmed(tmp_path: Path, monkeypa
 
     def fake_get(url, **kwargs):
         if url.endswith("/v1/model_inventory"):
-            return Response({"data": {"models": [{"name": "acestep-v15-turbo"}]}})
+            raise AssertionError("text2music should not check model inventory before generation")
         return Response({})
 
     def fake_post(url, **kwargs):
         if url.endswith("/v1/init"):
-            assert kwargs["json"]["lm_model_path"] == DEFAULT_LM_MODEL_PATH
-            return Response({"data": {"loaded_model": "acestep-v15-turbo", "llm_initialized": False}})
-        raise AssertionError("generation should not start when LM init is incomplete")
+            raise AssertionError("text2music should not force LM initialization")
+        if url.endswith("/release_task"):
+            return Response({"error": "5Hz LM init failed"})
+        raise AssertionError(f"unexpected post: {url}")
 
     fake_httpx = SimpleNamespace(get=fake_get, post=fake_post)
     monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
@@ -524,7 +513,7 @@ def test_text2music_fails_when_lm_init_is_not_confirmed(tmp_path: Path, monkeypa
     else:
         raise AssertionError("Expected AceStepApiError")
 
-    assert "LM initialization did not complete" in message
+    assert "5Hz LM init failed" in message
 
 
 def test_repaint_initializes_when_model_list_is_non_json(tmp_path: Path, monkeypatch) -> None:

@@ -74,12 +74,10 @@ class AceStepApiClient:
 
     def text2music(self, plan: SourceSelectionPlan, profile: ModelProfile, save_dir: Path) -> RepaintResult:
         lm_model_path = _configured_lm_model_path(plan, profile)
-        self._ensure_model(profile, init_llm=True, lm_model_path=lm_model_path)
         payload: dict[str, Any] = {
             "task_type": "text2music",
             "prompt": plan.caption,
             "lyrics": "[Instrumental]",
-            "model": profile.slug,
             "audio_duration": plan.requested_continuation_seconds,
             "audio_format": _raw_text2music_audio_format(plan.audio_format),
             "batch_size": 1,

@@ -249,10 +249,32 @@ def test_ui_source_upload_rejects_unsupported_extension(tmp_path: Path) -> None:
     assert "Unsupported audio format" in response.json()["detail"]
 
 
-def test_ui_generate_from_selection_reports_missing_model(tmp_path: Path) -> None:
+def test_ui_generate_from_selection_does_not_block_on_app_model_install_status(tmp_path: Path, monkeypatch) -> None:
+    import autotransition.runtime.ace_step as ace_step_runtime
+    from autotransition.models.acestep_api import AceStepApiClient
+    from autotransition.models.base import RepaintResult
+
+    monkeypatch.setattr(
+        ace_step_runtime,
+        "runtime_status",
+        lambda config=None: SimpleNamespace(api_running=True, message="ACE-Step API is ready."),
+    )
+
     source = make_wav(tmp_path / "song.wav", duration_ms=6000)
     output_dir = tmp_path / "out"
     client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    def fake_text2music(self, plan, profile, save_dir):
+        generated = output_dir / "generated.flac"
+        generated.parent.mkdir(parents=True, exist_ok=True)
+        from pydub import AudioSegment
+
+        AudioSegment.silent(duration=1000, frame_rate=44100).export(generated, format="flac")
+        metadata = output_dir / "generated.json"
+        metadata.write_text("{}", encoding="utf-8")
+        return RepaintResult(output_path=generated, metadata_path=metadata, model_name="ACE-Step API")
+
+    monkeypatch.setattr(AceStepApiClient, "text2music", fake_text2music)
 
     response = client.post(
         "/api/generate/from-selection",
@@ -263,16 +285,14 @@ def test_ui_generate_from_selection_reports_missing_model(tmp_path: Path) -> Non
             "output_dir": str(output_dir),
             "continuation_point_seconds": 4.0,
             "context_seconds": 2.0,
-            "repaint_overlap_seconds": 1.0,
+            "repaint_overlap_seconds": 0.0,
             "new_section_seconds": 5.0,
         },
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["result"]["status"] == "failed"
-    assert "not installed" in payload["result"]["message"]
-    assert not Path(payload["result"]["scaffold_path"]).exists()
+    assert payload["result"]["status"] == "complete"
     assert payload["plan"]["requested_continuation_seconds"] == 5.0
     assert payload["plan"]["repainting_end_seconds"] == 7.0
 
