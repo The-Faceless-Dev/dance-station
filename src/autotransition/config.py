@@ -52,7 +52,7 @@ class TransitionConfig:
     context_seconds: float = 16.0
     # Backward-compatible name. In the ACE-Step request this is the number of
     # source seconds before the continuation point included in the repaint range.
-    repaint_overlap_seconds: float = 0.0
+    repaint_overlap_seconds: float = 2.0
     new_section_seconds: float = 32.0
     output: OutputConfig = OutputConfig()
     model: ModelConfig = ModelConfig()

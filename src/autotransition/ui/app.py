@@ -79,7 +79,7 @@ class AceStepAdvancedSettings(BaseModel):
 
 
 class GenerateSelectionRequest(SelectionScaffoldRequest):
-    model_slug: str = "acestep-v15-xl-base"
+    model_slug: str = "acestep-v15-turbo"
     auto_install: bool = False
     ace_step: AceStepAdvancedSettings | None = None
 
@@ -482,6 +482,7 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
                 runtime_config=runtime_config,
             )
             raw_generation = adapter.text2music(plan)
+            raw_probe = probe_audio(raw_generation.output_path)
             composite_dir = output.generated_dir / generation_id
             composite_path = composite_dir / f"{generation_id}-composite.{plan.audio_format}"
             composite_metadata_path = composite_dir / "composite.json"
@@ -493,52 +494,46 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
                 continuation_point_seconds=plan.continuation_point_seconds,
                 output_format=plan.audio_format,
             )
+            repaint_start = max(0.0, plan.continuation_point_seconds - plan.repaint_margin_seconds)
+            repaint_end = plan.continuation_point_seconds + raw_probe.duration_seconds
             composite_metadata = {
                 "generation_id": generation_id,
                 "raw_generated_audio_path": str(raw_generation.output_path),
                 "raw_generated_metadata_path": str(raw_generation.metadata_path),
+                "raw_generated_duration_seconds": raw_probe.duration_seconds,
                 "composite_audio_path": str(composite_path),
                 "continuation_point_seconds": plan.continuation_point_seconds,
                 "new_section_seconds": plan.new_section_seconds,
-                "boundary_repaint": False,
+                "boundary_repaint": True,
+                "boundary_repaint_start_seconds": repaint_start,
+                "boundary_repaint_end_seconds": repaint_end,
             }
             composite_metadata_path.parent.mkdir(parents=True, exist_ok=True)
             composite_metadata_path.write_text(json.dumps(composite_metadata, indent=2), encoding="utf-8")
 
-            final_audio_path = composite_path
-            final_metadata_path = composite_metadata_path
-            if plan.repaint_margin_seconds > 0:
-                boundary_start = max(0.0, plan.continuation_point_seconds - plan.repaint_margin_seconds)
-                boundary_end = min(
-                    plan.continuation_point_seconds + plan.repaint_margin_seconds,
-                    plan.continuation_point_seconds + plan.new_section_seconds,
-                )
-                ui_log.add(
-                    "info",
-                    f"Running ACE-Step boundary repaint from {boundary_start:.2f}s to {boundary_end:.2f}s.",
-                )
-                boundary_plan = SourceSelectionPlan(
-                    **{
-                        **plan.to_dict(),
-                        "source_path": plan.source_path,
-                        "scaffold_path": composite_path,
-                        "metadata_path": composite_metadata_path,
-                        "tail_start_seconds": 0.0,
-                        "tail_end_seconds": plan.continuation_point_seconds + plan.new_section_seconds,
-                        "repainting_start_seconds": boundary_start,
-                        "repainting_end_seconds": boundary_end,
-                        "generation_region": "repaint_existing",
-                    }
-                )
-                boundary_result = adapter.repaint(boundary_plan)
-                final_audio_path = boundary_result.output_path
-                final_metadata_path = boundary_result.metadata_path
-                composite_metadata["boundary_repaint"] = True
-                composite_metadata["boundary_repaint_start_seconds"] = boundary_start
-                composite_metadata["boundary_repaint_end_seconds"] = boundary_end
-                composite_metadata["boundary_repaint_audio_path"] = str(boundary_result.output_path)
-                composite_metadata["boundary_repaint_metadata_path"] = str(boundary_result.metadata_path)
-                composite_metadata_path.write_text(json.dumps(composite_metadata, indent=2), encoding="utf-8")
+            ui_log.add(
+                "info",
+                f"Running ACE-Step turbo repaint from {repaint_start:.2f}s to {repaint_end:.2f}s.",
+            )
+            boundary_plan = SourceSelectionPlan(
+                **{
+                    **plan.to_dict(),
+                    "source_path": plan.source_path,
+                    "scaffold_path": composite_path,
+                    "metadata_path": composite_metadata_path,
+                    "tail_start_seconds": 0.0,
+                    "tail_end_seconds": plan.continuation_point_seconds + plan.new_section_seconds,
+                    "repainting_start_seconds": repaint_start,
+                    "repainting_end_seconds": repaint_end,
+                    "generation_region": "repaint_existing",
+                }
+            )
+            boundary_result = adapter.repaint_transition(boundary_plan)
+            final_audio_path = boundary_result.output_path
+            final_metadata_path = boundary_result.metadata_path
+            composite_metadata["boundary_repaint_audio_path"] = str(boundary_result.output_path)
+            composite_metadata["boundary_repaint_metadata_path"] = str(boundary_result.metadata_path)
+            composite_metadata_path.write_text(json.dumps(composite_metadata, indent=2), encoding="utf-8")
         except AceStepRuntimeError as exc:
             ui_log.add("error", str(exc))
             result = GenerationResult(

@@ -72,6 +72,36 @@ class AceStepApiClient:
                 files={"src_audio": (plan.scaffold_path.name, scaffold_file, "audio/wav")},
             )
 
+    def repaint_transition(self, plan: SourceSelectionPlan, profile: ModelProfile, save_dir: Path) -> RepaintResult:
+        payload: dict[str, Any] = {
+            "task_type": "repaint",
+            "repainting_start": plan.repainting_start_seconds,
+            "repainting_end": plan.repainting_end_seconds,
+            "prompt": plan.caption,
+            "lyrics": "[Instrumental]",
+            "vocal_language": "unknown",
+            "audio_format": plan.audio_format,
+            "batch_size": 1,
+            "inference_steps": profile.default_inference_steps,
+            "thinking": False,
+        }
+        payload.update(_repaint_defaults_for_profile(profile))
+        payload.update(_filter_settings(plan.ace_step_settings, _REPAINT_SETTING_ALLOWLIST))
+        if plan.seed is not None:
+            payload["use_random_seed"] = False
+            payload["seed"] = plan.seed
+        if plan.bpm_hint is not None:
+            payload["bpm"] = int(plan.bpm_hint)
+        if plan.key_hint:
+            payload["key_scale"] = plan.key_hint
+
+        with plan.scaffold_path.open("rb") as scaffold_file:
+            return self._submit_and_wait(
+                payload=payload,
+                save_dir=save_dir,
+                files={"src_audio": (plan.scaffold_path.name, scaffold_file, "audio/wav")},
+            )
+
     def text2music(self, plan: SourceSelectionPlan, profile: ModelProfile, save_dir: Path) -> RepaintResult:
         lm_model_path = _configured_lm_model_path(plan, profile)
         payload: dict[str, Any] = {
@@ -418,6 +448,17 @@ _TEXT2MUSIC_SETTING_ALLOWLIST = {
     "lm_cfg_scale",
     "lm_top_p",
     "lm_negative_prompt",
+}
+
+_REPAINT_SETTING_ALLOWLIST = {
+    "inference_steps",
+    "guidance_scale",
+    "shift",
+    "chunk_mask_mode",
+    "repaint_mode",
+    "repaint_strength",
+    "repaint_latent_crossfade_frames",
+    "repaint_wav_crossfade_sec",
 }
 
 

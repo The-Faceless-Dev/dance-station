@@ -48,6 +48,27 @@ class AceStepRepaintAdapter:
         except AceStepApiError as exc:
             raise AceStepRuntimeError(str(exc)) from exc
 
+    def repaint_transition(self, plan: SourceSelectionPlan) -> RepaintResult:
+        from autotransition.models.acestep_api import AceStepApiClient, AceStepApiError
+        from autotransition.models.registry import get_model_profile
+        from autotransition.runtime.ace_step import runtime_status
+
+        config = self.runtime_config
+        status = runtime_status(config)
+        if not status.api_running:
+            raise AceStepRuntimeError(
+                f"{status.message} Run `autotransition setup` once, then start the full app with `autotransition run`."
+            )
+
+        try:
+            return AceStepApiClient(config).repaint_transition(
+                plan=plan,
+                profile=get_model_profile("acestep-v15-turbo"),
+                save_dir=Path("data/generated") / plan.transition_id / "repaint",
+            )
+        except AceStepApiError as exc:
+            raise AceStepRuntimeError(str(exc)) from exc
+
     def text2music(self, plan: SourceSelectionPlan) -> RepaintResult:
         from autotransition.models.acestep_api import AceStepApiClient, AceStepApiError
         from autotransition.runtime.ace_step import runtime_status

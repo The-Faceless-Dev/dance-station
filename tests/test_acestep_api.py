@@ -307,6 +307,100 @@ def test_text2music_generates_prompted_section_without_source_audio(tmp_path: Pa
     assert not any(call[1].endswith("/v1/init") for call in calls)
 
 
+def test_repaint_transition_uses_active_runtime_without_forcing_init(tmp_path: Path, monkeypatch) -> None:
+    scaffold = tmp_path / "transition-scaffold.wav"
+    scaffold.write_bytes(b"audio")
+    plan = SourceSelectionPlan(
+        transition_id="test-generation",
+        source_path=tmp_path / "source.mp3",
+        source_extension=".mp3",
+        source_format="MP3",
+        source_duration_seconds=60.0,
+        continuation_point_seconds=30.0,
+        tail_start_seconds=0.0,
+        tail_end_seconds=60.0,
+        scaffold_path=scaffold,
+        metadata_path=tmp_path / "metadata.json",
+        caption="cinematic horror",
+        context_seconds=18.0,
+        repaint_overlap_seconds=2.0,
+        new_section_seconds=30.0,
+        requested_continuation_seconds=30.0,
+        effective_continuation_seconds=None,
+        repainting_start_seconds=28.0,
+        repainting_end_seconds=60.0,
+        audio_format="wav",
+        bpm_hint=120.0,
+        key_hint="C minor",
+        seed=99,
+        ace_step_settings={
+            "inference_steps": 12,
+            "repaint_strength": 0.35,
+            "chunk_mask_mode": "auto",
+            "lm_temperature": 0.1,
+        },
+    )
+    calls = []
+
+    class Response:
+        def __init__(self, body, status_code=200, content=b"") -> None:
+            self._body = body
+            self.status_code = status_code
+            self.content = content
+            self.text = str(body)
+
+        def json(self):
+            return self._body
+
+    def fake_get(url, **kwargs):
+        calls.append(("get", url, kwargs))
+        if url.endswith("/v1/model_inventory"):
+            raise AssertionError("transition repaint should not force model inventory checks")
+        if url.endswith("/v1/audio"):
+            return Response({}, content=b"generated")
+        return Response({})
+
+    def fake_post(url, **kwargs):
+        calls.append(("post", url, kwargs))
+        if url.endswith("/v1/init"):
+            raise AssertionError("transition repaint should not force ACE-Step model init")
+        if url.endswith("/release_task"):
+            payload = kwargs["data"]
+            assert payload["task_type"] == "repaint"
+            assert "model" not in payload
+            assert payload["repainting_start"] == "28.0"
+            assert payload["repainting_end"] == "60.0"
+            assert payload["prompt"] == "cinematic horror"
+            assert payload["lyrics"] == "[Instrumental]"
+            assert payload["audio_format"] == "wav"
+            assert payload["inference_steps"] == "12"
+            assert payload["chunk_mask_mode"] == "auto"
+            assert payload["repaint_strength"] == "0.35"
+            assert payload["use_random_seed"] == "false"
+            assert payload["seed"] == "99"
+            assert payload["bpm"] == "120"
+            assert payload["key_scale"] == "C minor"
+            assert "audio_duration" not in payload
+            assert "lm_temperature" not in payload
+            assert "src_audio" in kwargs["files"]
+            return Response({"data": {"task_id": "task-1"}})
+        if url.endswith("/query_result"):
+            return Response({"data": [{"task_id": "task-1", "status": 1, "file": "generated.wav"}]})
+        return Response({})
+
+    fake_httpx = SimpleNamespace(get=fake_get, post=fake_post)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    result = AceStepApiClient(RuntimeConfig()).repaint_transition(
+        plan=plan,
+        profile=get_model_profile("acestep-v15-turbo"),
+        save_dir=tmp_path / "generated",
+    )
+
+    assert result.output_path.read_bytes() == b"generated"
+    assert not any(call[1].endswith("/v1/init") for call in calls)
+
+
 def test_text2music_uses_working_bpm_and_key_defaults_when_ui_omits_them(tmp_path: Path, monkeypatch) -> None:
     plan = SourceSelectionPlan(
         transition_id="test-generation",

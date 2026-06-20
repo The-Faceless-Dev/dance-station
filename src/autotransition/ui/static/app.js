@@ -39,6 +39,7 @@ const el = {
   outputDir: document.querySelector("#outputDir"),
   contextSeconds: document.querySelector("#contextSeconds"),
   newSeconds: document.querySelector("#newSeconds"),
+  repaintOverlapSeconds: document.querySelector("#repaintOverlapSeconds"),
   bpmInput: document.querySelector("#bpmInput"),
   keyInput: document.querySelector("#keyInput"),
   seedInput: document.querySelector("#seedInput"),
@@ -112,6 +113,7 @@ function applyPreset(preset) {
   el.captionInput.value = preset.caption;
   el.contextSeconds.value = preset.config.context_seconds;
   el.newSeconds.value = preset.config.new_section_seconds;
+  el.repaintOverlapSeconds.value = preset.config.repaint_overlap_seconds;
   if (!el.bpmInput.value) el.bpmInput.value = "120";
   if (!el.keyInput.value.trim()) el.keyInput.value = "C minor";
   el.presetSummary.innerHTML = `<strong>${preset.name}</strong><br>${preset.description}`;
@@ -140,8 +142,8 @@ function renderModels() {
   });
   if (state.models.length) {
     const preferred =
-      state.models.find((model) => model.slug === "acestep-v15-xl-base" && model.status.state === "ready") ||
-      state.models.find((model) => model.slug === "acestep-v15-xl-base") ||
+      state.models.find((model) => model.slug === "acestep-v15-turbo" && model.status.state === "ready") ||
+      state.models.find((model) => model.slug === "acestep-v15-turbo") ||
       state.models.find((model) => model.status.state === "ready") ||
       state.models[0];
     el.modelSelect.value = preferred.slug;
@@ -299,6 +301,7 @@ function renderGeneratedList() {
         <dt>Mode</dt><dd>${plan.generation_region === "repaint_existing" ? "Repaint existing audio" : "Extend after marker"}</dd>
         <dt>Source</dt><dd>${formatTime(plan.tail_start_seconds)} to ${formatTime(plan.tail_end_seconds)}</dd>
         <dt>Generated</dt><dd>${Number(plan.new_section_seconds || 0).toFixed(1)}s</dd>
+        <dt>Repaint before</dt><dd>${Number(plan.repaint_overlap_seconds || 0).toFixed(1)}s</dd>
         <dt>Output</dt><dd>${outputPath || "None"}</dd>
         <dt>Metadata</dt><dd>${result.generated_metadata_path || result.scaffold_metadata_path}</dd>
         <dt>Prompt</dt><dd>${plan.caption}</dd>
@@ -339,6 +342,7 @@ function currentSettings() {
   return {
     contextSeconds: numericValue(el.contextSeconds),
     newSeconds: numericValue(el.newSeconds),
+    repaintOverlapSeconds: numericValue(el.repaintOverlapSeconds),
   };
 }
 
@@ -347,6 +351,7 @@ function updateSelectionReadout() {
   const settings = currentSettings();
   const context = settings.contextSeconds || 0;
   const future = settings.newSeconds || 0;
+  const repaintBefore = settings.repaintOverlapSeconds || 0;
   const tail = context;
   const start = continuation - tail;
   el.continuationReadout.textContent = `Continue at ${formatTime(continuation)}`;
@@ -360,7 +365,7 @@ function updateSelectionReadout() {
     setPill(el.sourceState, "Marker too early", "warn");
     return;
   }
-  el.contextRange.textContent = `Source context: ${formatTime(start)} to ${formatTime(continuation)} (${tail.toFixed(1)}s)`;
+  el.contextRange.textContent = `Source context: ${formatTime(start)} to ${formatTime(continuation)} (${tail.toFixed(1)}s), repaint starts ${repaintBefore.toFixed(1)}s before marker`;
   setPill(el.sourceState, "Source loaded", "ok");
 }
 
@@ -454,6 +459,7 @@ async function generateTransition() {
       caption: el.captionInput.value.trim(),
       output_dir: el.outputDir.value.trim() || null,
       context_seconds: numericValue(el.contextSeconds),
+      repaint_overlap_seconds: numericValue(el.repaintOverlapSeconds),
       new_section_seconds: numericValue(el.newSeconds),
       bpm: numericValue(el.bpmInput),
       key: el.keyInput.value.trim() || null,
@@ -553,7 +559,7 @@ el.sourceAudio.addEventListener("seeked", () => {
   el.currentTimeReadout.textContent = formatTime(el.sourceAudio.currentTime);
 });
 
-[el.contextSeconds, el.newSeconds].forEach((node) => {
+[el.contextSeconds, el.newSeconds, el.repaintOverlapSeconds].forEach((node) => {
   node.addEventListener("input", updateSelectionReadout);
 });
 

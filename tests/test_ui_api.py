@@ -274,7 +274,18 @@ def test_ui_generate_from_selection_does_not_block_on_app_model_install_status(t
         metadata.write_text("{}", encoding="utf-8")
         return RepaintResult(output_path=generated, metadata_path=metadata, model_name="ACE-Step API")
 
+    def fake_repaint_transition(self, plan, profile, save_dir):
+        generated = output_dir / "repainted.wav"
+        generated.parent.mkdir(parents=True, exist_ok=True)
+        from pydub import AudioSegment
+
+        AudioSegment.silent(duration=5000, frame_rate=44100).export(generated, format="wav")
+        metadata = output_dir / "repainted.json"
+        metadata.write_text("{}", encoding="utf-8")
+        return RepaintResult(output_path=generated, metadata_path=metadata, model_name="ACE-Step API")
+
     monkeypatch.setattr(AceStepApiClient, "text2music", fake_text2music)
+    monkeypatch.setattr(AceStepApiClient, "repaint_transition", fake_repaint_transition)
 
     response = client.post(
         "/api/generate/from-selection",
@@ -409,9 +420,14 @@ def test_ui_generate_from_selection_uses_text2music_and_composite_by_default(tmp
             raw_metadata.write_text("{}", encoding="utf-8")
             return RepaintResult(output_path=raw_audio, metadata_path=raw_metadata, model_name="fake")
 
-        def repaint(self, plan):
+        def repaint_transition(self, plan):
             calls.append(("repaint", plan.transition_id))
-            raise AssertionError("Boundary repaint should not run when repaint margin is 0")
+            final_dir = tmp_path / "final"
+            final_dir.mkdir()
+            final_audio = make_wav(final_dir / "final.wav", duration_ms=2000)
+            final_metadata = final_dir / "final.json"
+            final_metadata.write_text("{}", encoding="utf-8")
+            return RepaintResult(output_path=final_audio, metadata_path=final_metadata, model_name="fake")
 
     source = make_wav(tmp_path / "song.wav", duration_ms=6000)
     output_dir = tmp_path / "out"
@@ -438,9 +454,12 @@ def test_ui_generate_from_selection_uses_text2music_and_composite_by_default(tmp
     assert response.status_code == 200
     payload = response.json()
     assert payload["result"]["status"] == "complete"
-    assert calls == [("text2music", payload["plan"]["transition_id"])]
+    assert calls == [
+        ("text2music", payload["plan"]["transition_id"]),
+        ("repaint", payload["plan"]["transition_id"]),
+    ]
     assert Path(payload["result"]["generated_audio_path"]).exists()
-    assert "composite" in payload["result"]["generated_audio_path"]
+    assert payload["result"]["generated_audio_path"].endswith("final.wav")
 
 
 def test_ui_generate_from_selection_can_boundary_repaint_composite(tmp_path: Path, monkeypatch) -> None:
@@ -461,7 +480,7 @@ def test_ui_generate_from_selection_can_boundary_repaint_composite(tmp_path: Pat
             raw_metadata.write_text("{}", encoding="utf-8")
             return RepaintResult(output_path=raw_audio, metadata_path=raw_metadata, model_name="fake")
 
-        def repaint(self, plan):
+        def repaint_transition(self, plan):
             seen_boundary["start"] = plan.repainting_start_seconds
             seen_boundary["end"] = plan.repainting_end_seconds
             seen_boundary["scaffold_path"] = str(plan.scaffold_path)
@@ -498,7 +517,7 @@ def test_ui_generate_from_selection_can_boundary_repaint_composite(tmp_path: Pat
     payload = response.json()
     assert payload["result"]["status"] == "complete"
     assert seen_boundary["start"] == 2.0
-    assert seen_boundary["end"] == 4.0
+    assert seen_boundary["end"] == 5.0
     assert Path(seen_boundary["scaffold_path"]).exists()
     assert payload["result"]["generated_audio_path"].endswith("final.wav")
 
