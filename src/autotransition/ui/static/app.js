@@ -352,9 +352,9 @@ function updateSelectionReadout() {
   const continuation = Number(el.continuationSlider.value || 0);
   const settings = currentSettings();
   const context = settings.contextSeconds || 0;
-  const overlap = settings.overlapSeconds || 0;
+  const repaintMargin = settings.overlapSeconds || 0;
   const future = settings.newSeconds || 0;
-  const tail = context + overlap;
+  const tail = context;
   const start = continuation - tail;
   const repaintEnd = continuation + future;
   el.continuationReadout.textContent = `Continue at ${formatTime(continuation)}`;
@@ -367,7 +367,7 @@ function updateSelectionReadout() {
     return;
   }
   if (start < 0) {
-    el.contextRange.textContent = `${tail.toFixed(1)}s tail needs marker at ${formatTime(tail)} or later`;
+    el.contextRange.textContent = `${tail.toFixed(1)}s source context needs marker at ${formatTime(tail)} or later`;
     setPill(el.sourceState, "Marker too early", "warn");
     return;
   }
@@ -377,7 +377,9 @@ function updateSelectionReadout() {
     setPill(el.sourceState, "Needs more source", "warn");
     return;
   }
-  el.contextRange.textContent = `Tail: ${formatTime(start)} to ${formatTime(continuation)} (${tail.toFixed(1)}s)`;
+  el.contextRange.textContent =
+    `Source context: ${formatTime(start)} to ${formatTime(continuation)} (${tail.toFixed(1)}s); ` +
+    `ACE repaint starts ${Math.min(repaintMargin, context).toFixed(1)}s before marker`;
   setPill(el.sourceState, "Source loaded", "ok");
 }
 

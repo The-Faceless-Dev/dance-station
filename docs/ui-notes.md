@@ -29,7 +29,7 @@ Preset-level controls:
 Advanced controls:
 
 - Context seconds
-- Repaint overlap seconds
+- ACE-Step repaint margin seconds
 - New section seconds
 - Output format
 - BPM hint

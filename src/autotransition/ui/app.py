@@ -47,7 +47,7 @@ class ScaffoldRequest(BaseModel):
     caption: str | None = None
     output_dir: str | None = None
     context_seconds: float | None = Field(None, gt=0)
-    repaint_overlap_seconds: float | None = Field(None, gt=0)
+    repaint_overlap_seconds: float | None = Field(None, ge=0)
     new_section_seconds: float | None = Field(None, gt=0)
     bpm: float | None = Field(None, gt=0)
     key: str | None = None
@@ -81,6 +81,10 @@ class GenerateSelectionRequest(SelectionScaffoldRequest):
     model_slug: str = "acestep-v15-turbo"
     auto_install: bool = False
     ace_step: AceStepAdvancedSettings | None = None
+
+
+def _setting_or_default(value: Any, default: Any) -> Any:
+    return default if value is None else value
 
 
 def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig | None = None) -> FastAPI:
@@ -274,9 +278,9 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             )
 
         config = TransitionConfig(
-            context_seconds=request.context_seconds or base.context_seconds,
-            repaint_overlap_seconds=request.repaint_overlap_seconds or base.repaint_overlap_seconds,
-            new_section_seconds=request.new_section_seconds or base.new_section_seconds,
+            context_seconds=_setting_or_default(request.context_seconds, base.context_seconds),
+            repaint_overlap_seconds=_setting_or_default(request.repaint_overlap_seconds, base.repaint_overlap_seconds),
+            new_section_seconds=_setting_or_default(request.new_section_seconds, base.new_section_seconds),
             output=output,
             candidate_count=base.candidate_count,
             seed=request.seed if request.seed is not None else base.seed,
@@ -341,9 +345,9 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             )
 
         config = TransitionConfig(
-            context_seconds=request.context_seconds or base.context_seconds,
-            repaint_overlap_seconds=request.repaint_overlap_seconds or base.repaint_overlap_seconds,
-            new_section_seconds=request.new_section_seconds or base.new_section_seconds,
+            context_seconds=_setting_or_default(request.context_seconds, base.context_seconds),
+            repaint_overlap_seconds=_setting_or_default(request.repaint_overlap_seconds, base.repaint_overlap_seconds),
+            new_section_seconds=_setting_or_default(request.new_section_seconds, base.new_section_seconds),
             output=output,
             candidate_count=base.candidate_count,
             seed=request.seed if request.seed is not None else base.seed,
@@ -424,9 +428,9 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             )
 
         config = TransitionConfig(
-            context_seconds=request.context_seconds or base.context_seconds,
-            repaint_overlap_seconds=request.repaint_overlap_seconds or base.repaint_overlap_seconds,
-            new_section_seconds=request.new_section_seconds or base.new_section_seconds,
+            context_seconds=_setting_or_default(request.context_seconds, base.context_seconds),
+            repaint_overlap_seconds=_setting_or_default(request.repaint_overlap_seconds, base.repaint_overlap_seconds),
+            new_section_seconds=_setting_or_default(request.new_section_seconds, base.new_section_seconds),
             output=output,
             candidate_count=base.candidate_count,
             seed=request.seed if request.seed is not None else base.seed,

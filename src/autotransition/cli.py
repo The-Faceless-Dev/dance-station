@@ -268,7 +268,10 @@ def scaffold(
     caption: str | None = typer.Option(None, help="Override the preset caption."),
     output_dir: Path | None = typer.Option(None, help="Directory for scaffold outputs."),
     context_seconds: float | None = typer.Option(None, help="Preserved context before repainting."),
-    repaint_overlap_seconds: float | None = typer.Option(None, help="Seconds before the source ending to repaint."),
+    repaint_overlap_seconds: float | None = typer.Option(
+        None,
+        help="ACE-Step repaint margin in seconds before the source ending.",
+    ),
     new_section_seconds: float | None = typer.Option(None, help="Blank future duration to generate."),
     bpm: float | None = typer.Option(None, help="Optional BPM hint."),
     key: str | None = typer.Option(None, help="Optional key hint."),

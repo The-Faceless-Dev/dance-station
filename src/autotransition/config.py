@@ -50,6 +50,8 @@ class TransitionConfig:
     """User-tunable transition settings."""
 
     context_seconds: float = 16.0
+    # Backward-compatible name. In the ACE-Step request this is the number of
+    # source seconds before the continuation point included in the repaint range.
     repaint_overlap_seconds: float = 4.0
     new_section_seconds: float = 32.0
     output: OutputConfig = OutputConfig()
@@ -61,7 +63,11 @@ class TransitionConfig:
 
     @property
     def tail_seconds(self) -> float:
-        return self.context_seconds + self.repaint_overlap_seconds
+        return self.context_seconds
+
+    @property
+    def repaint_margin_seconds(self) -> float:
+        return self.repaint_overlap_seconds
 
     @property
     def scaffold_seconds(self) -> float:
@@ -69,7 +75,7 @@ class TransitionConfig:
 
     @property
     def repainting_start_seconds(self) -> float:
-        return self.context_seconds
+        return max(0.0, self.context_seconds - self.repaint_margin_seconds)
 
 
 DEFAULT_CONFIG = TransitionConfig()

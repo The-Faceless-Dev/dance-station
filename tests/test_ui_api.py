@@ -154,14 +154,14 @@ def test_ui_selection_scaffold_uses_configured_future_length(tmp_path: Path) -> 
 
     assert response.status_code == 200
     plan = response.json()["plan"]
-    assert plan["tail_start_seconds"] == 1.0
+    assert plan["tail_start_seconds"] == 2.0
     assert plan["tail_end_seconds"] == 4.0
     assert plan["source_format"] == "WAV"
     assert plan["audio_format"] == "wav"
     assert plan["requested_continuation_seconds"] == 5.0
-    assert plan["repainting_end_seconds"] == 8.0
+    assert plan["repainting_end_seconds"] == 7.0
     assert Path(plan["scaffold_path"]).exists()
-    assert len(AudioSegment.from_file(plan["scaffold_path"])) == 3000
+    assert len(AudioSegment.from_file(plan["scaffold_path"])) == 2000
 
 
 def test_ui_selection_scaffold_rejects_early_marker(tmp_path: Path) -> None:
@@ -182,6 +182,28 @@ def test_ui_selection_scaffold_rejects_early_marker(tmp_path: Path) -> None:
 
     assert response.status_code == 400
     assert "too early" in response.json()["detail"]
+
+
+def test_ui_selection_scaffold_honors_zero_repaint_margin(tmp_path: Path) -> None:
+    source = make_wav(tmp_path / "song.wav", duration_ms=6000)
+    client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    response = client.post(
+        "/api/scaffolds/from-selection",
+        json={
+            "source_path": str(source),
+            "preset": "smooth-continuation",
+            "continuation_point_seconds": 4.0,
+            "context_seconds": 2.0,
+            "repaint_overlap_seconds": 0.0,
+            "new_section_seconds": 5.0,
+        },
+    )
+
+    assert response.status_code == 200
+    plan = response.json()["plan"]
+    assert plan["repaint_overlap_seconds"] == 0.0
+    assert plan["repainting_start_seconds"] == 2.0
 
 
 def test_ui_source_upload_accepts_audio_file(tmp_path: Path) -> None:
@@ -239,7 +261,7 @@ def test_ui_generate_from_selection_reports_missing_model(tmp_path: Path) -> Non
     assert "not installed" in payload["result"]["message"]
     assert Path(payload["result"]["scaffold_path"]).exists()
     assert payload["plan"]["requested_continuation_seconds"] == 5.0
-    assert payload["plan"]["repainting_end_seconds"] == 8.0
+    assert payload["plan"]["repainting_end_seconds"] == 7.0
 
 
 def test_ui_generate_from_selection_records_advanced_settings_and_region(tmp_path: Path) -> None:
@@ -271,7 +293,8 @@ def test_ui_generate_from_selection_records_advanced_settings_and_region(tmp_pat
     assert response.status_code == 200
     plan = response.json()["plan"]
     assert plan["generation_region"] == "repaint_existing"
-    assert plan["repainting_end_seconds"] == -1.0
+    assert plan["repainting_start_seconds"] == 1.0
+    assert plan["repainting_end_seconds"] == 7.0
     assert plan["ace_step_settings"]["inference_steps"] == 16
     assert plan["ace_step_settings"]["chunk_mask_mode"] == "auto"
     assert plan["ace_step_settings"]["repaint_mode"] == "aggressive"

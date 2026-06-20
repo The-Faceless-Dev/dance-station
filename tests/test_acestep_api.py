@@ -141,6 +141,8 @@ def test_repaint_uploads_scaffold_as_multipart_file(tmp_path: Path, monkeypatch)
             assert kwargs["data"]["task_type"] == "repaint"
             assert kwargs["data"]["repainting_start"] == "18.0"
             assert kwargs["data"]["repainting_end"] == "57.0"
+            assert kwargs["data"]["lyrics"] == "[Instrumental]"
+            assert kwargs["data"]["vocal_language"] == "unknown"
             assert kwargs["data"]["batch_size"] == "1"
             assert kwargs["data"]["thinking"] == "false"
             assert kwargs["data"]["inference_steps"] == "12"

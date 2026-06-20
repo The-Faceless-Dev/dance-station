@@ -2,12 +2,12 @@
 
 Autotransition is an early-stage pipeline for creating AI-generated music transitions. It is distributed by **The Faceless Dancer** and is intended to become a public, reusable tool for creators, streamers, visualizers, rhythm-game experiments, and other media projects.
 
-The first workflow focuses on ACE-Step-style repaint/outpainting:
+The first workflow focuses on ACE-Step continuation from a selected point in a source song:
 
-1. Take the ending of a source clip.
-2. Append silence for the next section.
-3. Use the combined scaffold as source audio for repaint generation.
-4. Score and export a clean transition-ready result.
+1. Load a source song.
+2. Select the point where new music should continue.
+3. Send ACE-Step real source context, prompt/style guidance, and an explicit repaint range.
+4. Return playable generated candidates for review and export.
 
 ACE-Step runtime integration is managed through the local app command. The transition scaffold is created internally from the selected part of the source song, then sent to ACE-Step for repaint/continuation generation.
 
@@ -85,7 +85,7 @@ Initial presets are intentionally creator-friendly:
 - `genre-shift`
 - `dj-bridge`
 
-Presets set practical defaults for context length, repaint overlap, generated duration, prompt language, and optional BPM/key hints. Advanced users can override these values from the CLI or future UI.
+Presets set practical defaults for source context length, ACE-Step repaint margin before the continuation point, generated duration, prompt language, and optional BPM/key hints. Advanced users can override these values from the CLI or UI.
 
 ## ACE-Step Models
 
