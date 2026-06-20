@@ -36,10 +36,8 @@ const el = {
   continuationSlider: document.querySelector("#continuationSlider"),
   contextRange: document.querySelector("#contextRange"),
   futureRange: document.querySelector("#futureRange"),
-  generationRegion: document.querySelector("#generationRegion"),
   outputDir: document.querySelector("#outputDir"),
   contextSeconds: document.querySelector("#contextSeconds"),
-  overlapSeconds: document.querySelector("#overlapSeconds"),
   newSeconds: document.querySelector("#newSeconds"),
   bpmInput: document.querySelector("#bpmInput"),
   keyInput: document.querySelector("#keyInput"),
@@ -47,11 +45,6 @@ const el = {
   inferenceSteps: document.querySelector("#inferenceSteps"),
   guidanceScale: document.querySelector("#guidanceScale"),
   shiftValue: document.querySelector("#shiftValue"),
-  chunkMaskMode: document.querySelector("#chunkMaskMode"),
-  repaintMode: document.querySelector("#repaintMode"),
-  repaintStrength: document.querySelector("#repaintStrength"),
-  latentCrossfadeFrames: document.querySelector("#latentCrossfadeFrames"),
-  waveCrossfadeSeconds: document.querySelector("#waveCrossfadeSeconds"),
   resetAceDefaultsButton: document.querySelector("#resetAceDefaultsButton"),
   generateButton: document.querySelector("#generateButton"),
   generationActivity: document.querySelector("#generationActivity"),
@@ -118,7 +111,6 @@ function applyPreset(preset) {
   state.selectedPreset = preset;
   el.captionInput.value = preset.caption;
   el.contextSeconds.value = preset.config.context_seconds;
-  el.overlapSeconds.value = preset.config.repaint_overlap_seconds;
   el.newSeconds.value = preset.config.new_section_seconds;
   el.presetSummary.innerHTML = `<strong>${preset.name}</strong><br>${preset.description}`;
   updateSelectionReadout();
@@ -170,21 +162,16 @@ function setNumeric(node, value) {
 }
 
 function applyAceDefaults(model) {
-  const defaults = (model && model.repaint_defaults) || {};
+  const defaults = (model && (model.generation_defaults || model.repaint_defaults)) || {};
   setNumeric(el.inferenceSteps, defaults.inference_steps);
   setNumeric(el.guidanceScale, defaults.guidance_scale);
   setNumeric(el.shiftValue, defaults.shift);
-  el.chunkMaskMode.value = defaults.chunk_mask_mode || "explicit";
-  el.repaintMode.value = defaults.repaint_mode || "balanced";
-  setNumeric(el.repaintStrength, defaults.repaint_strength);
-  setNumeric(el.latentCrossfadeFrames, defaults.repaint_latent_crossfade_frames);
-  setNumeric(el.waveCrossfadeSeconds, defaults.repaint_wav_crossfade_sec);
   state.advancedDirty = false;
 }
 
 function renderStatus(status) {
   setPill(el.ffmpegBadge, status.ffmpeg_available ? "ffmpeg ready" : "ffmpeg missing", status.ffmpeg_available ? "ok" : "error");
-  setPill(el.modelCountBadge, `${status.repaint_model_count} repaint models`, "ok");
+  setPill(el.modelCountBadge, `${status.repaint_model_count} ACE models`, "ok");
   setPill(el.runtimeBadge, `Python ${status.python_version}`, "neutral");
   setPill(el.systemState, "Live", "ok");
   el.systemStatus.innerHTML = `
@@ -303,7 +290,7 @@ function renderGeneratedList() {
         <dt>Message</dt><dd>${result.message}</dd>
         <dt>Mode</dt><dd>${plan.generation_region === "repaint_existing" ? "Repaint existing audio" : "Extend after marker"}</dd>
         <dt>Source</dt><dd>${formatTime(plan.tail_start_seconds)} to ${formatTime(plan.tail_end_seconds)}</dd>
-        <dt>Repaint</dt><dd>${plan.repainting_start_seconds}s to ${plan.repainting_end_seconds > 0 ? `${plan.repainting_end_seconds}s` : "end"}</dd>
+        <dt>Generated</dt><dd>${Number(plan.new_section_seconds || 0).toFixed(1)}s</dd>
         <dt>Output</dt><dd>${outputPath || "None"}</dd>
         <dt>Metadata</dt><dd>${result.generated_metadata_path || result.scaffold_metadata_path}</dd>
         <dt>Prompt</dt><dd>${plan.caption}</dd>
@@ -343,7 +330,6 @@ function numericValue(node) {
 function currentSettings() {
   return {
     contextSeconds: numericValue(el.contextSeconds),
-    overlapSeconds: numericValue(el.overlapSeconds),
     newSeconds: numericValue(el.newSeconds),
   };
 }
@@ -352,16 +338,11 @@ function updateSelectionReadout() {
   const continuation = Number(el.continuationSlider.value || 0);
   const settings = currentSettings();
   const context = settings.contextSeconds || 0;
-  const repaintMargin = settings.overlapSeconds || 0;
   const future = settings.newSeconds || 0;
   const tail = context;
   const start = continuation - tail;
-  const repaintEnd = continuation + future;
   el.continuationReadout.textContent = `Continue at ${formatTime(continuation)}`;
-  el.futureRange.textContent =
-    el.generationRegion.value === "repaint_existing"
-      ? `Repaint existing: ${future.toFixed(1)}s`
-      : `Outpaint future: ${future.toFixed(1)}s`;
+  el.futureRange.textContent = `Generate new section: ${future.toFixed(1)}s`;
   if (!state.sourceProbe) {
     el.contextRange.textContent = "Context not selected";
     return;
@@ -371,15 +352,7 @@ function updateSelectionReadout() {
     setPill(el.sourceState, "Marker too early", "warn");
     return;
   }
-  if (el.generationRegion.value === "repaint_existing" && repaintEnd > state.sourceProbe.duration_seconds) {
-    const available = Math.max(0, state.sourceProbe.duration_seconds - continuation);
-    el.contextRange.textContent = `${future.toFixed(1)}s requested after marker; ${available.toFixed(1)}s available`;
-    setPill(el.sourceState, "Needs more source", "warn");
-    return;
-  }
-  el.contextRange.textContent =
-    `Source context: ${formatTime(start)} to ${formatTime(continuation)} (${tail.toFixed(1)}s); ` +
-    `ACE repaint starts ${Math.min(repaintMargin, context).toFixed(1)}s before marker`;
+  el.contextRange.textContent = `Source context: ${formatTime(start)} to ${formatTime(continuation)} (${tail.toFixed(1)}s)`;
   setPill(el.sourceState, "Source loaded", "ok");
 }
 
@@ -388,11 +361,6 @@ function aceStepSettingsPayload() {
     inference_steps: numericValue(el.inferenceSteps),
     guidance_scale: numericValue(el.guidanceScale),
     shift: numericValue(el.shiftValue),
-    chunk_mask_mode: el.chunkMaskMode.value,
-    repaint_mode: el.repaintMode.value,
-    repaint_strength: numericValue(el.repaintStrength),
-    repaint_latent_crossfade_frames: numericValue(el.latentCrossfadeFrames),
-    repaint_wav_crossfade_sec: numericValue(el.waveCrossfadeSeconds),
   };
 }
 
@@ -471,14 +439,13 @@ async function generateTransition() {
     const payload = {
       source_path: el.sourcePath.value.trim(),
       continuation_point_seconds: Number(el.continuationSlider.value || 0),
-      generation_region: el.generationRegion.value,
+      generation_region: "extend",
       preset: el.presetSelect.value,
       model_slug: state.selectedModel ? state.selectedModel.slug : el.modelSelect.value,
       auto_install: el.autoInstallModel.checked,
       caption: el.captionInput.value.trim(),
       output_dir: el.outputDir.value.trim() || null,
       context_seconds: numericValue(el.contextSeconds),
-      repaint_overlap_seconds: numericValue(el.overlapSeconds),
       new_section_seconds: numericValue(el.newSeconds),
       bpm: numericValue(el.bpmInput),
       key: el.keyInput.value.trim() || null,
@@ -571,7 +538,6 @@ el.copyRuntimeCommandButton.addEventListener("click", async () => {
   showToast("Setup commands copied");
 });
 el.continuationSlider.addEventListener("input", updateSelectionReadout);
-el.generationRegion.addEventListener("change", updateSelectionReadout);
 el.sourceAudio.addEventListener("timeupdate", () => {
   el.currentTimeReadout.textContent = formatTime(el.sourceAudio.currentTime);
 });
@@ -579,7 +545,7 @@ el.sourceAudio.addEventListener("seeked", () => {
   el.currentTimeReadout.textContent = formatTime(el.sourceAudio.currentTime);
 });
 
-[el.contextSeconds, el.overlapSeconds, el.newSeconds].forEach((node) => {
+[el.contextSeconds, el.newSeconds].forEach((node) => {
   node.addEventListener("input", updateSelectionReadout);
 });
 
@@ -587,11 +553,6 @@ el.sourceAudio.addEventListener("seeked", () => {
   el.inferenceSteps,
   el.guidanceScale,
   el.shiftValue,
-  el.chunkMaskMode,
-  el.repaintMode,
-  el.repaintStrength,
-  el.latentCrossfadeFrames,
-  el.waveCrossfadeSeconds,
 ].forEach((node) => {
   node.addEventListener("input", () => {
     state.advancedDirty = true;

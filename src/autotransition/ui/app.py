@@ -27,7 +27,7 @@ from autotransition.models import (
     repaint_capable_models,
     resolve_model_status,
 )
-from autotransition.models.acestep_api import _repaint_defaults_for_profile
+from autotransition.models.acestep_api import _repaint_defaults_for_profile, _text2music_defaults_for_profile
 from autotransition.models.download import local_model_path
 from autotransition.models.status import InstallState
 from autotransition.pipeline import (
@@ -207,7 +207,6 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
                 "caption": preset.caption,
                 "config": {
                     "context_seconds": preset.config.context_seconds,
-                    "repaint_overlap_seconds": preset.config.repaint_overlap_seconds,
                     "new_section_seconds": preset.config.new_section_seconds,
                     "candidate_count": preset.config.candidate_count,
                 },
@@ -231,6 +230,10 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
                     "speed_label": profile.speed_label,
                     "vram_guidance": profile.vram_guidance,
                     "default_inference_steps": profile.default_inference_steps,
+                    "generation_defaults": {
+                        "inference_steps": profile.default_inference_steps,
+                        **_text2music_defaults_for_profile(profile),
+                    },
                     "repaint_defaults": {
                         "inference_steps": profile.default_inference_steps,
                         **_repaint_defaults_for_profile(profile),

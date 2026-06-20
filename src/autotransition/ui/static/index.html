@@ -81,19 +81,8 @@
 
         <div class="control-grid">
           <label class="field">
-            <span>Generation region</span>
-            <select id="generationRegion">
-              <option value="extend">Extend after marker</option>
-              <option value="repaint_existing">Repaint existing audio</option>
-            </select>
-          </label>
-          <label class="field">
             <span>Source context seconds</span>
             <input id="contextSeconds" type="number" min="1" step="0.5" />
-          </label>
-          <label class="field">
-            <span>ACE repaint margin seconds</span>
-            <input id="overlapSeconds" type="number" min="0" step="0.5" />
           </label>
           <label class="field">
             <span>New section seconds</span>
@@ -131,33 +120,6 @@
             <label class="field">
               <span>Shift</span>
               <input id="shiftValue" type="number" min="0" step="0.1" />
-            </label>
-            <label class="field">
-              <span>Mask mode</span>
-              <select id="chunkMaskMode">
-                <option value="explicit">Explicit</option>
-                <option value="auto">Auto</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Repaint mode</span>
-              <select id="repaintMode">
-                <option value="balanced">Balanced</option>
-                <option value="conservative">Conservative</option>
-                <option value="aggressive">Aggressive</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Repaint strength</span>
-              <input id="repaintStrength" type="number" min="0" max="1" step="0.05" />
-            </label>
-            <label class="field">
-              <span>Latent crossfade frames</span>
-              <input id="latentCrossfadeFrames" type="number" min="0" max="200" step="1" />
-            </label>
-            <label class="field">
-              <span>Wave crossfade seconds</span>
-              <input id="waveCrossfadeSeconds" type="number" min="0" max="10" step="0.05" />
             </label>
           </div>
         </details>

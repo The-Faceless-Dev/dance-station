@@ -270,7 +270,7 @@ def scaffold(
     context_seconds: float | None = typer.Option(None, help="Preserved context before repainting."),
     repaint_overlap_seconds: float | None = typer.Option(
         None,
-        help="ACE-Step repaint margin in seconds before the source ending.",
+        help="Deprecated legacy repaint setting; normal continuation generation does not use it.",
     ),
     new_section_seconds: float | None = typer.Option(None, help="Blank future duration to generate."),
     bpm: float | None = typer.Option(None, help="Optional BPM hint."),
