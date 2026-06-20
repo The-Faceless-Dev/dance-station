@@ -18,6 +18,8 @@ build/
 dist/
 
 # Local/generated project data
+AGENTS.md
+docs/
 data/input/
 data/output/
 data/generated/

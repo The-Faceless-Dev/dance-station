@@ -399,6 +399,19 @@ button:disabled {
   accent-color: var(--accent);
 }
 
+.generated-actions {
+  justify-content: flex-start;
+  margin: 2px 0 10px;
+}
+
+.use-source-button {
+  min-height: 34px;
+}
+
+.locked-control {
+  opacity: 0.62;
+}
+
 .empty-result {
   border: 1px dashed var(--line);
   border-radius: 6px;

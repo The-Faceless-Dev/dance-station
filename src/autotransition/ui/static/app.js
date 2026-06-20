@@ -20,8 +20,7 @@ const el = {
   systemState: document.querySelector("#systemState"),
   runtimeState: document.querySelector("#runtimeState"),
   modelState: document.querySelector("#modelState"),
-  presetSelect: document.querySelector("#presetSelect"),
-  presetSummary: document.querySelector("#presetSummary"),
+  promptSummary: document.querySelector("#promptSummary"),
   captionInput: document.querySelector("#captionInput"),
   sourcePath: document.querySelector("#sourcePath"),
   sourceFile: document.querySelector("#sourceFile"),
@@ -55,7 +54,6 @@ const el = {
   generationActivity: document.querySelector("#generationActivity"),
   refreshButton: document.querySelector("#refreshButton"),
   generatedList: document.querySelector("#generatedList"),
-  modelSelect: document.querySelector("#modelSelect"),
   modelDetails: document.querySelector("#modelDetails"),
   autoInstallModel: document.querySelector("#autoInstallModel"),
   installModelButton: document.querySelector("#installModelButton"),
@@ -114,21 +112,16 @@ function option(label, value) {
 
 function applyPreset(preset) {
   state.selectedPreset = preset;
-  el.captionInput.value = preset.caption;
+  if (!el.captionInput.value.trim()) el.captionInput.value = preset.caption;
   el.contextSeconds.value = preset.config.context_seconds;
   el.newSeconds.value = preset.config.new_section_seconds;
   el.repaintOverlapSeconds.value = preset.config.repaint_overlap_seconds;
   if (!el.bpmInput.value) el.bpmInput.value = "120";
   if (!el.keyInput.value.trim()) el.keyInput.value = "C minor";
-  el.presetSummary.innerHTML = `<strong>${preset.name}</strong><br>${preset.description}`;
   updateSelectionReadout();
 }
 
 function renderPresets() {
-  el.presetSelect.replaceChildren();
-  state.presets.forEach((preset) => {
-    el.presetSelect.appendChild(option(preset.name, preset.slug));
-  });
   if (state.presets.length) {
     applyPreset(state.presets[0]);
   }
@@ -139,33 +132,29 @@ function modelTone(model) {
 }
 
 function renderModels() {
-  el.modelSelect.replaceChildren();
-  state.models.forEach((model) => {
-    const label = `${model.display_name} (${model.status.state})`;
-    el.modelSelect.appendChild(option(label, model.slug));
-  });
   if (state.models.length) {
     const preferred =
       state.models.find((model) => model.slug === "acestep-v15-turbo" && model.status.state === "ready") ||
       state.models.find((model) => model.slug === "acestep-v15-turbo") ||
       state.models.find((model) => model.status.state === "ready") ||
       state.models[0];
-    el.modelSelect.value = preferred.slug;
     applyModel(preferred);
   }
 }
 
 function applyModel(model) {
   state.selectedModel = model;
-  setPill(el.modelState, model.status.state.replace("_", " "), modelTone(model));
+  setPill(el.modelState, "Locked", "ok");
   el.modelDetails.innerHTML = [
-    `<strong>${model.display_name}</strong>`,
-    `${model.quality_label} quality, ${model.speed_label.toLowerCase()} profile`,
-    model.vram_guidance,
-    `Repo: ${model.repo_id}`,
-    `Local: ${model.status.local_path}`,
+    "<strong>ACE-Step XL Turbo runtime</strong>",
+    "Generation uses the active ACE-Step runtime path.",
+    "Model selection is locked in this workflow.",
+    `Runtime profile shown: ${model.display_name}`,
+    `Status: ${model.status.state.replace("_", " ")}`,
   ].join("<br>");
-  el.installModelButton.disabled = model.status.state === "ready";
+  el.autoInstallModel.checked = false;
+  el.autoInstallModel.disabled = true;
+  el.installModelButton.disabled = true;
   if (!state.advancedDirty) {
     applyAceDefaults(model);
   }
@@ -304,6 +293,9 @@ function renderGeneratedList() {
         <span>${result.model_slug || "model"}</span>
       </div>
       ${audio}
+      <div class="button-row generated-actions">
+        <button class="secondary-button use-source-button" type="button" ${outputPath ? "" : "disabled"}>Use as Source</button>
+      </div>
       <dl class="path-list">
         <dt>Message</dt><dd>${result.message}</dd>
         <dt>Mode</dt><dd>${plan.generation_region === "repaint_existing" ? "Repaint existing audio" : "Extend after marker"}</dd>
@@ -315,6 +307,10 @@ function renderGeneratedList() {
         <dt>Prompt</dt><dd>${plan.caption}</dd>
       </dl>
     `;
+    const useSourceButton = row.querySelector(".use-source-button");
+    if (useSourceButton && outputPath) {
+      useSourceButton.addEventListener("click", () => useGeneratedAsSource(outputPath));
+    }
     el.generatedList.appendChild(row);
   });
 }
@@ -401,6 +397,24 @@ async function loadProbeIntoPlayer(sourcePath, probe) {
   updateSelectionReadout();
 }
 
+async function useGeneratedAsSource(sourcePath) {
+  setPill(el.sourceState, "Loading", "warn");
+  try {
+    const probe = await api("/api/source/probe", {
+      method: "POST",
+      body: JSON.stringify({ source_path: sourcePath }),
+    });
+    await loadProbeIntoPlayer(sourcePath, probe);
+    el.selectedFileName.textContent = "Generated output";
+    showToast("Generated output loaded as source");
+  } catch (error) {
+    setPill(el.sourceState, "Error", "error");
+    showToast(error.message);
+  } finally {
+    refreshLogs();
+  }
+}
+
 async function loadSource() {
   setPill(el.sourceState, "Loading", "warn");
   el.loadSourceButton.disabled = true;
@@ -465,8 +479,8 @@ async function generateTransition() {
       source_path: el.sourcePath.value.trim(),
       continuation_point_seconds: Number(el.continuationSlider.value || 0),
       generation_region: "extend",
-      preset: el.presetSelect.value,
-      model_slug: state.selectedModel ? state.selectedModel.slug : el.modelSelect.value,
+      preset: state.selectedPreset ? state.selectedPreset.slug : "smooth-continuation",
+      model_slug: state.selectedModel ? state.selectedModel.slug : "acestep-v15-turbo",
       auto_install: el.autoInstallModel.checked,
       caption: el.captionInput.value.trim(),
       output_dir: el.outputDir.value.trim() || null,
@@ -521,11 +535,10 @@ async function installModel() {
 
 async function refreshModels() {
   state.models = await api("/api/models");
-  const selectedSlug = el.modelSelect.value || (state.selectedModel && state.selectedModel.slug);
+  const selectedSlug = state.selectedModel && state.selectedModel.slug;
   renderModels();
   const selected = state.models.find((model) => model.slug === selectedSlug);
   if (selected) {
-    el.modelSelect.value = selected.slug;
     applyModel(selected);
   }
 }
@@ -542,16 +555,6 @@ async function refreshStatus() {
   await refreshLogs();
   showToast("Status refreshed");
 }
-
-el.presetSelect.addEventListener("change", () => {
-  const preset = state.presets.find((item) => item.slug === el.presetSelect.value);
-  if (preset) applyPreset(preset);
-});
-
-el.modelSelect.addEventListener("change", () => {
-  const model = state.models.find((item) => item.slug === el.modelSelect.value);
-  if (model) applyModel(model);
-});
 
 el.generateButton.addEventListener("click", generateTransition);
 el.loadSourceButton.addEventListener("click", loadSource);

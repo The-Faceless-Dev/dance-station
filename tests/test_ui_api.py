@@ -145,6 +145,19 @@ def test_ui_source_audio_endpoint_serves_file(tmp_path: Path) -> None:
     assert response.content
 
 
+def test_ui_generated_audio_can_be_loaded_as_next_source(tmp_path: Path) -> None:
+    generated = make_wav(tmp_path / "generated-transition.wav", duration_ms=2500)
+    client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    probe = client.post("/api/source/probe", json={"source_path": str(generated)})
+    audio = client.get("/api/source/audio", params={"path": str(generated)})
+
+    assert probe.status_code == 200
+    assert probe.json()["duration_seconds"] == 2.5
+    assert audio.status_code == 200
+    assert audio.content
+
+
 def test_ui_selection_scaffold_uses_configured_future_length(tmp_path: Path) -> None:
     from pydub import AudioSegment
 

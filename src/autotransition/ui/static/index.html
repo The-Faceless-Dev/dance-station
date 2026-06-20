@@ -61,16 +61,11 @@
         </div>
 
         <label class="field">
-          <span>Preset</span>
-          <select id="presetSelect"></select>
-        </label>
-
-        <label class="field">
           <span>Target prompt</span>
           <textarea id="captionInput" rows="7"></textarea>
         </label>
 
-        <div id="presetSummary" class="summary"></div>
+        <div id="promptSummary" class="summary">Prompt is sent to both the initial generation and the ACE repaint pass.</div>
       </section>
 
       <section class="panel settings-panel">
@@ -174,13 +169,8 @@
             <span id="modelState" class="mini-state">Checking</span>
           </div>
 
-          <label class="field">
-            <span>ACE-Step profile</span>
-            <select id="modelSelect"></select>
-          </label>
-
           <div id="modelDetails" class="summary"></div>
-          <label class="check-field">
+          <label class="check-field locked-control">
             <input id="autoInstallModel" type="checkbox" />
             <span>Install selected model automatically when needed</span>
           </label>
