@@ -10,6 +10,7 @@ from autotransition.models.acestep_api import (
     _extract_task_result,
     _raise_api_status,
     _repaint_defaults_for_profile,
+    _text2music_defaults_for_profile,
 )
 from autotransition.models.registry import get_model_profile
 from autotransition.pipeline import SourceSelectionPlan
@@ -79,6 +80,14 @@ def test_repaint_defaults_use_faster_turbo_settings() -> None:
     assert defaults["guidance_scale"] == 1.0
     assert defaults["repaint_strength"] == 0.5
     assert defaults["repaint_latent_crossfade_frames"] == 16
+
+
+def test_text2music_defaults_do_not_include_repaint_controls() -> None:
+    defaults = _text2music_defaults_for_profile(get_model_profile("acestep-v15-turbo"))
+
+    assert defaults["guidance_scale"] == 1.0
+    assert "chunk_mask_mode" not in defaults
+    assert "repaint_strength" not in defaults
 
 
 def test_repaint_uploads_scaffold_as_multipart_file(tmp_path: Path, monkeypatch) -> None:
@@ -171,6 +180,98 @@ def test_repaint_uploads_scaffold_as_multipart_file(tmp_path: Path, monkeypatch)
 
     assert result.output_path.read_bytes() == b"generated"
     assert any(call[1].endswith("/release_task") for call in calls)
+
+
+def test_text2music_generates_prompted_section_without_source_audio(tmp_path: Path, monkeypatch) -> None:
+    scaffold = tmp_path / "scaffold.wav"
+    scaffold.write_bytes(b"audio")
+    plan = SourceSelectionPlan(
+        transition_id="test-generation",
+        source_path=tmp_path / "source.mp3",
+        source_extension=".mp3",
+        source_format="MP3",
+        source_duration_seconds=60.0,
+        continuation_point_seconds=30.0,
+        tail_start_seconds=12.0,
+        tail_end_seconds=30.0,
+        scaffold_path=scaffold,
+        metadata_path=tmp_path / "metadata.json",
+        caption="instrumental cinematic horror",
+        context_seconds=18.0,
+        repaint_overlap_seconds=3.0,
+        new_section_seconds=36.0,
+        requested_continuation_seconds=36.0,
+        effective_continuation_seconds=None,
+        repainting_start_seconds=15.0,
+        repainting_end_seconds=54.0,
+        audio_format="wav",
+        bpm_hint=120.0,
+        key_hint="A minor",
+        seed=42,
+        ace_step_settings={
+            "inference_steps": 16,
+            "guidance_scale": 2.0,
+            "chunk_mask_mode": "auto",
+            "repaint_strength": 0.8,
+        },
+    )
+    calls = []
+
+    class Response:
+        def __init__(self, body, status_code=200, content=b"") -> None:
+            self._body = body
+            self.status_code = status_code
+            self.content = content
+            self.text = str(body)
+
+        def json(self):
+            return self._body
+
+    def fake_get(url, **kwargs):
+        calls.append(("get", url, kwargs))
+        if url.endswith("/v1/models"):
+            return Response({"data": {"models": [{"name": "acestep-v15-turbo"}]}})
+        if url.endswith("/v1/audio"):
+            return Response({}, content=b"generated")
+        return Response({})
+
+    def fake_post(url, **kwargs):
+        calls.append(("post", url, kwargs))
+        if url.endswith("/v1/init"):
+            assert kwargs["json"] == {"model": "acestep-v15-turbo", "init_llm": True}
+            return Response({})
+        if url.endswith("/release_task"):
+            assert "files" not in kwargs or kwargs["files"] is None
+            assert kwargs["data"]["task_type"] == "text2music"
+            assert kwargs["data"]["thinking"] == "true"
+            assert kwargs["data"]["prompt"] == "instrumental cinematic horror"
+            assert kwargs["data"]["lyrics"] == "[Instrumental]"
+            assert kwargs["data"]["vocal_language"] == "unknown"
+            assert kwargs["data"]["audio_duration"] == "36.0"
+            assert kwargs["data"]["use_random_seed"] == "false"
+            assert kwargs["data"]["seed"] == "42"
+            assert kwargs["data"]["bpm"] == "120"
+            assert kwargs["data"]["key_scale"] == "A minor"
+            assert kwargs["data"]["inference_steps"] == "16"
+            assert kwargs["data"]["guidance_scale"] == "2.0"
+            assert "chunk_mask_mode" not in kwargs["data"]
+            assert "repaint_strength" not in kwargs["data"]
+            return Response({"data": {"task_id": "task-1"}})
+        if url.endswith("/query_result"):
+            return Response({"data": [{"task_id": "task-1", "status": 1, "file": "generated.wav"}]})
+        return Response({})
+
+    fake_httpx = SimpleNamespace(get=fake_get, post=fake_post)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    result = AceStepApiClient(RuntimeConfig()).text2music(
+        plan=plan,
+        profile=get_model_profile("acestep-v15-turbo"),
+        save_dir=tmp_path / "generated",
+    )
+
+    assert result.output_path.read_bytes() == b"generated"
+    assert any(call[1].endswith("/v1/init") for call in calls)
 
 
 def test_repaint_initializes_when_model_list_is_non_json(tmp_path: Path, monkeypatch) -> None:

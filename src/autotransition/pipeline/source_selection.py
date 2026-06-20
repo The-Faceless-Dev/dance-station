@@ -58,6 +58,10 @@ class SourceSelectionPlan:
         data["metadata_path"] = str(self.metadata_path)
         return data
 
+    @property
+    def repaint_margin_seconds(self) -> float:
+        return self.repaint_overlap_seconds
+
 
 def create_source_selection_plan(request: SourceSelectionRequest) -> SourceSelectionPlan:
     from autotransition.audio.formats import source_extension, source_format_label

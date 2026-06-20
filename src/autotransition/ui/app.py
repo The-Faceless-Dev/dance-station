@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from autotransition.audio import build_repaint_scaffold, build_selection_scaffold, probe_audio
+from autotransition.audio import build_continuation_composite, build_repaint_scaffold, build_selection_scaffold, probe_audio
 from autotransition.audio.formats import DEFAULT_SCAFFOLD_FORMAT, SUPPORTED_INPUT_FORMATS, validate_supported_source
 from autotransition.config import OutputConfig, RuntimeConfig, TransitionConfig
 from autotransition.generation import GenerationResult, GenerationStatus
@@ -31,6 +31,7 @@ from autotransition.models.acestep_api import _repaint_defaults_for_profile
 from autotransition.models.download import local_model_path
 from autotransition.models.status import InstallState
 from autotransition.pipeline import (
+    SourceSelectionPlan,
     SourceSelectionRequest,
     TransitionRequest,
     create_scaffold_plan,
@@ -504,13 +505,70 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
                 return {"result": result.to_dict(), "plan": plan.to_dict()}
 
         try:
-            ui_log.add("info", f"Running ACE-Step repaint with model '{profile.slug}'.")
+            ui_log.add("info", f"Running ACE-Step text-to-music continuation with model '{profile.slug}'.")
             adapter = AceStepRepaintAdapter(
                 profile=profile,
                 model_path=local_model_path(profile, models_dir),
                 runtime_config=runtime_config,
             )
-            repaint_result = adapter.repaint(plan)
+            raw_generation = adapter.text2music(plan)
+            composite_dir = output.generated_dir / generation_id
+            composite_path = composite_dir / f"{generation_id}-composite.{plan.audio_format}"
+            composite_metadata_path = composite_dir / "composite.json"
+            ui_log.add("info", "Stitching generated section after the selected source point.")
+            build_continuation_composite(
+                source_path=plan.source_path,
+                generated_path=raw_generation.output_path,
+                output_path=composite_path,
+                continuation_point_seconds=plan.continuation_point_seconds,
+                output_format=plan.audio_format,
+            )
+            composite_metadata = {
+                "generation_id": generation_id,
+                "raw_generated_audio_path": str(raw_generation.output_path),
+                "raw_generated_metadata_path": str(raw_generation.metadata_path),
+                "composite_audio_path": str(composite_path),
+                "continuation_point_seconds": plan.continuation_point_seconds,
+                "new_section_seconds": plan.new_section_seconds,
+                "boundary_repaint": False,
+            }
+            composite_metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            composite_metadata_path.write_text(json.dumps(composite_metadata, indent=2), encoding="utf-8")
+
+            final_audio_path = composite_path
+            final_metadata_path = composite_metadata_path
+            if plan.repaint_margin_seconds > 0:
+                boundary_start = max(0.0, plan.continuation_point_seconds - plan.repaint_margin_seconds)
+                boundary_end = min(
+                    plan.continuation_point_seconds + plan.repaint_margin_seconds,
+                    plan.continuation_point_seconds + plan.new_section_seconds,
+                )
+                ui_log.add(
+                    "info",
+                    f"Running ACE-Step boundary repaint from {boundary_start:.2f}s to {boundary_end:.2f}s.",
+                )
+                boundary_plan = SourceSelectionPlan(
+                    **{
+                        **plan.to_dict(),
+                        "source_path": plan.source_path,
+                        "scaffold_path": composite_path,
+                        "metadata_path": composite_metadata_path,
+                        "tail_start_seconds": 0.0,
+                        "tail_end_seconds": plan.continuation_point_seconds + plan.new_section_seconds,
+                        "repainting_start_seconds": boundary_start,
+                        "repainting_end_seconds": boundary_end,
+                        "generation_region": "repaint_existing",
+                    }
+                )
+                boundary_result = adapter.repaint(boundary_plan)
+                final_audio_path = boundary_result.output_path
+                final_metadata_path = boundary_result.metadata_path
+                composite_metadata["boundary_repaint"] = True
+                composite_metadata["boundary_repaint_start_seconds"] = boundary_start
+                composite_metadata["boundary_repaint_end_seconds"] = boundary_end
+                composite_metadata["boundary_repaint_audio_path"] = str(boundary_result.output_path)
+                composite_metadata["boundary_repaint_metadata_path"] = str(boundary_result.metadata_path)
+                composite_metadata_path.write_text(json.dumps(composite_metadata, indent=2), encoding="utf-8")
         except AceStepRuntimeError as exc:
             ui_log.add("error", str(exc))
             result = GenerationResult(
@@ -530,10 +588,10 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             model_slug=profile.slug,
             scaffold_path=plan.scaffold_path,
             scaffold_metadata_path=plan.metadata_path,
-            generated_audio_path=repaint_result.output_path,
-            generated_metadata_path=repaint_result.metadata_path,
+            generated_audio_path=final_audio_path,
+            generated_metadata_path=final_metadata_path,
         )
-        ui_log.add("info", f"Generated transition: {repaint_result.output_path}")
+        ui_log.add("info", f"Generated transition: {final_audio_path}")
         return {"result": result.to_dict(), "plan": plan.to_dict()}
 
     @app.get("/api/logs")

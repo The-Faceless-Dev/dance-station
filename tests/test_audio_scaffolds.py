@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from autotransition.audio import build_repaint_scaffold, build_selection_scaffold
+from autotransition.audio import build_continuation_composite, build_repaint_scaffold, build_selection_scaffold
 
 
 def make_stereo_wav(path: Path, duration_ms: int = 3000) -> Path:
@@ -88,3 +88,22 @@ def test_selection_scaffold_can_include_existing_target_audio(tmp_path: Path) ->
 
     assert len(scaffold) == 3000
     assert scaffold.channels == 2
+
+
+def test_continuation_composite_appends_generated_audio_at_marker(tmp_path: Path) -> None:
+    from pydub import AudioSegment
+
+    source = make_stereo_wav(tmp_path / "source.wav", duration_ms=4000)
+    generated = make_stereo_wav(tmp_path / "generated.wav", duration_ms=1500)
+
+    output = build_continuation_composite(
+        source_path=source,
+        generated_path=generated,
+        output_path=tmp_path / "composite.wav",
+        continuation_point_seconds=2.0,
+    )
+
+    composite = AudioSegment.from_file(output)
+
+    assert len(composite) == 3500
+    assert composite.channels == 2

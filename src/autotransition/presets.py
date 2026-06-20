@@ -27,7 +27,7 @@ PRESETS: dict[str, TransitionPreset] = {
             "Continue from the existing ending. Keep the same groove, energy, "
             "tempo, and key at first, then develop into a polished next section."
         ),
-        config=TransitionConfig(context_seconds=18.0, repaint_overlap_seconds=3.0, new_section_seconds=36.0),
+        config=TransitionConfig(context_seconds=18.0, repaint_overlap_seconds=0.0, new_section_seconds=36.0),
     ),
     "energy-build": TransitionPreset(
         slug="energy-build",
@@ -37,7 +37,7 @@ PRESETS: dict[str, TransitionPreset] = {
             "Continue from the existing ending and build energy with stronger drums, "
             "rising movement, and a clean transition into a more intense section."
         ),
-        config=TransitionConfig(context_seconds=16.0, repaint_overlap_seconds=5.0, new_section_seconds=40.0),
+        config=TransitionConfig(context_seconds=16.0, repaint_overlap_seconds=0.0, new_section_seconds=40.0),
     ),
     "breakdown": TransitionPreset(
         slug="breakdown",
@@ -47,7 +47,7 @@ PRESETS: dict[str, TransitionPreset] = {
             "Continue from the existing ending and transition into a spacious breakdown "
             "with reduced drums, clear atmosphere, and musical continuity."
         ),
-        config=TransitionConfig(context_seconds=18.0, repaint_overlap_seconds=5.0, new_section_seconds=36.0),
+        config=TransitionConfig(context_seconds=18.0, repaint_overlap_seconds=0.0, new_section_seconds=36.0),
     ),
     "genre-shift": TransitionPreset(
         slug="genre-shift",
@@ -57,7 +57,7 @@ PRESETS: dict[str, TransitionPreset] = {
             "Continue from the existing ending. Preserve the tempo and musical center at first, "
             "then transition into the target style with a smooth bridge."
         ),
-        config=TransitionConfig(context_seconds=20.0, repaint_overlap_seconds=6.0, new_section_seconds=48.0),
+        config=TransitionConfig(context_seconds=20.0, repaint_overlap_seconds=0.0, new_section_seconds=48.0),
     ),
     "dj-bridge": TransitionPreset(
         slug="dj-bridge",
@@ -67,7 +67,7 @@ PRESETS: dict[str, TransitionPreset] = {
             "Continue from the existing ending with a DJ-friendly transition, steady beat, "
             "clean downbeats, and a mixable intro for the next section."
         ),
-        config=TransitionConfig(context_seconds=24.0, repaint_overlap_seconds=4.0, new_section_seconds=48.0),
+        config=TransitionConfig(context_seconds=24.0, repaint_overlap_seconds=0.0, new_section_seconds=48.0),
     ),
 }
 

@@ -61,14 +61,52 @@ class AceStepApiClient:
             payload["key_scale"] = plan.key_hint
 
         with plan.scaffold_path.open("rb") as scaffold_file:
-            release = _request(
-                "post",
-                f"{self.config.api_base_url}/release_task",
-                "release_task",
-                data=_stringify_form_fields(payload),
+            return self._submit_and_wait(
+                payload=payload,
+                save_dir=save_dir,
                 files={"src_audio": (plan.scaffold_path.name, scaffold_file, "audio/wav")},
-                timeout=self.config.generation_timeout_seconds,
             )
+
+    def text2music(self, plan: SourceSelectionPlan, profile: ModelProfile, save_dir: Path) -> RepaintResult:
+        self._ensure_model(profile, init_llm=True)
+        payload: dict[str, Any] = {
+            "task_type": "text2music",
+            "prompt": plan.caption,
+            "lyrics": "[Instrumental]",
+            "vocal_language": "unknown",
+            "model": profile.slug,
+            "audio_duration": plan.requested_continuation_seconds,
+            "audio_format": plan.audio_format,
+            "batch_size": 1,
+            "inference_steps": profile.default_inference_steps,
+            "thinking": True,
+        }
+        payload.update(_text2music_defaults_for_profile(profile))
+        payload.update(_filter_settings(plan.ace_step_settings, {"inference_steps", "guidance_scale", "shift"}))
+        if plan.seed is not None:
+            payload["use_random_seed"] = False
+            payload["seed"] = plan.seed
+        if plan.bpm_hint is not None:
+            payload["bpm"] = int(plan.bpm_hint)
+        if plan.key_hint:
+            payload["key_scale"] = plan.key_hint
+
+        return self._submit_and_wait(payload=payload, save_dir=save_dir)
+
+    def _submit_and_wait(
+        self,
+        payload: dict[str, Any],
+        save_dir: Path,
+        files: dict[str, Any] | None = None,
+    ) -> RepaintResult:
+        release = _request(
+            "post",
+            f"{self.config.api_base_url}/release_task",
+            "release_task",
+            data=_stringify_form_fields(payload),
+            files=files,
+            timeout=self.config.generation_timeout_seconds,
+        )
         _raise_api_status(release, "release_task")
         release_body = _response_json(release, "release_task")
         if release_body.get("error"):
@@ -129,7 +167,7 @@ class AceStepApiClient:
 
         return RepaintResult(output_path=output_path, metadata_path=metadata_path, model_name="ACE-Step API")
 
-    def _ensure_model(self, profile: ModelProfile) -> None:
+    def _ensure_model(self, profile: ModelProfile, init_llm: bool = False) -> None:
         import httpx
         from autotransition.runtime.checkpoints import repair_incomplete_checkpoint
 
@@ -153,7 +191,7 @@ class AceStepApiClient:
             for item in model_items
             if isinstance(item, dict) and isinstance(item.get("name"), str)
         }
-        if profile.slug in available:
+        if profile.slug in available and not init_llm:
             return
 
         repair = repair_incomplete_checkpoint(profile, self.config)
@@ -164,7 +202,7 @@ class AceStepApiClient:
             "post",
             f"{self.config.api_base_url}/v1/init",
             "v1/init",
-            json={"model": profile.slug, "init_llm": False},
+            json={"model": profile.slug, "init_llm": init_llm},
             timeout=self.config.generation_timeout_seconds,
         )
         _raise_api_status(init, "v1/init")
@@ -246,6 +284,10 @@ def _stringify_form_fields(payload: dict[str, Any]) -> dict[str, str]:
     return fields
 
 
+def _filter_settings(settings: dict[str, object], allowed: set[str]) -> dict[str, object]:
+    return {key: value for key, value in settings.items() if key in allowed}
+
+
 def _repaint_defaults_for_profile(profile: ModelProfile) -> dict[str, Any]:
     is_turbo = "turbo" in profile.slug
     common = {
@@ -268,6 +310,18 @@ def _repaint_defaults_for_profile(profile: ModelProfile) -> dict[str, Any]:
         "shift": 3.0,
         "repaint_latent_crossfade_frames": 24,
         "repaint_wav_crossfade_sec": 0.5,
+    }
+
+
+def _text2music_defaults_for_profile(profile: ModelProfile) -> dict[str, Any]:
+    if "turbo" in profile.slug:
+        return {
+            "guidance_scale": 1.0,
+            "shift": 3.0,
+        }
+    return {
+        "guidance_scale": 7.0,
+        "shift": 3.0,
     }
 
 

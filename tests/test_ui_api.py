@@ -357,6 +357,119 @@ def test_ui_generate_from_selection_reports_missing_runtime_when_model_ready(tmp
     assert Path(result["scaffold_metadata_path"]).exists()
 
 
+def test_ui_generate_from_selection_uses_text2music_and_composite_by_default(tmp_path: Path, monkeypatch) -> None:
+    import autotransition.ui.app as ui_app
+    from autotransition.models.base import RepaintResult
+
+    calls = []
+
+    class Adapter:
+        def __init__(self, profile, model_path, runtime_config=None) -> None:
+            pass
+
+        def text2music(self, plan):
+            calls.append(("text2music", plan.transition_id))
+            raw_dir = tmp_path / "raw"
+            raw_dir.mkdir()
+            raw_audio = make_wav(raw_dir / "raw.wav", duration_ms=1000)
+            raw_metadata = raw_dir / "raw.json"
+            raw_metadata.write_text("{}", encoding="utf-8")
+            return RepaintResult(output_path=raw_audio, metadata_path=raw_metadata, model_name="fake")
+
+        def repaint(self, plan):
+            calls.append(("repaint", plan.transition_id))
+            raise AssertionError("Boundary repaint should not run when repaint margin is 0")
+
+    source = make_wav(tmp_path / "song.wav", duration_ms=6000)
+    output_dir = tmp_path / "out"
+    model_dir = tmp_path / "models" / "acestep-v15-turbo"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.safetensors").write_text("fake", encoding="utf-8")
+    monkeypatch.setattr(ui_app, "AceStepRepaintAdapter", Adapter)
+    client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    response = client.post(
+        "/api/generate/from-selection",
+        json={
+            "source_path": str(source),
+            "preset": "smooth-continuation",
+            "model_slug": "acestep-v15-turbo",
+            "output_dir": str(output_dir),
+            "continuation_point_seconds": 2.0,
+            "context_seconds": 1.0,
+            "repaint_overlap_seconds": 0.0,
+            "new_section_seconds": 1.0,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["result"]["status"] == "complete"
+    assert calls == [("text2music", payload["plan"]["transition_id"])]
+    assert Path(payload["result"]["generated_audio_path"]).exists()
+    assert "composite" in payload["result"]["generated_audio_path"]
+
+
+def test_ui_generate_from_selection_can_boundary_repaint_composite(tmp_path: Path, monkeypatch) -> None:
+    import autotransition.ui.app as ui_app
+    from autotransition.models.base import RepaintResult
+
+    seen_boundary = {}
+
+    class Adapter:
+        def __init__(self, profile, model_path, runtime_config=None) -> None:
+            pass
+
+        def text2music(self, plan):
+            raw_dir = tmp_path / "raw-boundary"
+            raw_dir.mkdir()
+            raw_audio = make_wav(raw_dir / "raw.wav", duration_ms=2000)
+            raw_metadata = raw_dir / "raw.json"
+            raw_metadata.write_text("{}", encoding="utf-8")
+            return RepaintResult(output_path=raw_audio, metadata_path=raw_metadata, model_name="fake")
+
+        def repaint(self, plan):
+            seen_boundary["start"] = plan.repainting_start_seconds
+            seen_boundary["end"] = plan.repainting_end_seconds
+            seen_boundary["scaffold_path"] = str(plan.scaffold_path)
+            final_dir = tmp_path / "final-boundary"
+            final_dir.mkdir()
+            final_audio = make_wav(final_dir / "final.wav", duration_ms=4000)
+            final_metadata = final_dir / "final.json"
+            final_metadata.write_text("{}", encoding="utf-8")
+            return RepaintResult(output_path=final_audio, metadata_path=final_metadata, model_name="fake")
+
+    source = make_wav(tmp_path / "song.wav", duration_ms=6000)
+    output_dir = tmp_path / "out"
+    model_dir = tmp_path / "models" / "acestep-v15-turbo"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.safetensors").write_text("fake", encoding="utf-8")
+    monkeypatch.setattr(ui_app, "AceStepRepaintAdapter", Adapter)
+    client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    response = client.post(
+        "/api/generate/from-selection",
+        json={
+            "source_path": str(source),
+            "preset": "smooth-continuation",
+            "model_slug": "acestep-v15-turbo",
+            "output_dir": str(output_dir),
+            "continuation_point_seconds": 3.0,
+            "context_seconds": 1.0,
+            "repaint_overlap_seconds": 1.0,
+            "new_section_seconds": 2.0,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["result"]["status"] == "complete"
+    assert seen_boundary["start"] == 2.0
+    assert seen_boundary["end"] == 4.0
+    assert Path(seen_boundary["scaffold_path"]).exists()
+    assert payload["result"]["generated_audio_path"].endswith("final.wav")
+
+
 def test_ui_generate_from_selection_passes_configured_runtime_port(tmp_path: Path, monkeypatch) -> None:
     import autotransition.ui.app as ui_app
 
@@ -366,7 +479,7 @@ def test_ui_generate_from_selection_passes_configured_runtime_port(tmp_path: Pat
         def __init__(self, profile, model_path, runtime_config=None) -> None:
             seen_ports.append(runtime_config.api_port)
 
-        def repaint(self, plan):
+        def text2music(self, plan):
             from autotransition.models import AceStepRuntimeError
 
             raise AceStepRuntimeError("stop after config capture")

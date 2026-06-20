@@ -29,8 +29,8 @@ Preset-level controls:
 Advanced controls:
 
 - Context seconds
-- ACE-Step repaint margin seconds
 - New section seconds
+- ACE-Step repaint margin seconds
 - Output format
 - BPM hint
 - Key hint
@@ -38,6 +38,8 @@ Advanced controls:
 - Candidate count
 - Model path/profile
 - Scoring rules
+
+ACE-Step repaint margin should default to 0. Repaint is an optional boundary-smoothing step, not the primary generator for the new section.
 
 ## Product Direction
 

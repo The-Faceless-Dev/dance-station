@@ -6,8 +6,10 @@ The first workflow focuses on ACE-Step continuation from a selected point in a s
 
 1. Load a source song.
 2. Select the point where new music should continue.
-3. Send ACE-Step real source context, prompt/style guidance, and an explicit repaint range.
-4. Return playable generated candidates for review and export.
+3. Generate a new prompted section with ACE-Step text-to-music.
+4. Stitch the generated section after the selected point.
+5. Optionally repaint only the boundary region when ACE repaint margin is enabled.
+6. Return playable generated candidates for review and export.
 
 ACE-Step runtime integration is managed through the local app command. The transition scaffold is created internally from the selected part of the source song, then sent to ACE-Step for repaint/continuation generation.
 
@@ -85,7 +87,7 @@ Initial presets are intentionally creator-friendly:
 - `genre-shift`
 - `dj-bridge`
 
-Presets set practical defaults for source context length, ACE-Step repaint margin before the continuation point, generated duration, prompt language, and optional BPM/key hints. Advanced users can override these values from the CLI or UI.
+Presets set practical defaults for source context length, generated duration, prompt language, and optional BPM/key hints. ACE-Step repaint margin defaults to `0` so repaint is not used as the main content generator; advanced users can enable it for boundary smoothing from the CLI or UI.
 
 ## ACE-Step Models
 
