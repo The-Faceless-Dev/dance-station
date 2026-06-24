@@ -275,7 +275,7 @@
           </label>
           <label class="field">
             <span>Shift</span>
-            <input id="extractShift" type="number" min="0" step="0.1" value="3" />
+            <input id="extractShift" type="number" min="0" step="0.1" value="1" />
           </label>
         </div>
 
@@ -299,6 +299,45 @@
       </section>
 
       <aside class="side-stack">
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>Base Test</h2>
+            <span id="baseTestState" class="mini-state">Ready</span>
+          </div>
+
+          <label class="field">
+            <span>Prompt</span>
+            <textarea id="baseTestPrompt" rows="3" placeholder="suspenseful cinematic horror theme, dark ambient strings, low percussion"></textarea>
+          </label>
+
+          <div class="control-grid">
+            <label class="field">
+              <span>Duration seconds</span>
+              <input id="baseTestDuration" type="number" min="10" max="120" step="1" value="30" />
+            </label>
+            <label class="field">
+              <span>Inference steps</span>
+              <input id="baseTestInferenceSteps" type="number" min="1" max="200" step="1" value="50" />
+            </label>
+            <label class="field">
+              <span>Guidance scale</span>
+              <input id="baseTestGuidanceScale" type="number" min="0" step="0.1" value="7" />
+            </label>
+            <label class="field">
+              <span>Shift</span>
+              <input id="baseTestShift" type="number" min="0" step="0.1" value="1" />
+            </label>
+            <label class="field">
+              <span>Seed</span>
+              <input id="baseTestSeed" type="number" step="1" placeholder="optional" />
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button id="runBaseTestButton" class="secondary-button" type="button">Generate Base Test</button>
+          </div>
+        </section>
+
         <section class="panel">
           <div class="panel-heading">
             <h2>ACE Runtime</h2>

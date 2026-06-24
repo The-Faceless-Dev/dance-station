@@ -60,7 +60,7 @@ def test_ui_models_endpoint_exposes_working_xl_base_generation_defaults(tmp_path
     xl_base = next(model for model in models if model["slug"] == "acestep-v15-xl-base")
     assert xl_base["generation_defaults"]["inference_steps"] == 50
     assert xl_base["generation_defaults"]["guidance_scale"] == 7.0
-    assert xl_base["generation_defaults"]["shift"] == 3.0
+    assert xl_base["generation_defaults"]["shift"] == 1.0
 
 
 def test_ui_runtime_status_endpoint_returns_setup_commands(tmp_path: Path) -> None:
@@ -185,7 +185,7 @@ def test_ui_run_extraction_writes_history(tmp_path: Path, monkeypatch) -> None:
         audio_format="flac",
         inference_steps=50,
         guidance_scale=7.0,
-        shift=3.0,
+        shift=1.0,
         seed=None,
         instruction=None,
     ):
@@ -210,7 +210,7 @@ def test_ui_run_extraction_writes_history(tmp_path: Path, monkeypatch) -> None:
             "output_format": "flac",
             "inference_steps": 32,
             "guidance_scale": 7.0,
-            "shift": 3.0,
+            "shift": 1.0,
         },
     )
     history = client.get("/api/extractions")
@@ -222,6 +222,60 @@ def test_ui_run_extraction_writes_history(tmp_path: Path, monkeypatch) -> None:
     assert Path(extraction["generated_audio_path"]).exists()
     assert history.status_code == 200
     assert history.json()[0]["extraction_id"] == extraction["extraction_id"]
+
+
+def test_ui_base_generation_test_writes_playable_history(tmp_path: Path, monkeypatch) -> None:
+    from autotransition.models.acestep_api import AceStepApiClient
+    from autotransition.models.base import RepaintResult
+
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    def fake_base_test(
+        self,
+        *,
+        prompt,
+        save_dir,
+        audio_duration=30.0,
+        audio_format="flac",
+        inference_steps=50,
+        guidance_scale=7.0,
+        shift=1.0,
+        seed=None,
+    ):
+        assert prompt == "dark strings"
+        assert audio_duration == 30.0
+        assert inference_steps == 50
+        assert guidance_scale == 7.0
+        assert shift == 1.0
+        output = save_dir / "base.flac"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"audio")
+        metadata = save_dir / "base.json"
+        metadata.write_text("{}", encoding="utf-8")
+        return RepaintResult(output_path=output, metadata_path=metadata, model_name="ACE-Step API")
+
+    monkeypatch.setattr(AceStepApiClient, "text2music_base_test", fake_base_test)
+
+    response = client.post(
+        "/api/extractions/base-test",
+        json={
+            "prompt": "dark strings",
+            "audio_duration": 30,
+            "inference_steps": 50,
+            "guidance_scale": 7.0,
+            "shift": 1.0,
+        },
+    )
+    history = client.get("/api/extractions")
+
+    assert response.status_code == 200
+    item = response.json()["extraction"]
+    assert item["type"] == "base_test"
+    assert item["status"] == "complete"
+    assert item["prompt"] == "dark strings"
+    assert Path(item["generated_audio_path"]).exists()
+    assert history.json()[0]["extraction_id"] == item["extraction_id"]
 
 
 def test_ui_selection_scaffold_uses_configured_future_length(tmp_path: Path) -> None:

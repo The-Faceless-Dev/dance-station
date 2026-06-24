@@ -86,6 +86,14 @@ const el = {
   runExtractionButton: document.querySelector("#runExtractionButton"),
   refreshExtractionsButton: document.querySelector("#refreshExtractionsButton"),
   extractActionState: document.querySelector("#extractActionState"),
+  baseTestState: document.querySelector("#baseTestState"),
+  baseTestPrompt: document.querySelector("#baseTestPrompt"),
+  baseTestDuration: document.querySelector("#baseTestDuration"),
+  baseTestInferenceSteps: document.querySelector("#baseTestInferenceSteps"),
+  baseTestGuidanceScale: document.querySelector("#baseTestGuidanceScale"),
+  baseTestShift: document.querySelector("#baseTestShift"),
+  baseTestSeed: document.querySelector("#baseTestSeed"),
+  runBaseTestButton: document.querySelector("#runBaseTestButton"),
   extractionActivity: document.querySelector("#extractionActivity"),
   extractionList: document.querySelector("#extractionList"),
   extractRuntimeState: document.querySelector("#extractRuntimeState"),
@@ -380,18 +388,21 @@ function renderExtractionList() {
     const row = document.createElement("article");
     row.className = "generated-item";
     const outputPath = item.generated_audio_path || "";
+    const itemType = item.type === "base_test" ? "Base test" : "Extraction";
+    const sourceLabel = item.type === "base_test" ? "Prompt" : "Source";
+    const sourceValue = item.type === "base_test" ? item.prompt || "" : item.source_path || "";
     const audio = outputPath
       ? `<audio controls preload="metadata" src="/api/extractions/audio?path=${encodeURIComponent(outputPath)}"></audio>`
       : `<div class="empty-result">No playable audio for this extraction.</div>`;
     row.innerHTML = `
       <div class="generated-title">
-        <strong>${index === 0 ? "Latest" : "Extraction"} - ${item.status}</strong>
+        <strong>${index === 0 ? "Latest" : itemType} - ${item.status}</strong>
         <span>${item.track_name || "track"}</span>
       </div>
       ${audio}
       <dl class="path-list">
         <dt>Message</dt><dd>${item.message || ""}</dd>
-        <dt>Source</dt><dd>${item.source_path || ""}</dd>
+        <dt>${sourceLabel}</dt><dd>${sourceValue}</dd>
         <dt>Track</dt><dd>${item.track_name || ""}</dd>
         <dt>Output</dt><dd>${outputPath || "None"}</dd>
         <dt>Metadata</dt><dd>${item.metadata_path || ""}</dd>
@@ -668,6 +679,48 @@ async function runExtraction() {
   }
 }
 
+async function runBaseTest() {
+  const prompt = el.baseTestPrompt.value.trim();
+  if (!prompt) {
+    showToast("Enter a Base test prompt");
+    return;
+  }
+  setPill(el.baseTestState, "Generating", "warn");
+  el.extractionActivity.innerHTML = "<strong>Starting</strong><br>Preparing ACE-Step Base text-to-music test.";
+  el.runBaseTestButton.disabled = true;
+  try {
+    const response = await api("/api/extractions/base-test", {
+      method: "POST",
+      body: JSON.stringify({
+        prompt,
+        audio_duration: numericValue(el.baseTestDuration),
+        inference_steps: numericValue(el.baseTestInferenceSteps),
+        guidance_scale: numericValue(el.baseTestGuidanceScale),
+        shift: numericValue(el.baseTestShift),
+        seed: numericValue(el.baseTestSeed),
+      }),
+    });
+    state.extractionResults.unshift(response.extraction);
+    state.extractionResults = state.extractionResults.slice(0, 24);
+    renderExtractionList();
+    if (response.extraction.status === "complete") {
+      setPill(el.baseTestState, "Complete", "ok");
+      el.extractionActivity.innerHTML = "<strong>Complete</strong><br>Base text-to-music test finished.";
+    } else {
+      setPill(el.baseTestState, "Failed", "error");
+      el.extractionActivity.innerHTML = `<strong>Failed</strong><br>${response.extraction.message}`;
+    }
+    showToast(response.extraction.message);
+  } catch (error) {
+    setPill(el.baseTestState, "Error", "error");
+    el.extractionActivity.innerHTML = `<strong>Error</strong><br>${error.message}`;
+    showToast(error.message);
+  } finally {
+    el.runBaseTestButton.disabled = false;
+    refreshLogs();
+  }
+}
+
 async function generateTransition() {
   setPill(el.actionState, "Generating", "warn");
   el.generationActivity.innerHTML = "<strong>Starting</strong><br>Preparing source selection and ACE-Step request.";
@@ -763,6 +816,7 @@ el.sourceFile.addEventListener("change", uploadSourceFile);
 el.loadExtractSourceButton.addEventListener("click", loadExtractionSource);
 el.extractSourceFile.addEventListener("change", uploadExtractionSourceFile);
 el.runExtractionButton.addEventListener("click", runExtraction);
+el.runBaseTestButton.addEventListener("click", runBaseTest);
 el.refreshExtractionsButton.addEventListener("click", async () => {
   await refreshExtractions();
   showToast("Extractions refreshed");

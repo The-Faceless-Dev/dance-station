@@ -72,7 +72,7 @@ def test_repaint_defaults_use_explicit_mask_for_base_model() -> None:
 
     assert defaults["chunk_mask_mode"] == "explicit"
     assert defaults["guidance_scale"] == 7.0
-    assert defaults["shift"] == 3.0
+    assert defaults["shift"] == 1.0
     assert defaults["repaint_strength"] == 0.5
     assert defaults["repaint_latent_crossfade_frames"] == 24
     assert defaults["repaint_wav_crossfade_sec"] == 0.5
@@ -101,7 +101,9 @@ def test_base_profile_keeps_non_turbo_step_default() -> None:
 
     assert profile.default_inference_steps == 50
     assert defaults["guidance_scale"] == 7.0
-    assert defaults["shift"] == 3.0
+    assert defaults["shift"] == 1.0
+    assert defaults["infer_method"] == "ode"
+    assert defaults["sampler_mode"] == "euler"
 
 
 def test_repaint_uploads_scaffold_as_multipart_file(tmp_path: Path, monkeypatch) -> None:
@@ -439,7 +441,8 @@ def test_extract_track_initializes_base_slot_and_uploads_source(tmp_path: Path, 
             assert payload["audio_format"] == "flac"
             assert payload["inference_steps"] == "50"
             assert payload["guidance_scale"] == "7.0"
-            assert payload["shift"] == "3.0"
+            assert payload["shift"] == "1.0"
+            assert "lyrics" not in payload
             assert "src_audio" in kwargs["files"]
             filename, file_obj, mime = kwargs["files"]["src_audio"]
             assert filename == "song.wav"
@@ -460,7 +463,58 @@ def test_extract_track_initializes_base_slot_and_uploads_source(tmp_path: Path, 
     )
 
     assert result.output_path.read_bytes() == b"extracted"
-    assert any(call[1].endswith("/v1/init") for call in calls)
+
+
+def test_base_text2music_test_uses_non_turbo_schedule(tmp_path: Path, monkeypatch) -> None:
+    calls = []
+
+    class Response:
+        def __init__(self, body, status_code=200, content=b"") -> None:
+            self._body = body
+            self.status_code = status_code
+            self.content = content
+            self.text = str(body)
+
+        def json(self):
+            return self._body
+
+    def fake_get(url, **kwargs):
+        calls.append(("get", url, kwargs))
+        if url.endswith("/v1/model_inventory"):
+            return Response({"data": {"models": [{"name": ACE_STEP_BASE_MODEL, "is_loaded": True}]}})
+        if url.endswith("/v1/audio"):
+            return Response({}, content=b"base-audio")
+        return Response({})
+
+    def fake_post(url, **kwargs):
+        calls.append(("post", url, kwargs))
+        if url.endswith("/release_task"):
+            payload = kwargs["json"]
+            assert payload["task_type"] == "text2music"
+            assert payload["model"] == ACE_STEP_BASE_MODEL
+            assert payload["prompt"] == "dark strings"
+            assert payload["inference_steps"] == 50
+            assert payload["guidance_scale"] == 7.0
+            assert payload["shift"] == 1.0
+            assert payload["infer_method"] == "ode"
+            assert payload["sampler_mode"] == "euler"
+            assert payload["use_adg"] is False
+            assert payload["thinking"] is True
+            return Response({"data": {"task_id": "task-1"}})
+        if url.endswith("/query_result"):
+            return Response({"data": [{"task_id": "task-1", "status": 1, "file": "base.flac"}]})
+        return Response({})
+
+    fake_httpx = SimpleNamespace(get=fake_get, post=fake_post)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    result = AceStepApiClient(RuntimeConfig()).text2music_base_test(
+        prompt="dark strings",
+        save_dir=tmp_path / "base-test",
+    )
+
+    assert result.output_path.read_bytes() == b"base-audio"
+    assert not any(call[1].endswith("/v1/init") for call in calls)
 
 
 def test_text2music_uses_working_bpm_and_key_defaults_when_ui_omits_them(tmp_path: Path, monkeypatch) -> None:

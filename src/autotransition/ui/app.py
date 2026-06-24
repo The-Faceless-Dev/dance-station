@@ -27,7 +27,14 @@ from autotransition.models import (
     repaint_capable_models,
     resolve_model_status,
 )
-from autotransition.models.acestep_api import AceStepApiClient, AceStepApiError, _repaint_defaults_for_profile, _text2music_defaults_for_profile
+from autotransition.models.acestep_api import (
+    AceStepApiClient,
+    AceStepApiError,
+    NON_TURBO_GUIDANCE_SCALE,
+    NON_TURBO_SHIFT,
+    _repaint_defaults_for_profile,
+    _text2music_defaults_for_profile,
+)
 from autotransition.models.download import local_model_path
 from autotransition.models.status import InstallState
 from autotransition.pipeline import (
@@ -105,10 +112,20 @@ class ExtractionRunRequest(BaseModel):
     track_name: str = "vocals"
     output_format: Literal["flac", "wav", "wav32", "mp3", "opus", "aac"] = "flac"
     inference_steps: int = Field(50, ge=1, le=200)
-    guidance_scale: float = Field(7.0, ge=0)
-    shift: float = Field(3.0, ge=0)
+    guidance_scale: float = Field(NON_TURBO_GUIDANCE_SCALE, ge=0)
+    shift: float = Field(NON_TURBO_SHIFT, ge=0)
     seed: int | None = None
     instruction: str | None = None
+
+
+class BaseGenerationTestRequest(BaseModel):
+    prompt: str = Field(..., min_length=1)
+    output_format: Literal["flac", "wav", "wav32", "mp3", "opus", "aac"] = "flac"
+    audio_duration: float = Field(30.0, ge=10.0, le=120.0)
+    inference_steps: int = Field(50, ge=1, le=200)
+    guidance_scale: float = Field(NON_TURBO_GUIDANCE_SCALE, ge=0)
+    shift: float = Field(NON_TURBO_SHIFT, ge=0)
+    seed: int | None = None
 
 
 def _setting_or_default(value: Any, default: Any) -> Any:
@@ -277,6 +294,65 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
         metadata_path.parent.mkdir(parents=True, exist_ok=True)
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         ui_log.add("info", f"Extracted {track_name}: {result.output_path}")
+        return {"extraction": metadata}
+
+    @app.post("/api/extractions/base-test")
+    def run_base_generation_test(request: BaseGenerationTestRequest) -> dict[str, object]:
+        import datetime as _datetime
+
+        generation_id = f"base-test-{uuid4().hex[:12]}"
+        save_dir = Path("data/extractions") / generation_id
+        metadata_path = save_dir / "extraction.json"
+        created_at = _datetime.datetime.now(_datetime.UTC).isoformat()
+        prompt = request.prompt.strip()
+        ui_log.add("info", "Running ACE-Step Base text-to-music test generation.")
+
+        try:
+            result = AceStepApiClient(runtime_config).text2music_base_test(
+                prompt=prompt,
+                save_dir=save_dir,
+                audio_duration=request.audio_duration,
+                audio_format=request.output_format,
+                inference_steps=request.inference_steps,
+                guidance_scale=request.guidance_scale,
+                shift=request.shift,
+                seed=request.seed,
+            )
+        except AceStepApiError as exc:
+            ui_log.add("error", str(exc))
+            metadata = {
+                "extraction_id": generation_id,
+                "type": "base_test",
+                "status": "failed",
+                "message": str(exc),
+                "created_at": created_at,
+                "track_name": "Base text2music test",
+                "prompt": prompt,
+                "output_format": request.output_format,
+                "metadata_path": str(metadata_path),
+                "settings": request.model_dump(),
+            }
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+            return {"extraction": metadata}
+
+        metadata = {
+            "extraction_id": generation_id,
+            "type": "base_test",
+            "status": "complete",
+            "message": "Base text-to-music test complete.",
+            "created_at": created_at,
+            "track_name": "Base text2music test",
+            "prompt": prompt,
+            "output_format": request.output_format,
+            "generated_audio_path": str(result.output_path),
+            "generated_metadata_path": str(result.metadata_path),
+            "metadata_path": str(metadata_path),
+            "settings": request.model_dump(),
+        }
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        ui_log.add("info", f"Generated Base test audio: {result.output_path}")
         return {"extraction": metadata}
 
     @app.post("/api/source/probe")

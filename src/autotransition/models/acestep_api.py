@@ -20,6 +20,10 @@ DEFAULT_TEXT2MUSIC_BPM = 120
 DEFAULT_TEXT2MUSIC_KEY_SCALE = "C minor"
 ACE_STEP_BASE_MODEL = "acestep-v15-base"
 ACE_STEP_BASE_SLOT = 2
+NON_TURBO_GUIDANCE_SCALE = 7.0
+NON_TURBO_SHIFT = 1.0
+TURBO_GUIDANCE_SCALE = 1.0
+TURBO_SHIFT = 3.0
 
 
 class AceStepApiError(RuntimeError):
@@ -145,8 +149,8 @@ class AceStepApiClient:
         *,
         audio_format: str = "flac",
         inference_steps: int = 50,
-        guidance_scale: float = 7.0,
-        shift: float = 3.0,
+        guidance_scale: float = NON_TURBO_GUIDANCE_SCALE,
+        shift: float = NON_TURBO_SHIFT,
         seed: int | None = None,
         instruction: str | None = None,
     ) -> RepaintResult:
@@ -156,7 +160,6 @@ class AceStepApiClient:
             "model": ACE_STEP_BASE_MODEL,
             "track_name": track_name,
             "prompt": "",
-            "lyrics": "[Instrumental]",
             "audio_format": audio_format,
             "batch_size": 1,
             "inference_steps": inference_steps,
@@ -176,6 +179,49 @@ class AceStepApiClient:
                 save_dir=save_dir,
                 files={"src_audio": (source_path.name, source_file, "application/octet-stream")},
             )
+
+    def text2music_base_test(
+        self,
+        *,
+        prompt: str,
+        save_dir: Path,
+        audio_duration: float = 30.0,
+        audio_format: str = "flac",
+        inference_steps: int = 50,
+        guidance_scale: float = NON_TURBO_GUIDANCE_SCALE,
+        shift: float = NON_TURBO_SHIFT,
+        seed: int | None = None,
+    ) -> RepaintResult:
+        self._ensure_base_extract_model()
+        payload: dict[str, Any] = {
+            "task_type": "text2music",
+            "model": ACE_STEP_BASE_MODEL,
+            "prompt": prompt,
+            "lyrics": "[Instrumental]",
+            "audio_duration": audio_duration,
+            "audio_format": _raw_text2music_audio_format(audio_format),
+            "batch_size": 1,
+            "inference_steps": inference_steps,
+            "thinking": True,
+            "use_format": False,
+            "time_signature": "4",
+            "bpm": DEFAULT_TEXT2MUSIC_BPM,
+            "key_scale": "",
+            "lm_model_path": DEFAULT_LM_MODEL_PATH,
+            "lm_temperature": 0.85,
+            "lm_cfg_scale": 2.5,
+            "lm_top_p": 0.9,
+            "lm_negative_prompt": "NO USER INPUT",
+            "guidance_scale": guidance_scale,
+            "shift": shift,
+            "infer_method": "ode",
+            "sampler_mode": "euler",
+            "use_adg": False,
+        }
+        if seed is not None:
+            payload["use_random_seed"] = False
+            payload["seed"] = seed
+        return self._submit_and_wait(payload=payload, save_dir=save_dir, use_json=True)
 
     def _submit_and_wait(
         self,
@@ -550,15 +596,15 @@ def _repaint_defaults_for_profile(profile: ModelProfile) -> dict[str, Any]:
     if is_turbo:
         return {
             **common,
-            "guidance_scale": 1.0,
-            "shift": 3.0,
+            "guidance_scale": TURBO_GUIDANCE_SCALE,
+            "shift": TURBO_SHIFT,
             "repaint_latent_crossfade_frames": 16,
             "repaint_wav_crossfade_sec": 0.25,
         }
     return {
         **common,
-        "guidance_scale": 7.0,
-        "shift": 3.0,
+        "guidance_scale": NON_TURBO_GUIDANCE_SCALE,
+        "shift": NON_TURBO_SHIFT,
         "repaint_latent_crossfade_frames": 24,
         "repaint_wav_crossfade_sec": 0.5,
     }
@@ -567,12 +613,15 @@ def _repaint_defaults_for_profile(profile: ModelProfile) -> dict[str, Any]:
 def _text2music_defaults_for_profile(profile: ModelProfile) -> dict[str, Any]:
     if "turbo" in profile.slug:
         return {
-            "guidance_scale": 1.0,
-            "shift": 3.0,
+            "guidance_scale": TURBO_GUIDANCE_SCALE,
+            "shift": TURBO_SHIFT,
         }
     return {
-        "guidance_scale": 7.0,
-        "shift": 3.0,
+        "guidance_scale": NON_TURBO_GUIDANCE_SCALE,
+        "shift": NON_TURBO_SHIFT,
+        "infer_method": "ode",
+        "sampler_mode": "euler",
+        "use_adg": False,
     }
 
 
