@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import shutil
 import sys
 from collections import deque
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from autotransition.audio.ffmpeg import resolve_ffmpeg
 from autotransition.models import repaint_capable_models
 
 
@@ -42,7 +42,7 @@ class UiLog:
 
 
 def system_status(models_dir: Path = Path("models")) -> dict[str, object]:
-    ffmpeg_path = shutil.which("ffmpeg")
+    ffmpeg_path = resolve_ffmpeg()
     return {
         "python_version": sys.version.split()[0],
         "ffmpeg_available": ffmpeg_path is not None,
