@@ -25,6 +25,7 @@ data/output/
 data/generated/
 data/scaffolds/
 data/exports/
+data/extractions/
 data/cache/
 data/logs/
 data/runtime/

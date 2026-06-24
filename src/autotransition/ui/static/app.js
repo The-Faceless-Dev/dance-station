@@ -9,9 +9,16 @@ const state = {
   isGenerating: false,
   advancedDirty: false,
   generatedResults: [],
+  extractionTracks: [],
+  extractionResults: [],
+  extractSourceProbe: null,
 };
 
 const el = {
+  transitionTabButton: document.querySelector("#transitionTabButton"),
+  extractionTabButton: document.querySelector("#extractionTabButton"),
+  transitionPage: document.querySelector("#transitionPage"),
+  extractionPage: document.querySelector("#extractionPage"),
   ffmpegBadge: document.querySelector("#ffmpegBadge"),
   modelCountBadge: document.querySelector("#modelCountBadge"),
   runtimeBadge: document.querySelector("#runtimeBadge"),
@@ -61,6 +68,28 @@ const el = {
   runtimeDetails: document.querySelector("#runtimeDetails"),
   copyRuntimeCommandButton: document.querySelector("#copyRuntimeCommandButton"),
   logList: document.querySelector("#logList"),
+  extractSourceState: document.querySelector("#extractSourceState"),
+  extractSourceFile: document.querySelector("#extractSourceFile"),
+  extractSelectedFileName: document.querySelector("#extractSelectedFileName"),
+  extractSourcePath: document.querySelector("#extractSourcePath"),
+  loadExtractSourceButton: document.querySelector("#loadExtractSourceButton"),
+  extractSourceDuration: document.querySelector("#extractSourceDuration"),
+  extractSourceAudio: document.querySelector("#extractSourceAudio"),
+  extractSourceFormatReadout: document.querySelector("#extractSourceFormatReadout"),
+  extractTrackSelect: document.querySelector("#extractTrackSelect"),
+  extractOutputFormat: document.querySelector("#extractOutputFormat"),
+  extractSeedInput: document.querySelector("#extractSeedInput"),
+  extractInferenceSteps: document.querySelector("#extractInferenceSteps"),
+  extractGuidanceScale: document.querySelector("#extractGuidanceScale"),
+  extractShift: document.querySelector("#extractShift"),
+  extractInstruction: document.querySelector("#extractInstruction"),
+  runExtractionButton: document.querySelector("#runExtractionButton"),
+  refreshExtractionsButton: document.querySelector("#refreshExtractionsButton"),
+  extractActionState: document.querySelector("#extractActionState"),
+  extractionActivity: document.querySelector("#extractionActivity"),
+  extractionList: document.querySelector("#extractionList"),
+  extractRuntimeState: document.querySelector("#extractRuntimeState"),
+  extractLogList: document.querySelector("#extractLogList"),
   toast: document.querySelector("#toast"),
 };
 
@@ -207,7 +236,12 @@ function renderRuntime(runtime) {
 }
 
 function renderLogs(logs) {
-  el.logList.replaceChildren();
+  renderLogList(el.logList, logs);
+  renderLogList(el.extractLogList, logs);
+}
+
+function renderLogList(node, logs) {
+  node.replaceChildren();
   logs.forEach((entry) => {
     const item = document.createElement("li");
     const level = document.createElement("span");
@@ -215,8 +249,16 @@ function renderLogs(logs) {
     level.textContent = entry.level;
     const text = document.createTextNode(`${entry.timestamp} ${entry.message}`);
     item.append(level, text);
-    el.logList.appendChild(item);
+    node.appendChild(item);
   });
+}
+
+function setActivePage(page) {
+  const extraction = page === "extraction";
+  el.transitionPage.classList.toggle("active", !extraction);
+  el.extractionPage.classList.toggle("active", extraction);
+  el.transitionTabButton.classList.toggle("active", !extraction);
+  el.extractionTabButton.classList.toggle("active", extraction);
 }
 
 function activityTone(phase) {
@@ -314,6 +356,56 @@ function renderGeneratedList() {
   });
 }
 
+function renderExtractionTracks() {
+  el.extractTrackSelect.replaceChildren();
+  state.extractionTracks.forEach((track) => {
+    el.extractTrackSelect.appendChild(option(track.replace("_", " "), track));
+  });
+  if (state.extractionTracks.includes("vocals")) {
+    el.extractTrackSelect.value = "vocals";
+  }
+}
+
+function renderExtractionList() {
+  el.extractionList.replaceChildren();
+  if (!state.extractionResults.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-result";
+    empty.textContent = "No extractions yet.";
+    el.extractionList.appendChild(empty);
+    return;
+  }
+
+  state.extractionResults.forEach((item, index) => {
+    const row = document.createElement("article");
+    row.className = "generated-item";
+    const outputPath = item.generated_audio_path || "";
+    const audio = outputPath
+      ? `<audio controls preload="metadata" src="/api/extractions/audio?path=${encodeURIComponent(outputPath)}"></audio>`
+      : `<div class="empty-result">No playable audio for this extraction.</div>`;
+    row.innerHTML = `
+      <div class="generated-title">
+        <strong>${index === 0 ? "Latest" : "Extraction"} - ${item.status}</strong>
+        <span>${item.track_name || "track"}</span>
+      </div>
+      ${audio}
+      <dl class="path-list">
+        <dt>Message</dt><dd>${item.message || ""}</dd>
+        <dt>Source</dt><dd>${item.source_path || ""}</dd>
+        <dt>Track</dt><dd>${item.track_name || ""}</dd>
+        <dt>Output</dt><dd>${outputPath || "None"}</dd>
+        <dt>Metadata</dt><dd>${item.metadata_path || ""}</dd>
+      </dl>
+    `;
+    el.extractionList.appendChild(row);
+  });
+}
+
+async function refreshExtractions() {
+  state.extractionResults = await api("/api/extractions");
+  renderExtractionList();
+}
+
 function addGeneratedResult(result, plan) {
   state.generatedResults.unshift({ result, plan });
   state.generatedResults = state.generatedResults.slice(0, 12);
@@ -321,19 +413,25 @@ function addGeneratedResult(result, plan) {
 }
 
 async function loadAll() {
-  const [status, runtime, presets, models, logs] = await Promise.all([
+  const [status, runtime, presets, models, tracks, extractions, logs] = await Promise.all([
     api("/api/status"),
     api("/api/runtime/status"),
     api("/api/presets"),
     api("/api/models"),
+    api("/api/extractions/tracks"),
+    api("/api/extractions"),
     api("/api/logs"),
   ]);
   state.presets = presets;
   state.models = models;
+  state.extractionTracks = tracks;
+  state.extractionResults = extractions;
   renderStatus(status);
   renderRuntime(runtime);
   renderPresets();
   renderModels();
+  renderExtractionTracks();
+  renderExtractionList();
   renderLogs(logs);
 }
 
@@ -468,6 +566,108 @@ async function uploadSourceFile() {
   }
 }
 
+async function loadExtractionProbeIntoPlayer(sourcePath, probe) {
+  state.extractSourceProbe = probe;
+  el.extractSourcePath.value = sourcePath;
+  el.extractSourceAudio.src = `/api/extractions/audio?path=${encodeURIComponent(sourcePath)}`;
+  el.extractSourceDuration.textContent = `Duration ${formatTime(probe.duration_seconds)}`;
+  el.extractSourceFormatReadout.textContent = `Source format: ${probe.source_format}; full song extraction`;
+  setPill(el.extractSourceState, "Source loaded", "ok");
+}
+
+async function loadExtractionSource() {
+  setPill(el.extractSourceState, "Loading", "warn");
+  el.loadExtractSourceButton.disabled = true;
+  try {
+    const sourcePath = el.extractSourcePath.value.trim();
+    const probe = await api("/api/extractions/source/probe", {
+      method: "POST",
+      body: JSON.stringify({ source_path: sourcePath }),
+    });
+    await loadExtractionProbeIntoPlayer(sourcePath, probe);
+    showToast("Extraction source loaded");
+  } catch (error) {
+    state.extractSourceProbe = null;
+    setPill(el.extractSourceState, "Error", "error");
+    showToast(error.message);
+  } finally {
+    el.loadExtractSourceButton.disabled = false;
+    refreshLogs();
+  }
+}
+
+async function uploadExtractionSourceFile() {
+  const file = el.extractSourceFile.files && el.extractSourceFile.files[0];
+  if (!file) return;
+
+  setPill(el.extractSourceState, "Uploading", "warn");
+  el.extractSelectedFileName.textContent = file.name;
+  el.loadExtractSourceButton.disabled = true;
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const response = await fetch("/api/extractions/source/upload", {
+      method: "POST",
+      body: formData,
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(body && body.detail ? body.detail : `Upload failed: ${response.status}`);
+    }
+
+    await loadExtractionProbeIntoPlayer(body.stored_path, body.probe);
+    showToast("Extraction source loaded");
+  } catch (error) {
+    state.extractSourceProbe = null;
+    setPill(el.extractSourceState, "Error", "error");
+    showToast(error.message);
+  } finally {
+    el.loadExtractSourceButton.disabled = false;
+    refreshLogs();
+  }
+}
+
+async function runExtraction() {
+  setPill(el.extractActionState, "Extracting", "warn");
+  el.extractionActivity.innerHTML = "<strong>Starting</strong><br>Preparing ACE-Step extract request.";
+  el.runExtractionButton.disabled = true;
+  try {
+    const response = await api("/api/extractions/run", {
+      method: "POST",
+      body: JSON.stringify({
+        source_path: el.extractSourcePath.value.trim(),
+        track_name: el.extractTrackSelect.value,
+        output_format: el.extractOutputFormat.value,
+        inference_steps: numericValue(el.extractInferenceSteps),
+        guidance_scale: numericValue(el.extractGuidanceScale),
+        shift: numericValue(el.extractShift),
+        seed: numericValue(el.extractSeedInput),
+        instruction: el.extractInstruction.value.trim() || null,
+      }),
+    });
+    state.extractionResults.unshift(response.extraction);
+    state.extractionResults = state.extractionResults.slice(0, 24);
+    renderExtractionList();
+    if (response.extraction.status === "complete") {
+      setPill(el.extractActionState, "Complete", "ok");
+      el.extractionActivity.innerHTML = "<strong>Complete</strong><br>Track extraction finished.";
+    } else {
+      setPill(el.extractActionState, "Failed", "error");
+      el.extractionActivity.innerHTML = `<strong>Failed</strong><br>${response.extraction.message}`;
+    }
+    showToast(response.extraction.message);
+  } catch (error) {
+    setPill(el.extractActionState, "Error", "error");
+    el.extractionActivity.innerHTML = `<strong>Error</strong><br>${error.message}`;
+    showToast(error.message);
+  } finally {
+    el.runExtractionButton.disabled = false;
+    refreshLogs();
+  }
+}
+
 async function generateTransition() {
   setPill(el.actionState, "Generating", "warn");
   el.generationActivity.innerHTML = "<strong>Starting</strong><br>Preparing source selection and ACE-Step request.";
@@ -555,9 +755,18 @@ async function refreshStatus() {
   showToast("Status refreshed");
 }
 
+el.transitionTabButton.addEventListener("click", () => setActivePage("transition"));
+el.extractionTabButton.addEventListener("click", () => setActivePage("extraction"));
 el.generateButton.addEventListener("click", generateTransition);
 el.loadSourceButton.addEventListener("click", loadSource);
 el.sourceFile.addEventListener("change", uploadSourceFile);
+el.loadExtractSourceButton.addEventListener("click", loadExtractionSource);
+el.extractSourceFile.addEventListener("change", uploadExtractionSourceFile);
+el.runExtractionButton.addEventListener("click", runExtraction);
+el.refreshExtractionsButton.addEventListener("click", async () => {
+  await refreshExtractions();
+  showToast("Extractions refreshed");
+});
 el.installModelButton.addEventListener("click", installModel);
 el.refreshButton.addEventListener("click", refreshStatus);
 el.copyRuntimeCommandButton.addEventListener("click", async () => {

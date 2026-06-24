@@ -190,6 +190,8 @@ def test_runtime_env_disables_hf_transfer_by_default(monkeypatch) -> None:
 
     assert env["HF_HUB_ENABLE_HF_TRANSFER"] == "0"
     assert env["UV_LINK_MODE"] == "copy"
+    assert env["ACESTEP_CONFIG_PATH"] == "acestep-v15-turbo"
+    assert env["ACESTEP_CONFIG_PATH2"] == "acestep-v15-base"
 
 
 def test_runtime_env_allows_explicit_hf_transfer(monkeypatch) -> None:

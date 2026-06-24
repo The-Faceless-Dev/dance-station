@@ -18,6 +18,8 @@ from autotransition.pipeline import SourceSelectionPlan
 DEFAULT_LM_MODEL_PATH = "acestep-5Hz-lm-1.7B"
 DEFAULT_TEXT2MUSIC_BPM = 120
 DEFAULT_TEXT2MUSIC_KEY_SCALE = "C minor"
+ACE_STEP_BASE_MODEL = "acestep-v15-base"
+ACE_STEP_BASE_SLOT = 2
 
 
 class AceStepApiError(RuntimeError):
@@ -134,6 +136,46 @@ class AceStepApiClient:
             payload["key_scale"] = plan.key_hint
 
         return self._submit_and_wait(payload=payload, save_dir=save_dir, use_json=True)
+
+    def extract_track(
+        self,
+        source_path: Path,
+        track_name: str,
+        save_dir: Path,
+        *,
+        audio_format: str = "flac",
+        inference_steps: int = 50,
+        guidance_scale: float = 7.0,
+        shift: float = 3.0,
+        seed: int | None = None,
+        instruction: str | None = None,
+    ) -> RepaintResult:
+        self._ensure_base_extract_model()
+        payload: dict[str, Any] = {
+            "task_type": "extract",
+            "model": ACE_STEP_BASE_MODEL,
+            "track_name": track_name,
+            "prompt": "",
+            "lyrics": "[Instrumental]",
+            "audio_format": audio_format,
+            "batch_size": 1,
+            "inference_steps": inference_steps,
+            "guidance_scale": guidance_scale,
+            "shift": shift,
+            "thinking": False,
+        }
+        if instruction:
+            payload["instruction"] = instruction
+        if seed is not None:
+            payload["use_random_seed"] = False
+            payload["seed"] = seed
+
+        with source_path.open("rb") as source_file:
+            return self._submit_and_wait(
+                payload=payload,
+                save_dir=save_dir,
+                files={"src_audio": (source_path.name, source_file, "application/octet-stream")},
+            )
 
     def _submit_and_wait(
         self,
@@ -276,6 +318,41 @@ class AceStepApiClient:
         if init_body.get("error"):
             raise AceStepApiError(str(init_body["error"]))
         _validate_init_response(init_body, profile, init_llm)
+
+    def _ensure_base_extract_model(self) -> None:
+        body: dict[str, Any] = {}
+        try:
+            models = _request(
+                "get",
+                f"{self.config.api_base_url}/v1/model_inventory",
+                "v1/model_inventory",
+                timeout=self.config.api_timeout_seconds,
+            )
+            _raise_api_status(models, "v1/model_inventory")
+            body = _response_json(models, "v1/model_inventory")
+        except AceStepApiError as exc:
+            print(f"[Autotransition] ACE-Step model inventory unavailable; initializing base extract model. {exc}")
+
+        if _model_inventory(body).is_model_loaded(ACE_STEP_BASE_MODEL):
+            return
+
+        init = _request(
+            "post",
+            f"{self.config.api_base_url}/v1/init",
+            "v1/init",
+            json={"model": ACE_STEP_BASE_MODEL, "slot": ACE_STEP_BASE_SLOT, "init_llm": False},
+            timeout=self.config.generation_timeout_seconds,
+        )
+        _raise_api_status(init, "v1/init")
+        init_body = _response_json(init, "v1/init")
+        if init_body.get("error"):
+            raise AceStepApiError(str(init_body["error"]))
+        data = init_body.get("data") if isinstance(init_body.get("data"), dict) else {}
+        loaded_model = data.get("loaded_model")
+        if isinstance(loaded_model, str) and loaded_model and loaded_model != ACE_STEP_BASE_MODEL:
+            raise AceStepApiError(
+                f"ACE-Step initialized '{loaded_model}' instead of extract model '{ACE_STEP_BASE_MODEL}': {init_body}"
+            )
 
 
 def _extract_task_result(data: Any, task_id: str) -> dict[str, Any] | None:

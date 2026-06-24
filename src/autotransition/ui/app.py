@@ -27,7 +27,7 @@ from autotransition.models import (
     repaint_capable_models,
     resolve_model_status,
 )
-from autotransition.models.acestep_api import _repaint_defaults_for_profile, _text2music_defaults_for_profile
+from autotransition.models.acestep_api import AceStepApiClient, AceStepApiError, _repaint_defaults_for_profile, _text2music_defaults_for_profile
 from autotransition.models.download import local_model_path
 from autotransition.models.status import InstallState
 from autotransition.pipeline import (
@@ -82,6 +82,33 @@ class GenerateSelectionRequest(SelectionScaffoldRequest):
     model_slug: str = "acestep-v15-turbo"
     auto_install: bool = False
     ace_step: AceStepAdvancedSettings | None = None
+
+
+EXTRACT_TRACKS = [
+    "vocals",
+    "backing_vocals",
+    "drums",
+    "bass",
+    "guitar",
+    "keyboard",
+    "percussion",
+    "strings",
+    "synth",
+    "fx",
+    "brass",
+    "woodwinds",
+]
+
+
+class ExtractionRunRequest(BaseModel):
+    source_path: str = Field(..., min_length=1)
+    track_name: str = "vocals"
+    output_format: Literal["flac", "wav", "wav32", "mp3", "opus", "aac"] = "flac"
+    inference_steps: int = Field(50, ge=1, le=200)
+    guidance_scale: float = Field(7.0, ge=0)
+    shift: float = Field(3.0, ge=0)
+    seed: int | None = None
+    instruction: str | None = None
 
 
 def _setting_or_default(value: Any, default: Any) -> Any:
@@ -144,6 +171,113 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             raise HTTPException(status_code=404, detail=f"Audio file not found: {audio_path}")
         validate_supported_source(audio_path)
         return FileResponse(audio_path)
+
+    @app.get("/api/extractions/tracks")
+    def get_extraction_tracks() -> list[str]:
+        return EXTRACT_TRACKS
+
+    @app.get("/api/extractions")
+    def list_extractions() -> list[dict[str, Any]]:
+        root = Path("data/extractions")
+        if not root.exists():
+            return []
+        items: list[dict[str, Any]] = []
+        for metadata_path in root.glob("*/extraction.json"):
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            items.append(metadata)
+        return sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+    @app.get("/api/extractions/audio")
+    def get_extraction_audio(path: str = Query(..., min_length=1)) -> FileResponse:
+        return get_audio_file(path)
+
+    @app.post("/api/extractions/source/probe")
+    def probe_extraction_source(request: ProbeRequest) -> dict[str, object]:
+        return probe_source(request)
+
+    @app.post("/api/extractions/source/upload")
+    def upload_extraction_source(file: UploadFile = File(...)) -> dict[str, object]:
+        return upload_source(file)
+
+    @app.post("/api/extractions/run")
+    def run_extraction(request: ExtractionRunRequest) -> dict[str, object]:
+        import datetime as _datetime
+
+        track_name = request.track_name.strip().lower()
+        if track_name not in EXTRACT_TRACKS:
+            raise HTTPException(status_code=400, detail=f"Unknown extract track: {request.track_name}")
+
+        source_path = Path(request.source_path).expanduser()
+        try:
+            probe = probe_audio(source_path)
+        except Exception as exc:
+            ui_log.add("error", str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        extraction_id = f"extraction-{uuid4().hex[:12]}"
+        save_dir = Path("data/extractions") / extraction_id
+        metadata_path = save_dir / "extraction.json"
+        created_at = _datetime.datetime.now(_datetime.UTC).isoformat()
+        ui_log.add("info", f"Running ACE-Step extract for {track_name}; base model will be loaded in the ACE runtime if needed.")
+
+        try:
+            result = AceStepApiClient(runtime_config).extract_track(
+                source_path=source_path,
+                track_name=track_name,
+                save_dir=save_dir,
+                audio_format=request.output_format,
+                inference_steps=request.inference_steps,
+                guidance_scale=request.guidance_scale,
+                shift=request.shift,
+                seed=request.seed,
+                instruction=request.instruction.strip() if request.instruction else None,
+            )
+        except AceStepApiError as exc:
+            ui_log.add("error", str(exc))
+            metadata = {
+                "extraction_id": extraction_id,
+                "status": "failed",
+                "message": str(exc),
+                "created_at": created_at,
+                "source_path": str(source_path),
+                "source_format": probe.source_format,
+                "source_duration_seconds": probe.duration_seconds,
+                "track_name": track_name,
+                "output_format": request.output_format,
+                "metadata_path": str(metadata_path),
+            }
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+            return {"extraction": metadata}
+
+        metadata = {
+            "extraction_id": extraction_id,
+            "status": "complete",
+            "message": "Extraction complete.",
+            "created_at": created_at,
+            "source_path": str(source_path),
+            "source_format": probe.source_format,
+            "source_duration_seconds": probe.duration_seconds,
+            "track_name": track_name,
+            "output_format": request.output_format,
+            "generated_audio_path": str(result.output_path),
+            "generated_metadata_path": str(result.metadata_path),
+            "metadata_path": str(metadata_path),
+            "settings": {
+                "inference_steps": request.inference_steps,
+                "guidance_scale": request.guidance_scale,
+                "shift": request.shift,
+                "seed": request.seed,
+                "instruction": request.instruction,
+            },
+        }
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        ui_log.add("info", f"Extracted {track_name}: {result.output_path}")
+        return {"extraction": metadata}
 
     @app.post("/api/source/probe")
     def probe_source(request: ProbeRequest) -> dict[str, object]:

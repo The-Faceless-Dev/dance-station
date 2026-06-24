@@ -19,7 +19,12 @@
       </div>
     </header>
 
-    <main class="workspace">
+    <nav class="tabbar" aria-label="Workspace">
+      <button id="transitionTabButton" class="tab-button active" type="button">Autotransition</button>
+      <button id="extractionTabButton" class="tab-button" type="button">Track Extraction</button>
+    </nav>
+
+    <main id="transitionPage" class="workspace app-page active">
       <section class="panel workflow-panel">
         <div class="panel-heading">
           <h2>Source</h2>
@@ -200,6 +205,117 @@
             <span id="logState" class="mini-state">Local</span>
           </div>
           <ol id="logList" class="log-list"></ol>
+        </section>
+      </aside>
+    </main>
+
+    <main id="extractionPage" class="workspace app-page">
+      <section class="panel workflow-panel">
+        <div class="panel-heading">
+          <h2>Extraction Source</h2>
+          <span id="extractSourceState" class="mini-state">Idle</span>
+        </div>
+
+        <div class="file-picker">
+          <label class="file-button" for="extractSourceFile">Choose Audio File</label>
+          <input id="extractSourceFile" type="file" accept=".mp3,.wav,.flac,.ogg,.m4a,audio/*" />
+          <span id="extractSelectedFileName">No file selected</span>
+        </div>
+
+        <label class="field">
+          <span>Audio path</span>
+          <input id="extractSourcePath" type="text" placeholder="D:\music\song.mp3 or clip.wav" />
+        </label>
+
+        <div class="button-row source-actions">
+          <button id="loadExtractSourceButton" class="secondary-button" type="button">Load Song</button>
+          <span id="extractSourceDuration" class="inline-readout">No source loaded</span>
+        </div>
+
+        <audio id="extractSourceAudio" class="audio-player" controls preload="metadata"></audio>
+        <div class="selection-readout">
+          <span id="extractSourceFormatReadout">Formats: MP3, WAV, FLAC, OGG, M4A</span>
+          <span>Full song will be used for extraction</span>
+        </div>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-heading">
+          <h2>Extract</h2>
+          <span id="extractActionState" class="mini-state">Ready</span>
+        </div>
+
+        <div class="control-grid">
+          <label class="field">
+            <span>Track</span>
+            <select id="extractTrackSelect"></select>
+          </label>
+          <label class="field">
+            <span>Output format</span>
+            <select id="extractOutputFormat">
+              <option value="flac">FLAC</option>
+              <option value="wav">WAV</option>
+              <option value="wav32">WAV 32-bit</option>
+              <option value="mp3">MP3</option>
+              <option value="opus">Opus</option>
+              <option value="aac">AAC</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Seed</span>
+            <input id="extractSeedInput" type="number" step="1" placeholder="optional" />
+          </label>
+          <label class="field">
+            <span>Inference steps</span>
+            <input id="extractInferenceSteps" type="number" min="1" max="200" step="1" value="50" />
+          </label>
+          <label class="field">
+            <span>Guidance scale</span>
+            <input id="extractGuidanceScale" type="number" min="0" step="0.1" value="7" />
+          </label>
+          <label class="field">
+            <span>Shift</span>
+            <input id="extractShift" type="number" min="0" step="0.1" value="3" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span>Instruction override</span>
+          <textarea id="extractInstruction" rows="4" placeholder="optional; ACE will generate this from the selected track when blank"></textarea>
+        </label>
+
+        <div class="button-row">
+          <button id="runExtractionButton" class="primary-button" type="button">Run Extraction</button>
+          <button id="refreshExtractionsButton" class="secondary-button" type="button">Refresh Extractions</button>
+        </div>
+
+        <div class="output-block">
+          <h3>Extraction Output</h3>
+          <div id="extractionActivity" class="activity-readout">No extraction running.</div>
+          <div id="extractionList" class="generated-list">
+            <div class="empty-result">No extractions yet.</div>
+          </div>
+        </div>
+      </section>
+
+      <aside class="side-stack">
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>ACE Runtime</h2>
+            <span id="extractRuntimeState" class="mini-state">Base slot</span>
+          </div>
+          <div class="summary">
+            <strong>Track extraction uses ACE-Step Base.</strong><br>
+            Turbo remains the transition runtime. Base is loaded by ACE in the secondary runtime slot when available.
+          </div>
+        </section>
+
+        <section class="panel logs-panel">
+          <div class="panel-heading">
+            <h2>Logs</h2>
+            <span class="mini-state">Local</span>
+          </div>
+          <ol id="extractLogList" class="log-list"></ol>
         </section>
       </aside>
     </main>

@@ -133,6 +133,8 @@ def build_runtime_env() -> dict[str, str]:
     if env.get("AUTOTRANSITION_ALLOW_HF_TRANSFER") != "1":
         env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     env.setdefault("UV_LINK_MODE", "copy")
+    env.setdefault("ACESTEP_CONFIG_PATH", "acestep-v15-turbo")
+    env.setdefault("ACESTEP_CONFIG_PATH2", "acestep-v15-base")
     return env
 
 

@@ -158,6 +158,72 @@ def test_ui_generated_audio_can_be_loaded_as_next_source(tmp_path: Path) -> None
     assert audio.content
 
 
+def test_ui_extraction_tracks_endpoint_lists_ace_tracks(tmp_path: Path) -> None:
+    client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    response = client.get("/api/extractions/tracks")
+
+    assert response.status_code == 200
+    assert "vocals" in response.json()
+    assert "drums" in response.json()
+
+
+def test_ui_run_extraction_writes_history(tmp_path: Path, monkeypatch) -> None:
+    from autotransition.models.acestep_api import AceStepApiClient
+    from autotransition.models.base import RepaintResult
+
+    monkeypatch.chdir(tmp_path)
+    source = make_wav(tmp_path / "song.wav", duration_ms=3000)
+    client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    def fake_extract_track(
+        self,
+        source_path,
+        track_name,
+        save_dir,
+        *,
+        audio_format="flac",
+        inference_steps=50,
+        guidance_scale=7.0,
+        shift=3.0,
+        seed=None,
+        instruction=None,
+    ):
+        assert source_path == source
+        assert track_name == "vocals"
+        assert audio_format == "flac"
+        assert inference_steps == 32
+        output = save_dir / "vocals.flac"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"audio")
+        metadata = save_dir / "vocals.json"
+        metadata.write_text("{}", encoding="utf-8")
+        return RepaintResult(output_path=output, metadata_path=metadata, model_name="ACE-Step API")
+
+    monkeypatch.setattr(AceStepApiClient, "extract_track", fake_extract_track)
+
+    response = client.post(
+        "/api/extractions/run",
+        json={
+            "source_path": str(source),
+            "track_name": "vocals",
+            "output_format": "flac",
+            "inference_steps": 32,
+            "guidance_scale": 7.0,
+            "shift": 3.0,
+        },
+    )
+    history = client.get("/api/extractions")
+
+    assert response.status_code == 200
+    extraction = response.json()["extraction"]
+    assert extraction["status"] == "complete"
+    assert extraction["track_name"] == "vocals"
+    assert Path(extraction["generated_audio_path"]).exists()
+    assert history.status_code == 200
+    assert history.json()[0]["extraction_id"] == extraction["extraction_id"]
+
+
 def test_ui_selection_scaffold_uses_configured_future_length(tmp_path: Path) -> None:
     from pydub import AudioSegment
 

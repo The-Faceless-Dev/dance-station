@@ -49,6 +49,8 @@ The UI includes direct prompt/settings controls, ACE-Step runtime status, recent
 
 The main UI workflow is `Generate Transition`: load a song, select the continuation point, enter the target prompt/settings, and generate. Internal repaint scaffolds are created automatically and shown only as output details/logs. Generated outputs include a `Use as Source` action so you can chain another transition from the result.
 
+The app also includes a `Track Extraction` tab. Upload a song, choose a track such as vocals, drums, bass, guitar, synth, or strings, then run ACE-Step extraction. Extraction uses ACE-Step Base in the runtime's secondary slot while the transition workflow stays on the active Turbo runtime path. Completed extractions are listed in the UI with playable audio.
+
 `autotransition run` starts the ACE-Step API when needed and stops the ACE-Step process it started when the app shuts down. If ACE-Step was already running before the app started, Autotransition leaves that process alone.
 
 ## ACE-Step Runtime Setup
@@ -83,4 +85,5 @@ src/autotransition/
 
 - Candidate scoring is only an interface placeholder.
 - ACE-Step first-run runtime/model downloads can take a long time and require enough disk space.
+- Track extraction uses ACE-Step Base and may require more startup/download time than transition generation.
 - Audio loading and scaffold generation depend on `pydub` and `ffmpeg`.
