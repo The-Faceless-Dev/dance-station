@@ -190,6 +190,8 @@ def test_runtime_env_disables_hf_transfer_by_default(monkeypatch) -> None:
 
     assert env["HF_HUB_ENABLE_HF_TRANSFER"] == "0"
     assert env["UV_LINK_MODE"] == "copy"
+    assert env["UV_CACHE_DIR"].replace("\\", "/").endswith("data/runtime/uv-cache")
+    assert env["TMPDIR"].replace("\\", "/").endswith("data/runtime/tmp")
     assert env["ACESTEP_CONFIG_PATH"] == "acestep-v15-turbo"
     assert env["ACESTEP_CONFIG_PATH2"] == "acestep-v15-base"
 
@@ -203,6 +205,33 @@ def test_runtime_env_allows_explicit_hf_transfer(monkeypatch) -> None:
 
     assert env["HF_HUB_ENABLE_HF_TRANSFER"] == "1"
     assert env["UV_LINK_MODE"] == "clone"
+
+
+def test_run_install_retries_uv_sync_after_partial_venv_failure(tmp_path: Path, monkeypatch) -> None:
+    runtime_dir = tmp_path / "ACE-Step-1.5"
+    runtime_dir.mkdir()
+    (runtime_dir / "pyproject.toml").write_text("[project]\nname = 'ace-step'\n", encoding="utf-8")
+    venv = runtime_dir / ".venv"
+    venv.mkdir()
+    (venv / "partial.txt").write_text("partial", encoding="utf-8")
+    calls = []
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(ace_step_runtime, "resolve_uv_executable", lambda: Path("uv"))
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args == [str(Path("uv")), "sync", "--link-mode", "copy"] and len(calls) == 1:
+            raise ace_step_runtime.subprocess.CalledProcessError(2, args)
+        return ace_step_runtime.subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(ace_step_runtime.subprocess, "run", fake_run)
+
+    ace_step_runtime.run_install(RuntimeConfig(ace_step_dir=runtime_dir))
+
+    sync_calls = [call for call in calls if call[0] == [str(Path("uv")), "sync", "--link-mode", "copy"]]
+    assert len(sync_calls) == 2
+    assert not venv.exists()
 
 
 def test_start_api_background_rotates_previous_logs(tmp_path: Path, monkeypatch) -> None:

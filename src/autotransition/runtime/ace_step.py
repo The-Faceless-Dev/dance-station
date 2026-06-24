@@ -133,9 +133,30 @@ def build_runtime_env() -> dict[str, str]:
     if env.get("AUTOTRANSITION_ALLOW_HF_TRANSFER") != "1":
         env["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
     env.setdefault("UV_LINK_MODE", "copy")
+    env.setdefault("UV_CACHE_DIR", str(Path("data/runtime/uv-cache").resolve()))
+    env.setdefault("TMPDIR", str(Path("data/runtime/tmp").resolve()))
+    env.setdefault("TEMP", str(Path("data/runtime/tmp").resolve()))
+    env.setdefault("TMP", str(Path("data/runtime/tmp").resolve()))
     env.setdefault("ACESTEP_CONFIG_PATH", "acestep-v15-turbo")
     env.setdefault("ACESTEP_CONFIG_PATH2", "acestep-v15-base")
     return env
+
+
+def _run_uv_sync(uv: Path, config: RuntimeConfig) -> None:
+    env = build_runtime_env()
+    Path(env["UV_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
+    command = [str(uv), "sync", "--link-mode", "copy"]
+    try:
+        subprocess.run(command, check=True, cwd=config.ace_step_dir, env=env)
+    except subprocess.CalledProcessError:
+        venv = (config.ace_step_dir / ".venv").resolve()
+        runtime_dir = config.ace_step_dir.resolve()
+        if venv.parent != runtime_dir or venv.name != ".venv":
+            raise
+        if venv.exists():
+            shutil.rmtree(venv)
+        subprocess.run(command, check=True, cwd=config.ace_step_dir, env=env)
 
 
 def _write_runtime_pid(pid: int) -> None:
@@ -386,7 +407,7 @@ def run_install(config: RuntimeConfig = RuntimeConfig()) -> None:
     else:
         subprocess.run(build_install_commands(config)[1], shell=True, check=True)
 
-    subprocess.run([str(uv), "sync"], check=True, cwd=config.ace_step_dir, env=build_runtime_env())
+    _run_uv_sync(uv, config)
 
 
 def start_api_background(config: RuntimeConfig = RuntimeConfig()) -> subprocess.Popen[bytes]:
