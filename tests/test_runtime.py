@@ -5,6 +5,7 @@ from autotransition.config import RuntimeConfig
 from autotransition.runtime.ace_step import (
     PortListener,
     RuntimeProcess,
+    apply_runtime_api_diagnostic_patch,
     api_health,
     api_health_detail,
     build_runtime_env,
@@ -73,6 +74,27 @@ def test_runtime_start_command_uses_localhost_api(tmp_path: Path) -> None:
 
 def test_runtime_user_start_command_is_simple() -> None:
     assert build_start_api_command() == "autotransition runtime start"
+
+
+def test_runtime_patch_exposes_api_diagnostics(tmp_path: Path) -> None:
+    runtime_dir = tmp_path / "ACE-Step-1.5"
+    http_dir = runtime_dir / "acestep" / "api" / "http"
+    api_dir = runtime_dir / "acestep" / "api"
+    http_dir.mkdir(parents=True)
+    models_path = http_dir / "release_task_models.py"
+    builder_path = http_dir / "release_task_request_builder.py"
+    setup_path = api_dir / "job_generation_setup.py"
+    models_path.write_text("    use_tiled_decode: bool = True\n", encoding="utf-8")
+    builder_path.write_text('        use_tiled_decode=parser.bool("use_tiled_decode", True),\n', encoding="utf-8")
+    setup_path.write_text("        timesteps=parsed_timesteps,\n", encoding="utf-8")
+
+    changed = apply_runtime_api_diagnostic_patch(RuntimeConfig(ace_step_dir=runtime_dir))
+
+    assert changed is True
+    assert "velocity_norm_threshold" in models_path.read_text(encoding="utf-8")
+    assert "dcw_enabled=parser.bool" in builder_path.read_text(encoding="utf-8")
+    assert 'sampler_mode=getattr(req, "sampler_mode", "euler")' in setup_path.read_text(encoding="utf-8")
+    assert apply_runtime_api_diagnostic_patch(RuntimeConfig(ace_step_dir=runtime_dir)) is False
 
 
 def test_runtime_status_reports_missing_install(tmp_path: Path) -> None:

@@ -125,6 +125,11 @@ class BaseGenerationTestRequest(BaseModel):
     inference_steps: int = Field(50, ge=1, le=200)
     guidance_scale: float = Field(NON_TURBO_GUIDANCE_SCALE, ge=0)
     shift: float = Field(NON_TURBO_SHIFT, ge=0)
+    infer_method: Literal["ode", "sde"] = "ode"
+    use_tiled_decode: bool = True
+    dcw_enabled: bool = True
+    velocity_norm_threshold: float = Field(0.0, ge=0)
+    velocity_ema_factor: float = Field(0.0, ge=0, le=1)
     seed: int | None = None
 
 
@@ -316,6 +321,11 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
                 inference_steps=request.inference_steps,
                 guidance_scale=request.guidance_scale,
                 shift=request.shift,
+                infer_method=request.infer_method,
+                use_tiled_decode=request.use_tiled_decode,
+                dcw_enabled=request.dcw_enabled,
+                velocity_norm_threshold=request.velocity_norm_threshold,
+                velocity_ema_factor=request.velocity_ema_factor,
                 seed=request.seed,
             )
         except AceStepApiError as exc:

@@ -241,6 +241,11 @@ def test_ui_base_generation_test_writes_playable_history(tmp_path: Path, monkeyp
         inference_steps=50,
         guidance_scale=7.0,
         shift=1.0,
+        infer_method="ode",
+        use_tiled_decode=True,
+        dcw_enabled=True,
+        velocity_norm_threshold=0.0,
+        velocity_ema_factor=0.0,
         seed=None,
     ):
         assert prompt == "dark strings"
@@ -248,6 +253,11 @@ def test_ui_base_generation_test_writes_playable_history(tmp_path: Path, monkeyp
         assert inference_steps == 50
         assert guidance_scale == 7.0
         assert shift == 1.0
+        assert infer_method == "sde"
+        assert use_tiled_decode is False
+        assert dcw_enabled is False
+        assert velocity_norm_threshold == 2.5
+        assert velocity_ema_factor == 0.35
         output = save_dir / "base.flac"
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"audio")
@@ -265,6 +275,11 @@ def test_ui_base_generation_test_writes_playable_history(tmp_path: Path, monkeyp
             "inference_steps": 50,
             "guidance_scale": 7.0,
             "shift": 1.0,
+            "infer_method": "sde",
+            "use_tiled_decode": False,
+            "dcw_enabled": False,
+            "velocity_norm_threshold": 2.5,
+            "velocity_ema_factor": 0.35,
         },
     )
     history = client.get("/api/extractions")

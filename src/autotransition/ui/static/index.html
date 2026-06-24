@@ -328,9 +328,29 @@
               <input id="baseTestShift" type="number" min="0" step="0.1" value="1" />
             </label>
             <label class="field">
+              <span>Infer method</span>
+              <select id="baseTestInferMethod">
+                <option value="ode" selected>ODE</option>
+                <option value="sde">SDE</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Velocity norm threshold</span>
+              <input id="baseTestVelocityNormThreshold" type="number" min="0" step="0.1" value="0" />
+            </label>
+            <label class="field">
+              <span>Velocity EMA factor</span>
+              <input id="baseTestVelocityEmaFactor" type="number" min="0" max="1" step="0.05" value="0" />
+            </label>
+            <label class="field">
               <span>Seed</span>
               <input id="baseTestSeed" type="number" step="1" placeholder="optional" />
             </label>
+          </div>
+
+          <div class="toggle-row">
+            <label><input id="baseTestUseTiledDecode" type="checkbox" checked /> Tiled decode</label>
+            <label><input id="baseTestDcwEnabled" type="checkbox" checked /> DCW</label>
           </div>
 
           <div class="button-row">

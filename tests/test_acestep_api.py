@@ -499,6 +499,10 @@ def test_base_text2music_test_uses_non_turbo_schedule(tmp_path: Path, monkeypatc
             assert payload["infer_method"] == "ode"
             assert payload["sampler_mode"] == "euler"
             assert payload["use_adg"] is False
+            assert payload["use_tiled_decode"] is False
+            assert payload["dcw_enabled"] is False
+            assert payload["velocity_norm_threshold"] == 2.5
+            assert payload["velocity_ema_factor"] == 0.35
             assert payload["thinking"] is True
             return Response({"data": {"task_id": "task-1"}})
         if url.endswith("/query_result"):
@@ -511,6 +515,10 @@ def test_base_text2music_test_uses_non_turbo_schedule(tmp_path: Path, monkeypatc
     result = AceStepApiClient(RuntimeConfig()).text2music_base_test(
         prompt="dark strings",
         save_dir=tmp_path / "base-test",
+        use_tiled_decode=False,
+        dcw_enabled=False,
+        velocity_norm_threshold=2.5,
+        velocity_ema_factor=0.35,
     )
 
     assert result.output_path.read_bytes() == b"base-audio"

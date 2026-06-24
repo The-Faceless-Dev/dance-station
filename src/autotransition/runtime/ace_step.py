@@ -112,6 +112,71 @@ def build_debug_start_api_command(config: RuntimeConfig = RuntimeConfig()) -> st
     return f"{uv} run acestep-api --host {config.api_host} --port {config.api_port}"
 
 
+def apply_runtime_api_diagnostic_patch(config: RuntimeConfig = RuntimeConfig()) -> bool:
+    """Expose lower-level ACE generation diagnostics through /release_task.
+
+    ACE-Step's Gradio path already passes these fields into GenerationParams,
+    but the lightweight /release_task API currently omits a few of them.
+    Autotransition uses this only for the Base Test panel.
+    """
+
+    runtime_dir = config.ace_step_dir
+    models_path = runtime_dir / "acestep" / "api" / "http" / "release_task_models.py"
+    builder_path = runtime_dir / "acestep" / "api" / "http" / "release_task_request_builder.py"
+    setup_path = runtime_dir / "acestep" / "api" / "job_generation_setup.py"
+    if not (models_path.exists() and builder_path.exists() and setup_path.exists()):
+        return False
+
+    changed = False
+    changed |= _patch_text_file(
+        models_path,
+        '    use_tiled_decode: bool = True\n',
+        (
+            '    use_tiled_decode: bool = True\n'
+            '    sampler_mode: str = "euler"\n'
+            '    velocity_norm_threshold: float = 0.0\n'
+            '    velocity_ema_factor: float = 0.0\n'
+            '    dcw_enabled: bool = True\n'
+        ),
+        marker="velocity_norm_threshold",
+    )
+    changed |= _patch_text_file(
+        builder_path,
+        '        use_tiled_decode=parser.bool("use_tiled_decode", True),\n',
+        (
+            '        use_tiled_decode=parser.bool("use_tiled_decode", True),\n'
+            '        sampler_mode=parser.str("sampler_mode", "euler"),\n'
+            '        velocity_norm_threshold=parser.float("velocity_norm_threshold", 0.0),\n'
+            '        velocity_ema_factor=parser.float("velocity_ema_factor", 0.0),\n'
+            '        dcw_enabled=parser.bool("dcw_enabled", True),\n'
+        ),
+        marker="velocity_norm_threshold",
+    )
+    changed |= _patch_text_file(
+        setup_path,
+        '        timesteps=parsed_timesteps,\n',
+        (
+            '        timesteps=parsed_timesteps,\n'
+            '        sampler_mode=getattr(req, "sampler_mode", "euler"),\n'
+            '        velocity_norm_threshold=getattr(req, "velocity_norm_threshold", 0.0),\n'
+            '        velocity_ema_factor=getattr(req, "velocity_ema_factor", 0.0),\n'
+            '        dcw_enabled=getattr(req, "dcw_enabled", True),\n'
+        ),
+        marker="velocity_norm_threshold",
+    )
+    return changed
+
+
+def _patch_text_file(path: Path, old: str, new: str, *, marker: str) -> bool:
+    text = path.read_text(encoding="utf-8")
+    if marker in text:
+        return False
+    if old not in text:
+        raise RuntimeError(f"Could not patch ACE-Step runtime file; expected text not found: {path}")
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+    return True
+
+
 def resolve_uv_executable() -> Path | None:
     uv_path = shutil.which("uv")
     if uv_path:
@@ -407,12 +472,15 @@ def run_install(config: RuntimeConfig = RuntimeConfig()) -> None:
     else:
         subprocess.run(build_install_commands(config)[1], shell=True, check=True)
 
+    apply_runtime_api_diagnostic_patch(config)
     _run_uv_sync(uv, config)
+    apply_runtime_api_diagnostic_patch(config)
 
 
 def start_api_background(config: RuntimeConfig = RuntimeConfig()) -> subprocess.Popen[bytes]:
     if not config.ace_step_dir.exists():
         raise RuntimeError(f"ACE-Step runtime is not installed: {config.ace_step_dir}")
+    apply_runtime_api_diagnostic_patch(config)
     uv = resolve_uv_executable()
     if uv is None:
         raise RuntimeError("uv.exe was not found. Run `autotransition setup` first.")

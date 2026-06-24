@@ -190,6 +190,11 @@ class AceStepApiClient:
         inference_steps: int = 50,
         guidance_scale: float = NON_TURBO_GUIDANCE_SCALE,
         shift: float = NON_TURBO_SHIFT,
+        infer_method: str = "ode",
+        use_tiled_decode: bool = True,
+        dcw_enabled: bool = True,
+        velocity_norm_threshold: float = 0.0,
+        velocity_ema_factor: float = 0.0,
         seed: int | None = None,
     ) -> RepaintResult:
         self._ensure_base_extract_model()
@@ -214,9 +219,13 @@ class AceStepApiClient:
             "lm_negative_prompt": "NO USER INPUT",
             "guidance_scale": guidance_scale,
             "shift": shift,
-            "infer_method": "ode",
+            "infer_method": infer_method,
             "sampler_mode": "euler",
             "use_adg": False,
+            "use_tiled_decode": use_tiled_decode,
+            "dcw_enabled": dcw_enabled,
+            "velocity_norm_threshold": velocity_norm_threshold,
+            "velocity_ema_factor": velocity_ema_factor,
         }
         if seed is not None:
             payload["use_random_seed"] = False
