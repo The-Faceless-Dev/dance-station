@@ -223,7 +223,7 @@ def _music_generation_root() -> Path:
 
 def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig | None = None) -> FastAPI:
     runtime_config = runtime_config or RuntimeConfig()
-    app = FastAPI(title="Autotransition", version="0.1.0")
+    app = FastAPI(title="Dance Station", version="0.1.0")
     static_dir = Path(__file__).parent / "static"
     ui_log = UiLog()
     ui_log.add("info", "UI server started.")
