@@ -249,6 +249,10 @@ h3 {
   grid-template-columns: minmax(320px, 0.45fr) minmax(520px, 1fr);
 }
 
+.workspace.instrument-page.active {
+  grid-template-columns: minmax(300px, 0.42fr) minmax(560px, 1fr) minmax(300px, 0.38fr);
+}
+
 .editor-assets-panel,
 .editor-save-panel {
   align-self: start;
@@ -276,6 +280,147 @@ h3 {
   grid-row: 1 / span 2;
   min-height: calc(100vh - 154px);
   padding: 12px;
+}
+
+.instrument-source-panel,
+.instrument-output-panel {
+  align-self: start;
+}
+
+.instrument-editor-panel {
+  min-height: calc(100vh - 154px);
+}
+
+.compact-heading {
+  margin-top: 8px;
+}
+
+.instrument-track-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.instrument-track-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 70px auto auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111317;
+  padding: 8px;
+}
+
+.instrument-track-item.active {
+  border-color: var(--accent);
+}
+
+.track-select-button {
+  min-width: 0;
+  justify-content: flex-start;
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-volume {
+  width: 70px;
+}
+
+.track-toggle,
+.track-mute {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.piano-roll-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.piano-roll-scroll {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 8px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.piano-roll-scroll input {
+  width: 100%;
+  min-height: 34px;
+  accent-color: var(--accent);
+}
+
+.piano-roll-toolbar button {
+  min-height: 34px;
+  padding: 7px 10px;
+}
+
+.piano-roll-toolbar .mini-state {
+  margin-left: auto;
+}
+
+.sfz-import-block {
+  margin: 12px 0 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.sfz-import-block h3 {
+  margin: 0 0 10px;
+}
+
+.instrument-piano-roll {
+  display: block;
+  width: 100%;
+  height: min(54vh, 520px);
+  min-height: 360px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #111317;
+  cursor: crosshair;
+}
+
+.instrument-piano-keys {
+  display: grid;
+  grid-template-columns: repeat(13, minmax(0, 1fr));
+  gap: 4px;
+  margin: 10px 0 12px;
+}
+
+.piano-key {
+  min-height: 56px;
+  border-radius: 6px;
+  padding: 0;
+  font-size: 12px;
+}
+
+.piano-key.white {
+  border-color: #d8dee9;
+  background: #f3f0e8;
+  color: #111317;
+}
+
+.piano-key.black {
+  border-color: #050607;
+  background: #050607;
+  color: var(--text);
 }
 
 .editor-heading {
@@ -751,6 +896,10 @@ button:disabled {
   }
 
   .workspace.editor-page.active {
+    grid-template-columns: 1fr;
+  }
+
+  .workspace.instrument-page.active {
     grid-template-columns: 1fr;
   }
 

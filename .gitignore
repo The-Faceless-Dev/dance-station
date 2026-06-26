@@ -28,6 +28,7 @@ data/scaffolds/
 data/exports/
 data/extractions/
 data/edits/
+data/instrument-lab/
 data/cache/
 data/logs/
 data/runtime/
@@ -50,6 +51,14 @@ data/runtime/
 !src/autotransition/vendor/audiomass/**/*.flac
 !src/autotransition/vendor/audiomass/**/*.ogg
 !src/autotransition/vendor/audiomass/**/*.m4a
+
+# Packaged UI instrument assets
+!src/autotransition/ui/static/instruments/**/*.wav
+!src/autotransition/ui/static/instruments/**/*.flac
+!src/autotransition/ui/static/instruments/**/*.mp3
+!src/autotransition/ui/static/instruments/**/*.ogg
+!src/autotransition/ui/static/instruments/**/*.aif
+!src/autotransition/ui/static/instruments/**/*.aiff
 
 # Keep example media explicitly if added later
 !examples/**/*.wav

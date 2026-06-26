@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "instruments": [
+    {
+      "id": "synth.lead",
+      "name": "Lead Synth",
+      "category": "Synths",
+      "type": "synth",
+      "oscillator": "sawtooth",
+      "envelope": { "attack": 0.01, "release": 0.18 },
+      "octave": 0
+    },
+    {
+      "id": "synth.square-lead",
+      "name": "Square Lead",
+      "category": "Synths",
+      "type": "synth",
+      "oscillator": "square",
+      "envelope": { "attack": 0.005, "release": 0.16 },
+      "octave": 0
+    },
+    {
+      "id": "bass.synth",
+      "name": "Bass Synth",
+      "category": "Bass",
+      "type": "synth",
+      "oscillator": "square",
+      "envelope": { "attack": 0.005, "release": 0.12 },
+      "octave": -12
+    },
+    {
+      "id": "bass.sub",
+      "name": "Sub Bass",
+      "category": "Bass",
+      "type": "synth",
+      "oscillator": "sine",
+      "envelope": { "attack": 0.01, "release": 0.22 },
+      "octave": -24
+    },
+    {
+      "id": "keys.soft-pad",
+      "name": "Soft Pad",
+      "category": "Keys",
+      "type": "synth",
+      "oscillator": "triangle",
+      "envelope": { "attack": 0.14, "release": 0.45 },
+      "octave": 0
+    },
+    {
+      "id": "keys.pluck",
+      "name": "Pluck",
+      "category": "Keys",
+      "type": "synth",
+      "oscillator": "triangle",
+      "envelope": { "attack": 0.005, "release": 0.08 },
+      "octave": 12
+    },
+    {
+      "id": "keys.basic-piano",
+      "name": "Basic Sample Piano",
+      "category": "Keys",
+      "type": "sample",
+      "samples": [
+        {
+          "note": 60,
+          "root": 60,
+          "low": 48,
+          "high": 72,
+          "path": "samples/basic-piano/c4.wav"
+        }
+      ],
+      "envelope": { "attack": 0.005, "release": 0.2 }
+    },
+    {
+      "id": "keys.organ",
+      "name": "Organ",
+      "category": "Keys",
+      "type": "synth",
+      "oscillator": "sine",
+      "envelope": { "attack": 0.02, "release": 0.12 },
+      "octave": 0
+    },
+    {
+      "id": "strings.synthetic",
+      "name": "Synthetic Strings",
+      "category": "Strings",
+      "type": "synth",
+      "oscillator": "sawtooth",
+      "envelope": { "attack": 0.22, "release": 0.55 },
+      "octave": 0
+    },
+    {
+      "id": "brass.soft",
+      "name": "Soft Brass",
+      "category": "Brass / Winds",
+      "type": "synth",
+      "oscillator": "sawtooth",
+      "envelope": { "attack": 0.08, "release": 0.25 },
+      "octave": 0
+    }
+  ]
+}

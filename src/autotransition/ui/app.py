@@ -230,6 +230,14 @@ def _edit_root() -> Path:
     return Path("data/edits")
 
 
+def _instrument_lab_root() -> Path:
+    return Path("data/instrument-lab")
+
+
+def _instrument_bank_root() -> Path:
+    return _instrument_lab_root() / "instruments"
+
+
 def _safe_item_id(item_id: str, label: str) -> str:
     safe_id = Path(item_id).name
     if not safe_id or safe_id != item_id:
@@ -260,9 +268,107 @@ def _edit_metadata_path(edit_id: str) -> Path:
     return _edit_root() / _safe_item_id(edit_id, "edit") / "edit.json"
 
 
+def _instrument_lab_metadata_path(clip_id: str) -> Path:
+    return _instrument_lab_root() / _safe_item_id(clip_id, "instrument clip") / "clip.json"
+
+
 def _safe_label_stem(label: str, fallback: str) -> str:
     clean = re.sub(r"[^A-Za-z0-9._-]+", "_", label).strip("._")
     return clean or fallback
+
+
+def _midi_note(value: str | int | float | None, default: int = 60) -> int:
+    if value is None:
+        return default
+    if isinstance(value, int | float):
+        return max(0, min(127, int(value)))
+    text = str(value).strip().lower()
+    if text.lstrip("-").isdigit():
+        return max(0, min(127, int(text)))
+    match = re.fullmatch(r"([a-g])([#b]?)(-?\d+)", text)
+    if not match:
+        return default
+    note_name, accidental, octave_text = match.groups()
+    semitone = {"c": 0, "d": 2, "e": 4, "f": 5, "g": 7, "a": 9, "b": 11}[note_name]
+    if accidental == "#":
+        semitone += 1
+    elif accidental == "b":
+        semitone -= 1
+    return max(0, min(127, (int(octave_text) + 1) * 12 + semitone))
+
+
+def _parse_sfz_regions(sfz_text: str) -> list[dict[str, str]]:
+    regions: list[dict[str, str]] = []
+    current_group: dict[str, str] = {}
+    current_region: dict[str, str] | None = None
+    token_pattern = re.compile(r"(<group>|<region>)|([A-Za-z_][A-Za-z0-9_]*)=(\"[^\"]+\"|'[^']+'|[^<\s]+)")
+    for raw_line in sfz_text.splitlines():
+        line = raw_line.split("//", 1)[0].strip()
+        if not line:
+            continue
+        for match in token_pattern.finditer(line):
+            marker, key, value = match.groups()
+            if marker == "<group>":
+                current_group = {}
+                current_region = None
+            elif marker == "<region>":
+                current_region = dict(current_group)
+                regions.append(current_region)
+            elif key and value:
+                target = current_region if current_region is not None else current_group
+                target[key.lower()] = value.strip().strip("\"'")
+    return [region for region in regions if region.get("sample")]
+
+
+def _sfz_instrument_from_regions(
+    *,
+    instrument_id: str,
+    label: str,
+    regions: list[dict[str, str]],
+    stored_samples: dict[str, Path],
+) -> dict[str, Any]:
+    samples: list[dict[str, Any]] = []
+    missing_samples: set[str] = set()
+    for region in regions:
+        sample_name = Path(region["sample"].replace("\\", "/")).name
+        sample_path = stored_samples.get(sample_name.lower())
+        if sample_path is None:
+            missing_samples.add(sample_name)
+            continue
+        key = _midi_note(region.get("key")) if region.get("key") else None
+        root = _midi_note(region.get("pitch_keycenter"), key if key is not None else 60)
+        low = _midi_note(region.get("lokey"), key if key is not None else root)
+        high = _midi_note(region.get("hikey"), key if key is not None else root)
+        samples.append(
+            {
+                "note": key if key is not None else root,
+                "root": root,
+                "low": min(low, high),
+                "high": max(low, high),
+                "path": str(sample_path),
+                "url": f"/api/instrument-lab/instruments/sample?path={quote(str(sample_path))}",
+                "volume": float(region.get("volume", 0) or 0),
+            }
+        )
+    return {
+        "id": instrument_id,
+        "name": label,
+        "category": "SoundFonts / User Instruments",
+        "type": "sample",
+        "source": "sfz",
+        "samples": samples,
+        "missing_samples": sorted(missing_samples),
+        "envelope": {"attack": 0.005, "release": 0.2},
+    }
+
+
+def _list_user_instruments() -> list[dict[str, Any]]:
+    instruments: list[dict[str, Any]] = []
+    for metadata in _list_metadata(_instrument_bank_root(), "instrument.json"):
+        instrument = metadata.get("instrument")
+        if isinstance(instrument, dict):
+            instruments.append(instrument)
+    return sorted(instruments, key=lambda item: str(item.get("name") or ""))
 
 
 def _asset_from_metadata(metadata: dict[str, Any], category: str, id_key: str) -> dict[str, Any] | None:
@@ -280,6 +386,10 @@ def _asset_from_metadata(metadata: dict[str, Any], category: str, id_key: str) -
         "label": label,
         "audio_path": str(path),
         "audio_url": f"/api/editor/audio?path={quote(str(path))}",
+        "duration_seconds": metadata.get("duration_seconds")
+        or metadata.get("source_duration_seconds")
+        or metadata.get("raw_generated_duration_seconds")
+        or 0,
         "created_at": metadata.get("created_at") or "",
         "metadata_path": metadata.get("metadata_path") or "",
         "message": metadata.get("message") or "",
@@ -325,6 +435,12 @@ def _editor_assets() -> list[dict[str, Any]]:
 
     for metadata in _list_metadata(_edit_root(), "edit.json"):
         asset = _asset_from_metadata(metadata, "edit", "edit_id")
+        if asset:
+            assets.append(asset)
+
+    for metadata in _list_metadata(_instrument_lab_root(), "clip.json"):
+        category = "instrumenttrack" if metadata.get("type") == "instrumenttrack" else "instrument"
+        asset = _asset_from_metadata(metadata, category, "clip_id")
         if asset:
             assets.append(asset)
 
@@ -449,6 +565,165 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
     @app.get("/api/edits/audio")
     def get_edit_audio(path: str = Query(..., min_length=1)) -> FileResponse:
         return get_audio_file(path)
+
+    @app.get("/api/instrument-lab/clips")
+    def list_instrument_lab_clips() -> list[dict[str, Any]]:
+        return sorted(
+            _list_metadata(_instrument_lab_root(), "clip.json"),
+            key=lambda item: str(item.get("created_at") or ""),
+            reverse=True,
+        )
+
+    @app.get("/api/instrument-lab/audio")
+    def get_instrument_lab_audio(path: str = Query(..., min_length=1)) -> FileResponse:
+        return get_audio_file(path)
+
+    @app.get("/api/instrument-lab/instruments")
+    def list_instrument_lab_instruments() -> list[dict[str, Any]]:
+        return _list_user_instruments()
+
+    @app.get("/api/instrument-lab/instruments/sample")
+    def get_instrument_lab_instrument_sample(path: str = Query(..., min_length=1)) -> FileResponse:
+        sample_path = Path(path).expanduser()
+        try:
+            sample_path.resolve().relative_to(_instrument_bank_root().resolve())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Sample path is outside the instrument bank.") from exc
+        return get_audio_file(str(sample_path))
+
+    @app.post("/api/instrument-lab/instruments/sfz")
+    def import_instrument_lab_sfz(
+        sfz_file: UploadFile = File(...),
+        sample_files: list[UploadFile] = File(default=[]),
+        label: str = Form(..., min_length=1, max_length=120),
+    ) -> dict[str, object]:
+        import datetime as _datetime
+
+        def fail(detail: str) -> None:
+            ui_log.add("error", f"SFZ import failed: {detail}")
+            raise HTTPException(status_code=400, detail=detail)
+
+        sfz_name = Path(sfz_file.filename or "instrument.sfz").name
+        if Path(sfz_name).suffix.lower() != ".sfz":
+            fail("Upload an .sfz file.")
+        instrument_id = f"user.sfz.{uuid4().hex[:12]}"
+        instrument_dir = _instrument_bank_root() / instrument_id
+        sample_dir = instrument_dir / "samples"
+        metadata_path = instrument_dir / "instrument.json"
+        instrument_dir.mkdir(parents=True, exist_ok=True)
+        sample_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            sfz_text = sfz_file.file.read().decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            ui_log.add("error", "SFZ import failed: SFZ file must be UTF-8 text.")
+            raise HTTPException(status_code=400, detail="SFZ file must be UTF-8 text.") from exc
+        regions = _parse_sfz_regions(sfz_text)
+        if not regions:
+            fail("No playable SFZ regions found.")
+        if not sample_files:
+            referenced = sorted({Path(region["sample"].replace("\\", "/")).name for region in regions})
+            fail(f"Upload the SFZ sample files too. Referenced samples: {', '.join(referenced[:12])}")
+
+        stored_samples: dict[str, Path] = {}
+        for sample in sample_files:
+            sample_name = Path(sample.filename or "").name
+            if not sample_name:
+                continue
+            sample_path = sample_dir / sample_name
+            try:
+                validate_supported_source(sample_path)
+            except ValueError as exc:
+                ui_log.add("error", f"SFZ import failed: {sample_name}: {exc}")
+                raise HTTPException(status_code=400, detail=f"{sample_name}: {exc}") from exc
+            with sample_path.open("wb") as output:
+                shutil.copyfileobj(sample.file, output)
+            stored_samples[sample_name.lower()] = sample_path
+
+        instrument = _sfz_instrument_from_regions(
+            instrument_id=instrument_id,
+            label=label.strip(),
+            regions=regions,
+            stored_samples=stored_samples,
+        )
+        if not instrument["samples"]:
+            missing = instrument.get("missing_samples") or []
+            detail = "None of the SFZ sample references matched uploaded sample files."
+            if missing:
+                detail += f" Missing: {', '.join(missing[:12])}"
+            fail(detail)
+        if instrument.get("missing_samples"):
+            ui_log.add("warning", f"SFZ import skipped missing samples: {', '.join(instrument['missing_samples'][:12])}")
+
+        created_at = _datetime.datetime.now(_datetime.UTC).isoformat()
+        metadata = {
+            "instrument_id": instrument_id,
+            "type": "sfz",
+            "label": label.strip(),
+            "created_at": created_at,
+            "updated_at": created_at,
+            "source_sfz_name": sfz_name,
+            "metadata_path": str(metadata_path),
+            "instrument": instrument,
+        }
+        _write_metadata(metadata_path, metadata)
+        ui_log.add("info", f"Imported SFZ instrument: {label.strip()}")
+        return {"instrument": instrument}
+
+    @app.post("/api/instrument-lab/clips")
+    def save_instrument_lab_clip(
+        file: UploadFile = File(...),
+        label: str = Form(..., min_length=1, max_length=120),
+        project_json: str = Form(..., min_length=2),
+        clip_type: Literal["instrument", "instrumenttrack"] = Form("instrument"),
+    ) -> dict[str, object]:
+        import datetime as _datetime
+
+        try:
+            project = json.loads(project_json)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="Invalid instrument project JSON.") from exc
+
+        original_name = Path(file.filename or "instrument-lab.wav").name
+        suffix = Path(original_name).suffix.lower() or ".wav"
+        clip_id = f"{clip_type}-{uuid4().hex[:12]}"
+        save_dir = _instrument_lab_root() / clip_id
+        output_path = save_dir / f"{_safe_label_stem(label, clip_id)}{suffix}"
+        metadata_path = save_dir / "clip.json"
+        created_at = _datetime.datetime.now(_datetime.UTC).isoformat()
+
+        try:
+            validate_supported_source(output_path)
+        except ValueError as exc:
+            ui_log.add("error", str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        save_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with output_path.open("wb") as output:
+                shutil.copyfileobj(file.file, output)
+            probe = probe_audio(output_path)
+        except Exception as exc:
+            ui_log.add("error", str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        metadata = {
+            "clip_id": clip_id,
+            "type": clip_type,
+            "status": "complete",
+            "label": label.strip(),
+            "created_at": created_at,
+            "updated_at": created_at,
+            "generated_audio_path": str(output_path),
+            "metadata_path": str(metadata_path),
+            "duration_seconds": probe.duration_seconds,
+            "source_format": probe.source_format,
+            "project": project,
+            "message": f"Instrument Lab {'track' if clip_type == 'instrumenttrack' else 'clip'} saved as {output_path.name}",
+        }
+        _write_metadata(metadata_path, metadata)
+        ui_log.add("info", f"Saved Instrument Lab {clip_type}: {output_path}")
+        return {"clip": metadata}
 
     @app.post("/api/edits")
     def save_edit(
@@ -596,6 +871,16 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
         _write_metadata(metadata_path, metadata)
         ui_log.add("info", f"Renamed edit {edit_id}: {metadata['label']}")
         return {"edit": metadata}
+
+    @app.post("/api/instrument-lab/clips/{clip_id}/rename")
+    def rename_instrument_lab_clip(clip_id: str, request: ExtractionRenameRequest) -> dict[str, object]:
+        metadata_path = _instrument_lab_metadata_path(clip_id)
+        metadata = _read_json_file(metadata_path, "Instrument clip")
+        metadata["label"] = request.label.strip()
+        metadata["updated_at"] = metadata.get("updated_at") or metadata.get("created_at") or ""
+        _write_metadata(metadata_path, metadata)
+        ui_log.add("info", f"Renamed Instrument Lab clip {clip_id}: {metadata['label']}")
+        return {"clip": metadata}
 
     @app.post("/api/extractions/{extraction_id}/rename")
     def rename_extraction(extraction_id: str, request: ExtractionRenameRequest) -> dict[str, object]:

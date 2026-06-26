@@ -23,6 +23,7 @@
       <button id="transitionTabButton" class="tab-button active" type="button">Autotransition</button>
       <button id="extractionTabButton" class="tab-button" type="button">Track Extraction</button>
       <button id="musicTabButton" class="tab-button" type="button">Music Generation</button>
+      <button id="instrumentLabTabButton" class="tab-button" type="button">Instrument Lab</button>
       <button id="audioEditTabButton" class="tab-button" type="button">Audio Editor</button>
     </nav>
 
@@ -472,6 +473,135 @@
           <ol id="extractLogList" class="log-list"></ol>
         </section>
       </aside>
+    </main>
+
+    <main id="instrumentLabPage" class="workspace app-page instrument-page">
+      <section class="panel instrument-source-panel">
+        <div class="panel-heading">
+          <h2>Clip</h2>
+          <span id="instrumentLabState" class="mini-state">Ready</span>
+        </div>
+        <label class="field">
+          <span>Clip name</span>
+          <input id="instrumentClipLabel" type="text" value="Instrument idea" />
+        </label>
+        <div class="control-grid">
+          <label class="field">
+            <span>BPM</span>
+            <input id="instrumentBpm" type="number" min="20" max="300" step="1" value="120" />
+          </label>
+          <label class="field">
+            <span>Key</span>
+            <input id="instrumentKey" type="text" placeholder="optional" />
+          </label>
+          <label class="field">
+            <span>Bars</span>
+            <input id="instrumentBars" type="number" min="1" max="64" step="1" value="4" />
+          </label>
+          <label class="field">
+            <span>Octave</span>
+            <input id="instrumentOctave" type="number" min="1" max="7" step="1" value="4" />
+          </label>
+        </div>
+
+        <div class="panel-heading compact-heading">
+          <h2>Tracks</h2>
+          <button id="addInstrumentTrackButton" class="secondary-button compact-button" type="button">Add Track</button>
+        </div>
+        <div id="instrumentTrackList" class="instrument-track-list"></div>
+
+        <div class="existing-source-picker">
+          <label class="field">
+            <span>Import creation</span>
+            <select id="instrumentAssetSelect">
+              <option value="">Choose an existing creation</option>
+            </select>
+          </label>
+          <button id="importInstrumentAssetButton" class="secondary-button" type="button">Add Audio Track</button>
+        </div>
+      </section>
+
+      <section class="panel instrument-editor-panel">
+        <div class="panel-heading">
+          <div>
+            <h2>Performance Editor</h2>
+            <div id="instrumentActiveTrackReadout" class="editor-subtitle">No track selected</div>
+          </div>
+          <div class="button-row">
+            <button id="playInstrumentButton" class="primary-button" type="button">Play</button>
+            <button id="stopInstrumentButton" class="secondary-button" type="button">Stop</button>
+            <button id="recordInstrumentButton" class="secondary-button" type="button">Record Keys</button>
+            <button id="deleteInstrumentNoteButton" class="secondary-button" type="button">Delete Note</button>
+            <button id="copyInstrumentNotesButton" class="secondary-button" type="button">Copy Notes</button>
+            <button id="pasteInstrumentNotesButton" class="secondary-button" type="button">Paste Notes</button>
+          </div>
+        </div>
+        <div class="piano-roll-toolbar" aria-label="Piano roll navigation">
+          <button id="pianoRollZoomOutButton" class="secondary-button" type="button" title="Zoom out">Zoom Out</button>
+          <button id="pianoRollZoomInButton" class="secondary-button" type="button" title="Zoom in">Zoom In</button>
+          <button id="pianoRollFitButton" class="secondary-button" type="button" title="Fit full project">Fit All</button>
+          <span id="pianoRollViewportReadout" class="mini-state">Full view</span>
+        </div>
+        <canvas id="instrumentPianoRoll" class="instrument-piano-roll" width="960" height="480"></canvas>
+        <label class="piano-roll-scroll">
+          <span>Position</span>
+          <input id="pianoRollScroll" type="range" min="0" max="0" step="0.25" value="0" />
+        </label>
+        <div id="instrumentPianoKeys" class="instrument-piano-keys" aria-label="Playable piano keyboard"></div>
+        <div class="summary">Computer keys: A W S E D F T G Y H U J K. Click the grid to add notes, drag to move, drag a note edge to resize.</div>
+      </section>
+
+      <section class="panel instrument-output-panel">
+        <div class="panel-heading">
+          <h2>Instrument</h2>
+          <span id="instrumentBankState" class="mini-state">Loading</span>
+        </div>
+        <div class="control-grid">
+          <label class="field">
+            <span>Instrument</span>
+            <select id="instrumentPatch">
+              <option value="">Loading instruments</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Volume</span>
+            <input id="instrumentMasterVolume" type="number" min="0" max="1" step="0.05" value="0.8" />
+          </label>
+        </div>
+        <div id="instrumentInfo" class="activity-readout">Choose an instrument for the active track.</div>
+        <div class="sfz-import-block">
+          <h3>Import SFZ</h3>
+          <label class="field">
+            <span>Name</span>
+            <input id="sfzInstrumentLabel" type="text" placeholder="My soundfont instrument" />
+          </label>
+          <label class="field">
+            <span>SFZ file</span>
+            <input id="sfzInstrumentFile" type="file" accept=".sfz" />
+          </label>
+          <label class="field">
+            <span>Samples</span>
+            <input id="sfzSampleFiles" type="file" accept=".wav,.flac,.mp3,.ogg,.aiff,.aif" multiple />
+          </label>
+          <button id="importSfzButton" class="secondary-button" type="button">Import SFZ</button>
+        </div>
+        <div class="panel-heading compact-heading">
+          <h2>Render</h2>
+          <span id="instrumentRenderState" class="mini-state">Idle</span>
+        </div>
+        <div class="button-row">
+          <button id="renderInstrumentButton" class="secondary-button" type="button">Render Preview</button>
+          <button id="saveInstrumentTrackButton" class="secondary-button" type="button">Save Track</button>
+          <button id="saveInstrumentButton" class="primary-button" type="button">Save Clip</button>
+        </div>
+        <audio id="instrumentPreviewAudio" class="audio-player" controls preload="metadata"></audio>
+        <div class="output-block">
+          <h3>Instrument Clips</h3>
+          <div id="instrumentClipList" class="generated-list">
+            <div class="empty-result">No instrument clips yet.</div>
+          </div>
+        </div>
+      </section>
     </main>
 
     <main id="audioEditPage" class="workspace app-page editor-page">

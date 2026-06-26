@@ -57,10 +57,96 @@ def test_ui_index_includes_audio_editor_tab(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert "Dance Station" in response.text
+    assert "Instrument Lab" in response.text
     assert "Audio Editor" in response.text
     assert "Dance Station Assets" in response.text
     assert "Save Edited Result" in response.text
     assert 'src="/audiomass/"' in response.text
+
+
+def test_ui_serves_instrument_bank_manifest(tmp_path: Path) -> None:
+    client = TestClient(create_app(models_dir=tmp_path))
+
+    response = client.get("/static/instruments/bank.json")
+    sample_response = client.get("/static/instruments/samples/basic-piano/c4.wav")
+
+    assert response.status_code == 200
+    body = response.json()
+    categories = {item["category"] for item in body["instruments"]}
+    assert "Synths" in categories
+    assert "Bass" in categories
+    assert "Keys" in categories
+    assert any(item["type"] == "sample" and item["id"] == "keys.basic-piano" for item in body["instruments"])
+    assert sample_response.status_code == 200
+    assert sample_response.content.startswith(b"RIFF")
+
+
+def test_ui_imports_sfz_instrument(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sample = make_wav(tmp_path / "c4.wav", duration_ms=250)
+    sfz = tmp_path / "basic.sfz"
+    sfz.write_text("<region> sample=c4.wav key=60 lokey=48 hikey=72 pitch_keycenter=60", encoding="utf-8")
+    client = TestClient(create_app(models_dir=tmp_path))
+
+    with sfz.open("rb") as sfz_file, sample.open("rb") as sample_file:
+        response = client.post(
+            "/api/instrument-lab/instruments/sfz",
+            data={"label": "Imported Piano"},
+            files=[
+                ("sfz_file", ("basic.sfz", sfz_file, "text/plain")),
+                ("sample_files", ("c4.wav", sample_file, "audio/wav")),
+            ],
+        )
+    instruments = client.get("/api/instrument-lab/instruments")
+
+    assert response.status_code == 200
+    instrument = response.json()["instrument"]
+    assert instrument["name"] == "Imported Piano"
+    assert instrument["source"] == "sfz"
+    assert instrument["samples"][0]["root"] == 60
+    assert instruments.status_code == 200
+    assert any(item["id"] == instrument["id"] for item in instruments.json())
+
+
+def test_ui_imports_sfz_with_quoted_sample_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sample = make_wav(tmp_path / "c 4.wav", duration_ms=250)
+    sfz = tmp_path / "quoted.sfz"
+    sfz.write_text('<region> sample="samples/c 4.wav" key=C4', encoding="utf-8")
+    client = TestClient(create_app(models_dir=tmp_path))
+
+    with sfz.open("rb") as sfz_file, sample.open("rb") as sample_file:
+        response = client.post(
+            "/api/instrument-lab/instruments/sfz",
+            data={"label": "Quoted Piano"},
+            files=[
+                ("sfz_file", ("quoted.sfz", sfz_file, "text/plain")),
+                ("sample_files", ("c 4.wav", sample_file, "audio/wav")),
+            ],
+        )
+
+    assert response.status_code == 200
+    instrument = response.json()["instrument"]
+    assert instrument["samples"][0]["root"] == 60
+
+
+def test_ui_sfz_import_reports_missing_samples(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    sfz = tmp_path / "missing.sfz"
+    sfz.write_text("<region> sample=missing.wav key=60", encoding="utf-8")
+    client = TestClient(create_app(models_dir=tmp_path))
+
+    with sfz.open("rb") as sfz_file:
+        response = client.post(
+            "/api/instrument-lab/instruments/sfz",
+            data={"label": "Missing"},
+            files=[("sfz_file", ("missing.sfz", sfz_file, "text/plain"))],
+        )
+    logs = client.get("/api/logs").json()
+
+    assert response.status_code == 400
+    assert "missing.wav" in response.json()["detail"]
+    assert any("SFZ import failed" in item["message"] for item in logs)
 
 
 def test_audiomass_static_editor_is_served(tmp_path: Path) -> None:
@@ -402,6 +488,7 @@ def test_ui_editor_assets_lists_dance_station_outputs(tmp_path: Path, monkeypatc
     extraction_audio = make_wav(tmp_path / "vocals.wav", duration_ms=400)
     merge_audio = make_wav(tmp_path / "merge.wav", duration_ms=400)
     edit_audio = make_wav(tmp_path / "edit.wav", duration_ms=400)
+    instrument_audio = make_wav(tmp_path / "instrument.wav", duration_ms=400)
     write_result_metadata(
         tmp_path / "data" / "generated",
         "generation-a",
@@ -437,6 +524,15 @@ def test_ui_editor_assets_lists_dance_station_outputs(tmp_path: Path, monkeypatc
         label="Clean edit",
         id_key="edit_id",
     )
+    write_result_metadata(
+        tmp_path / "data" / "instrument-lab",
+        "instrument-a",
+        "clip.json",
+        instrument_audio,
+        category="instrument",
+        label="Bass phrase",
+        id_key="clip_id",
+    )
     client = TestClient(create_app(models_dir=tmp_path / "models"))
 
     response = client.get("/api/editor/assets")
@@ -449,7 +545,59 @@ def test_ui_editor_assets_lists_dance_station_outputs(tmp_path: Path, monkeypatc
     assert labels["Vocals"] == "extraction"
     assert labels["Stem blend"] == "merge"
     assert labels["Clean edit"] == "edit"
+    assert labels["Bass phrase"] == "instrument"
     assert all(item["audio_url"].startswith("/api/editor/audio?path=") for item in assets)
+
+
+def test_ui_instrument_lab_save_records_history_and_asset(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    source = make_wav(tmp_path / "instrument.wav", duration_ms=500)
+    client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    with source.open("rb") as audio_file:
+        response = client.post(
+            "/api/instrument-lab/clips",
+            data={
+                "label": "Bass phrase",
+                "project_json": '{"bpm":120,"tracks":[]}',
+            },
+            files={"file": ("instrument.wav", audio_file, "audio/wav")},
+        )
+    history = client.get("/api/instrument-lab/clips")
+    assets = client.get("/api/editor/assets")
+
+    assert response.status_code == 200
+    clip = response.json()["clip"]
+    assert clip["label"] == "Bass phrase"
+    assert clip["project"]["bpm"] == 120
+    assert Path(clip["generated_audio_path"]).exists()
+    assert history.json()[0]["clip_id"] == clip["clip_id"]
+    assert any(item["category"] == "instrument" and item["label"] == "Bass phrase" for item in assets.json())
+
+
+def test_ui_instrument_lab_track_save_records_instrumenttrack_asset(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    source = make_wav(tmp_path / "instrument-track.wav", duration_ms=500)
+    client = TestClient(create_app(models_dir=tmp_path / "models"))
+
+    project = '{"bpm":120,"tracks":[{"id":"track-a","kind":"instrument","notes":[{"pitch":48,"start":0,"duration":1}]}]}'
+    with source.open("rb") as audio_file:
+        response = client.post(
+            "/api/instrument-lab/clips",
+            data={
+                "label": "Bass track",
+                "clip_type": "instrumenttrack",
+                "project_json": project,
+            },
+            files={"file": ("instrument-track.wav", audio_file, "audio/wav")},
+        )
+    assets = client.get("/api/editor/assets")
+
+    assert response.status_code == 200
+    clip = response.json()["clip"]
+    assert clip["type"] == "instrumenttrack"
+    assert clip["project"]["tracks"][0]["id"] == "track-a"
+    assert any(item["category"] == "instrumenttrack" and item["label"] == "Bass track" for item in assets.json())
 
 
 def test_ui_editor_save_edit_records_history_and_asset(tmp_path: Path, monkeypatch) -> None:

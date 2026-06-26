@@ -10,6 +10,43 @@ const state = {
   advancedDirty: false,
   generatedResults: [],
   musicResults: [],
+  instrumentClips: [],
+  instrumentBank: [],
+  instrumentTracks: [
+    {
+      id: "track-main",
+      label: "Track 1",
+      kind: "instrument",
+      instrument: "synth.lead",
+      volume: 0.85,
+      pan: 0,
+      muted: false,
+      playDuringRecord: true,
+      notes: [],
+    },
+  ],
+  activeInstrumentTrackId: "track-main",
+  selectedInstrumentNoteId: null,
+  selectedInstrumentNoteIds: [],
+  instrumentCursorBeat: 0,
+  instrumentRecording: false,
+  instrumentAudioContext: null,
+  instrumentPlayingSources: [],
+  instrumentPlaybackId: 0,
+  instrumentTransportStartTime: null,
+  instrumentTransportStartBeat: 0,
+  instrumentCountdownTimer: null,
+  instrumentAudioBufferCache: new Map(),
+  instrumentSampleBufferCache: new Map(),
+  pianoRollView: {
+    beatOffset: 0,
+    visibleBeats: 16,
+    pitchOffset: 36,
+    visiblePitches: 49,
+  },
+  instrumentPreviewUrl: null,
+  instrumentDrag: null,
+  instrumentNoteClipboard: [],
   extractionTracks: [],
   extractionResults: [],
   editorAssets: [],
@@ -21,10 +58,12 @@ const el = {
   transitionTabButton: document.querySelector("#transitionTabButton"),
   extractionTabButton: document.querySelector("#extractionTabButton"),
   musicTabButton: document.querySelector("#musicTabButton"),
+  instrumentLabTabButton: document.querySelector("#instrumentLabTabButton"),
   audioEditTabButton: document.querySelector("#audioEditTabButton"),
   transitionPage: document.querySelector("#transitionPage"),
   extractionPage: document.querySelector("#extractionPage"),
   musicPage: document.querySelector("#musicPage"),
+  instrumentLabPage: document.querySelector("#instrumentLabPage"),
   audioEditPage: document.querySelector("#audioEditPage"),
   ffmpegBadge: document.querySelector("#ffmpegBadge"),
   modelCountBadge: document.querySelector("#modelCountBadge"),
@@ -126,6 +165,44 @@ const el = {
   musicActivity: document.querySelector("#musicActivity"),
   musicList: document.querySelector("#musicList"),
   musicLogList: document.querySelector("#musicLogList"),
+  instrumentLabState: document.querySelector("#instrumentLabState"),
+  instrumentClipLabel: document.querySelector("#instrumentClipLabel"),
+  instrumentBpm: document.querySelector("#instrumentBpm"),
+  instrumentKey: document.querySelector("#instrumentKey"),
+  instrumentBars: document.querySelector("#instrumentBars"),
+  instrumentOctave: document.querySelector("#instrumentOctave"),
+  addInstrumentTrackButton: document.querySelector("#addInstrumentTrackButton"),
+  instrumentTrackList: document.querySelector("#instrumentTrackList"),
+  instrumentAssetSelect: document.querySelector("#instrumentAssetSelect"),
+  importInstrumentAssetButton: document.querySelector("#importInstrumentAssetButton"),
+  instrumentActiveTrackReadout: document.querySelector("#instrumentActiveTrackReadout"),
+  playInstrumentButton: document.querySelector("#playInstrumentButton"),
+  stopInstrumentButton: document.querySelector("#stopInstrumentButton"),
+  recordInstrumentButton: document.querySelector("#recordInstrumentButton"),
+  deleteInstrumentNoteButton: document.querySelector("#deleteInstrumentNoteButton"),
+  copyInstrumentNotesButton: document.querySelector("#copyInstrumentNotesButton"),
+  pasteInstrumentNotesButton: document.querySelector("#pasteInstrumentNotesButton"),
+  instrumentPianoRoll: document.querySelector("#instrumentPianoRoll"),
+  pianoRollScroll: document.querySelector("#pianoRollScroll"),
+  pianoRollZoomOutButton: document.querySelector("#pianoRollZoomOutButton"),
+  pianoRollZoomInButton: document.querySelector("#pianoRollZoomInButton"),
+  pianoRollFitButton: document.querySelector("#pianoRollFitButton"),
+  pianoRollViewportReadout: document.querySelector("#pianoRollViewportReadout"),
+  instrumentPianoKeys: document.querySelector("#instrumentPianoKeys"),
+  instrumentPatch: document.querySelector("#instrumentPatch"),
+  instrumentBankState: document.querySelector("#instrumentBankState"),
+  instrumentInfo: document.querySelector("#instrumentInfo"),
+  sfzInstrumentLabel: document.querySelector("#sfzInstrumentLabel"),
+  sfzInstrumentFile: document.querySelector("#sfzInstrumentFile"),
+  sfzSampleFiles: document.querySelector("#sfzSampleFiles"),
+  importSfzButton: document.querySelector("#importSfzButton"),
+  instrumentMasterVolume: document.querySelector("#instrumentMasterVolume"),
+  instrumentRenderState: document.querySelector("#instrumentRenderState"),
+  renderInstrumentButton: document.querySelector("#renderInstrumentButton"),
+  saveInstrumentTrackButton: document.querySelector("#saveInstrumentTrackButton"),
+  saveInstrumentButton: document.querySelector("#saveInstrumentButton"),
+  instrumentPreviewAudio: document.querySelector("#instrumentPreviewAudio"),
+  instrumentClipList: document.querySelector("#instrumentClipList"),
   editorAssetState: document.querySelector("#editorAssetState"),
   editorAssetSearch: document.querySelector("#editorAssetSearch"),
   editorCategoryFilter: document.querySelector("#editorCategoryFilter"),
@@ -318,11 +395,16 @@ function setActivePage(page) {
   el.transitionPage.classList.toggle("active", page === "transition");
   el.extractionPage.classList.toggle("active", page === "extraction");
   el.musicPage.classList.toggle("active", page === "music");
+  el.instrumentLabPage.classList.toggle("active", page === "instrument");
   el.audioEditPage.classList.toggle("active", page === "audioedit");
   el.transitionTabButton.classList.toggle("active", page === "transition");
   el.extractionTabButton.classList.toggle("active", page === "extraction");
   el.musicTabButton.classList.toggle("active", page === "music");
+  el.instrumentLabTabButton.classList.toggle("active", page === "instrument");
   el.audioEditTabButton.classList.toggle("active", page === "audioedit");
+  if (page === "instrument") {
+    window.setTimeout(drawInstrumentPianoRoll, 50);
+  }
 }
 
 function reloadAudioEditor() {
@@ -388,7 +470,7 @@ function renderEditorAssets() {
 }
 
 function renderSourceAssetOptions() {
-  const selects = [el.sourceAssetSelect, el.extractSourceAssetSelect].filter(Boolean);
+  const selects = [el.sourceAssetSelect, el.extractSourceAssetSelect, el.instrumentAssetSelect].filter(Boolean);
   selects.forEach((select) => {
     const current = select.value;
     select.replaceChildren();
@@ -458,6 +540,7 @@ function renameEndpointForAsset(asset) {
   if (asset.category === "transition") return `/api/transitions/${encodeURIComponent(asset.asset_id)}/rename`;
   if (asset.category === "generation") return `/api/music-generations/${encodeURIComponent(asset.asset_id)}/rename`;
   if (asset.category === "edit") return `/api/edits/${encodeURIComponent(asset.asset_id)}/rename`;
+  if (asset.category === "instrument" || asset.category === "instrumenttrack") return `/api/instrument-lab/clips/${encodeURIComponent(asset.asset_id)}/rename`;
   if (asset.category === "extraction" || asset.category === "merge") {
     return `/api/extractions/${encodeURIComponent(asset.asset_id)}/rename`;
   }
@@ -480,6 +563,7 @@ async function renameEditorAsset(asset, row) {
     await refreshEditorAssets();
     await refreshExtractions();
     await refreshMusicGenerations();
+    await refreshInstrumentClips();
     showToast("Label saved");
   } catch (error) {
     showToast(error.message);
@@ -877,6 +961,1208 @@ async function refreshMusicGenerations() {
   renderMusicList();
 }
 
+async function refreshInstrumentClips() {
+  state.instrumentClips = await api("/api/instrument-lab/clips");
+  renderInstrumentClipList();
+}
+
+function activeInstrumentTrack() {
+  return state.instrumentTracks.find((track) => track.id === state.activeInstrumentTrackId) || null;
+}
+
+function beatDurationSeconds() {
+  return 60 / Number(el.instrumentBpm.value || 120);
+}
+
+function instrumentTotalBeats() {
+  return Math.max(1, Number(el.instrumentBars.value || 4) * 4);
+}
+
+function ensureInstrumentLengthForBeat(beat) {
+  const neededBars = Math.ceil((beat + 1) / 4);
+  const currentBars = Math.max(1, Number(el.instrumentBars.value || 4));
+  if (neededBars > currentBars) {
+    el.instrumentBars.value = String(neededBars);
+  }
+}
+
+function instrumentTotalSeconds() {
+  return instrumentTotalBeats() * beatDurationSeconds();
+}
+
+function midiFrequency(pitch) {
+  return 440 * Math.pow(2, (pitch - 69) / 12);
+}
+
+function fallbackInstrumentBank() {
+  return [
+    { id: "synth.lead", name: "Lead Synth", category: "Synths", type: "synth", oscillator: "sawtooth", envelope: { attack: 0.01, release: 0.18 }, octave: 0 },
+    { id: "bass.synth", name: "Bass Synth", category: "Bass", type: "synth", oscillator: "square", envelope: { attack: 0.005, release: 0.12 }, octave: -12 },
+    { id: "keys.soft-pad", name: "Soft Pad", category: "Keys", type: "synth", oscillator: "triangle", envelope: { attack: 0.14, release: 0.45 }, octave: 0 },
+    { id: "keys.pluck", name: "Pluck", category: "Keys", type: "synth", oscillator: "triangle", envelope: { attack: 0.005, release: 0.08 }, octave: 12 },
+  ];
+}
+
+async function loadInstrumentBank() {
+  try {
+    const [staticResponse, userResponse] = await Promise.all([
+      fetch("/static/instruments/bank.json"),
+      fetch("/api/instrument-lab/instruments"),
+    ]);
+    if (!staticResponse.ok) throw new Error(`Instrument bank unavailable: ${staticResponse.status}`);
+    const body = await staticResponse.json();
+    const userInstruments = userResponse.ok ? await userResponse.json() : [];
+    state.instrumentBank = [
+      ...(Array.isArray(body.instruments) ? body.instruments : fallbackInstrumentBank()),
+      ...(Array.isArray(userInstruments) ? userInstruments : []),
+    ];
+    setPill(el.instrumentBankState, `${state.instrumentBank.length} loaded`, "ok");
+  } catch (error) {
+    state.instrumentBank = fallbackInstrumentBank();
+    setPill(el.instrumentBankState, "Fallback", "warn");
+  }
+  renderInstrumentBankOptions();
+}
+
+function instrumentDefinition(instrumentId) {
+  return state.instrumentBank.find((instrument) => instrument.id === instrumentId)
+    || state.instrumentBank[0]
+    || fallbackInstrumentBank()[0];
+}
+
+function legacyInstrumentId(instrumentId) {
+  const aliases = {
+    lead: "synth.lead",
+    bass: "bass.synth",
+    pad: "keys.soft-pad",
+    pluck: "keys.pluck",
+  };
+  return aliases[instrumentId] || instrumentId || "synth.lead";
+}
+
+function renderInstrumentBankOptions() {
+  const current = legacyInstrumentId(el.instrumentPatch.value || activeInstrumentTrack()?.instrument || "synth.lead");
+  el.instrumentPatch.replaceChildren();
+  const groups = new Map();
+  state.instrumentBank.forEach((instrument) => {
+    const category = instrument.category || "Other";
+    if (!groups.has(category)) groups.set(category, []);
+    groups.get(category).push(instrument);
+  });
+  groups.forEach((instruments, category) => {
+    const group = document.createElement("optgroup");
+    group.label = category;
+    instruments.forEach((instrument) => {
+      const option = document.createElement("option");
+      option.value = instrument.id;
+      option.textContent = instrument.name;
+      group.appendChild(option);
+    });
+    el.instrumentPatch.appendChild(group);
+  });
+  if ([...el.instrumentPatch.options].some((option) => option.value === current)) {
+    el.instrumentPatch.value = current;
+  }
+  updateInstrumentInfo();
+}
+
+function updateInstrumentInfo() {
+  const instrument = instrumentDefinition(el.instrumentPatch.value || activeInstrumentTrack()?.instrument);
+  const sampleCount = Array.isArray(instrument.samples) ? `; ${instrument.samples.length} sample${instrument.samples.length === 1 ? "" : "s"}` : "";
+  el.instrumentInfo.innerHTML = `<strong>${escapeHtml(instrument.name)}</strong><br>${escapeHtml(instrument.category || "Other")} / ${escapeHtml(instrument.type || "synth")}${escapeHtml(sampleCount)}`;
+}
+
+async function importSfzInstrument() {
+  const sfzFile = el.sfzInstrumentFile.files && el.sfzInstrumentFile.files[0];
+  const label = el.sfzInstrumentLabel.value.trim() || (sfzFile ? sfzFile.name.replace(/\.sfz$/i, "") : "");
+  if (!sfzFile) {
+    showToast("Choose an SFZ file");
+    return;
+  }
+  if (!label) {
+    showToast("Enter an instrument name");
+    return;
+  }
+  el.importSfzButton.disabled = true;
+  setPill(el.instrumentBankState, "Importing SFZ", "warn");
+  try {
+    const formData = new FormData();
+    formData.append("label", label);
+    formData.append("sfz_file", sfzFile);
+    Array.from(el.sfzSampleFiles.files || []).forEach((file) => {
+      formData.append("sample_files", file);
+    });
+    const response = await fetch("/api/instrument-lab/instruments/sfz", { method: "POST", body: formData });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(body && body.detail ? body.detail : `SFZ import failed: ${response.status}`);
+    }
+    await loadInstrumentBank();
+    const instrumentId = body.instrument && body.instrument.id;
+    if (instrumentId && [...el.instrumentPatch.options].some((option) => option.value === instrumentId)) {
+      el.instrumentPatch.value = instrumentId;
+      const active = activeInstrumentTrack();
+      if (active && active.kind === "instrument") active.instrument = instrumentId;
+    }
+    updateInstrumentInfo();
+    el.sfzInstrumentFile.value = "";
+    el.sfzSampleFiles.value = "";
+    showToast("SFZ instrument imported");
+  } catch (error) {
+    setPill(el.instrumentBankState, "Import failed", "bad");
+    el.instrumentInfo.innerHTML = `<strong>SFZ import failed</strong><br>${escapeHtml(error.message)}`;
+    showToast(error.message);
+  } finally {
+    el.importSfzButton.disabled = false;
+  }
+}
+
+function ensureInstrumentAudioContext() {
+  if (!state.instrumentAudioContext) {
+    state.instrumentAudioContext = new AudioContext();
+  }
+  return state.instrumentAudioContext;
+}
+
+function scheduleSynthNote(context, destination, note, track, offsetSeconds = 0) {
+  const instrument = instrumentDefinition(legacyInstrumentId(track.instrument || el.instrumentPatch.value));
+  if (instrument.type !== "synth") {
+    return scheduleSampleNote(context, destination, note, track, instrument, offsetSeconds);
+  }
+  const envelope = instrument.envelope || {};
+  const start = offsetSeconds + note.start * beatDurationSeconds();
+  const duration = Math.max(0.05, note.duration * beatDurationSeconds());
+  const gain = context.createGain();
+  const oscillator = context.createOscillator();
+  const volume = Number(track.volume ?? 0.85) * Number(el.instrumentMasterVolume.value || 0.8) * Number(note.velocity ?? 0.85);
+  oscillator.type = instrument.oscillator || "sine";
+  oscillator.frequency.setValueAtTime(midiFrequency(note.pitch + Number(instrument.octave || 0)), start);
+  gain.gain.setValueAtTime(0, start);
+  gain.gain.linearRampToValueAtTime(volume, start + Number(envelope.attack ?? 0.01));
+  gain.gain.setValueAtTime(volume, start + Math.max(Number(envelope.attack ?? 0.01), duration - Number(envelope.release ?? 0.18)));
+  gain.gain.linearRampToValueAtTime(0, start + duration + Number(envelope.release ?? 0.18));
+  oscillator.connect(gain).connect(destination);
+  oscillator.start(start);
+  oscillator.stop(start + duration + Number(envelope.release ?? 0.18) + 0.05);
+  return oscillator;
+}
+
+function scheduleSampleNote(context, destination, note, track, instrument, offsetSeconds = 0) {
+  const region = sampleRegionForNote(instrument, note.pitch);
+  const sampleBuffer = region ? state.instrumentSampleBufferCache.get(sampleRegionCacheKey(region)) : null;
+  if (!region || !sampleBuffer) {
+    return scheduleFallbackSampleNote(context, destination, note, track, instrument, offsetSeconds);
+  }
+  const start = offsetSeconds + note.start * beatDurationSeconds();
+  const duration = Math.max(0.05, note.duration * beatDurationSeconds());
+  const source = context.createBufferSource();
+  const gain = context.createGain();
+  const volume = Number(track.volume ?? 0.85) * Number(el.instrumentMasterVolume.value || 0.8) * Number(note.velocity ?? 0.85);
+  const attack = Number(instrument.envelope?.attack ?? 0.005);
+  const release = Number(instrument.envelope?.release ?? 0.2);
+  source.buffer = sampleBuffer;
+  source.playbackRate.setValueAtTime(Math.pow(2, (note.pitch - Number(region.root ?? region.note ?? note.pitch)) / 12), start);
+  gain.gain.setValueAtTime(0, start);
+  gain.gain.linearRampToValueAtTime(volume, start + attack);
+  gain.gain.setValueAtTime(volume, start + Math.max(attack, duration - release));
+  gain.gain.linearRampToValueAtTime(0, start + duration + release);
+  source.connect(gain).connect(destination);
+  source.start(start);
+  source.stop(start + duration + release + 0.05);
+  return source;
+}
+
+function scheduleFallbackSampleNote(context, destination, note, track, instrument, offsetSeconds = 0) {
+  const start = offsetSeconds + note.start * beatDurationSeconds();
+  const duration = Math.max(0.05, note.duration * beatDurationSeconds());
+  const gain = context.createGain();
+  const volume = Number(track.volume ?? 0.85) * Number(el.instrumentMasterVolume.value || 0.8) * Number(note.velocity ?? 0.85);
+  const release = Number(instrument.envelope?.release ?? 0.2);
+  gain.gain.setValueAtTime(volume, start);
+  gain.gain.linearRampToValueAtTime(0, start + duration + release);
+  gain.connect(destination);
+  const oscillator = context.createOscillator();
+  oscillator.type = "sine";
+  oscillator.frequency.setValueAtTime(midiFrequency(note.pitch), start);
+  oscillator.connect(gain);
+  oscillator.start(start);
+  oscillator.stop(start + duration + release);
+  return oscillator;
+}
+
+function sampleRegionForNote(instrument, pitch) {
+  const regions = Array.isArray(instrument.samples) ? instrument.samples : [];
+  if (!regions.length) return null;
+  const matching = regions.filter((region) => pitch >= Number(region.low ?? region.note ?? 0) && pitch <= Number(region.high ?? region.note ?? 127));
+  const candidates = matching.length ? matching : regions;
+  return candidates
+    .map((region) => ({ region, distance: Math.abs(pitch - Number(region.root ?? region.note ?? pitch)) }))
+    .sort((left, right) => left.distance - right.distance)[0].region;
+}
+
+function sampleRegionCacheKey(region) {
+  return region.url || region.path || "";
+}
+
+function sampleRegionUrl(region) {
+  if (region.url) return region.url;
+  return `/static/instruments/${region.path}`;
+}
+
+async function loadInstrumentSample(context, region) {
+  const cacheKey = sampleRegionCacheKey(region);
+  if (state.instrumentSampleBufferCache.has(cacheKey)) {
+    return state.instrumentSampleBufferCache.get(cacheKey);
+  }
+  const response = await fetch(sampleRegionUrl(region));
+  if (!response.ok) {
+    throw new Error(`Could not load instrument sample: ${region.path || region.url}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = await context.decodeAudioData(arrayBuffer.slice(0));
+  state.instrumentSampleBufferCache.set(cacheKey, buffer);
+  return buffer;
+}
+
+async function prepareInstrumentSamples(context, tracks) {
+  const paths = new Set();
+  tracks.forEach((track) => {
+    if (track.kind !== "instrument") return;
+    const instrument = instrumentDefinition(legacyInstrumentId(track.instrument || el.instrumentPatch.value));
+    if (instrument.type !== "sample") return;
+    (instrument.samples || []).forEach((sample) => {
+      if (sample.path || sample.url) paths.add(sample);
+    });
+  });
+  for (const sample of paths) {
+    setPill(el.instrumentBankState, "Loading samples", "warn");
+    await loadInstrumentSample(context, sample);
+  }
+  if (paths.size) {
+    setPill(el.instrumentBankState, `${state.instrumentBank.length} loaded`, "ok");
+  }
+}
+
+async function decodedAssetBuffer(context, audioPath) {
+  if (state.instrumentAudioBufferCache.has(audioPath)) {
+    return state.instrumentAudioBufferCache.get(audioPath);
+  }
+  const response = await fetch(`/api/editor/audio?path=${encodeURIComponent(audioPath)}`);
+  if (!response.ok) {
+    throw new Error(`Could not load audio track: ${response.status}`);
+  }
+  const arrayBuffer = await response.arrayBuffer();
+  const buffer = await context.decodeAudioData(arrayBuffer.slice(0));
+  state.instrumentAudioBufferCache.set(audioPath, buffer);
+  return buffer;
+}
+
+function stopInstrumentSources() {
+  if (state.instrumentCountdownTimer) {
+    window.clearInterval(state.instrumentCountdownTimer);
+    state.instrumentCountdownTimer = null;
+  }
+  state.instrumentPlayingSources.forEach((source) => {
+    try {
+      source.stop();
+    } catch (error) {
+      // Source may already be stopped.
+    }
+  });
+  state.instrumentPlayingSources = [];
+  state.instrumentTransportStartTime = null;
+  state.instrumentTransportStartBeat = 0;
+}
+
+function setInstrumentRecording(enabled) {
+  state.instrumentRecording = enabled;
+  el.recordInstrumentButton.classList.toggle("active", enabled);
+}
+
+async function prepareInstrumentAudioTracks(context, playbackId) {
+  const tracks = state.instrumentTracks.filter((track) => shouldTrackPlayInCurrentPass(track) && track.kind === "audio" && track.audio_path);
+  const buffers = new Map();
+  for (let index = 0; index < tracks.length; index += 1) {
+    if (playbackId !== state.instrumentPlaybackId) return null;
+    setPill(el.instrumentLabState, `Preparing ${index + 1}/${tracks.length}`, "warn");
+    const buffer = await decodedAssetBuffer(context, tracks[index].audio_path);
+    if (playbackId !== state.instrumentPlaybackId) return null;
+    buffers.set(tracks[index].id, buffer);
+  }
+  return buffers;
+}
+
+function shouldTrackPlayInCurrentPass(track) {
+  if (track.muted) return false;
+  if (state.instrumentRecording && track.playDuringRecord === false) return false;
+  return true;
+}
+
+function updateInstrumentTransportStatus(message, kind = "ok") {
+  const suffix = state.instrumentRecording ? " + Recording" : "";
+  setPill(el.instrumentLabState, `${message}${suffix}`, kind);
+}
+
+function transportBeatAtCurrentTime() {
+  if (!state.instrumentAudioContext || state.instrumentTransportStartTime === null) return null;
+  const elapsed = state.instrumentAudioContext.currentTime - state.instrumentTransportStartTime;
+  return state.instrumentTransportStartBeat + elapsed / beatDurationSeconds();
+}
+
+function setInstrumentCursorBeat(beat) {
+  const bounds = pianoRollContentBounds();
+  state.instrumentCursorBeat = Math.max(0, Math.min(bounds.totalBeats, quantizeBeat(beat)));
+  drawInstrumentPianoRoll();
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function runInstrumentCountIn(playbackId, seconds = 2) {
+  let remaining = seconds;
+  setPill(el.instrumentLabState, `Recording starts in ${remaining}`, "warn");
+  state.instrumentCountdownTimer = window.setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0 && playbackId === state.instrumentPlaybackId) {
+      setPill(el.instrumentLabState, `Recording starts in ${remaining}`, "warn");
+    }
+  }, 1000);
+  await sleep(seconds * 1000);
+  if (state.instrumentCountdownTimer) {
+    window.clearInterval(state.instrumentCountdownTimer);
+    state.instrumentCountdownTimer = null;
+  }
+}
+
+async function startInstrumentTransport({ recording = false } = {}) {
+  state.instrumentPlaybackId += 1;
+  const playbackId = state.instrumentPlaybackId;
+  stopInstrumentSources();
+  setInstrumentRecording(recording);
+  const context = ensureInstrumentAudioContext();
+  el.playInstrumentButton.disabled = true;
+  el.recordInstrumentButton.disabled = true;
+  setPill(el.instrumentLabState, recording ? "Preparing recording" : "Preparing playback", "warn");
+
+  try {
+    await context.resume();
+    if (playbackId !== state.instrumentPlaybackId) return;
+
+    const audioBuffers = await prepareInstrumentAudioTracks(context, playbackId);
+    if (playbackId !== state.instrumentPlaybackId || !audioBuffers) return;
+    await prepareInstrumentSamples(context, state.instrumentTracks.filter((track) => shouldTrackPlayInCurrentPass(track)));
+    if (playbackId !== state.instrumentPlaybackId) return;
+
+    if (recording) {
+      await runInstrumentCountIn(playbackId, 2);
+      if (playbackId !== state.instrumentPlaybackId) return;
+    }
+
+    const destination = context.destination;
+    const startAt = context.currentTime + 0.05;
+    const cursorBeat = Math.max(0, Math.min(pianoRollContentBounds().totalBeats, state.instrumentCursorBeat || 0));
+    const cursorSeconds = cursorBeat * beatDurationSeconds();
+    state.instrumentTransportStartTime = startAt;
+    state.instrumentTransportStartBeat = cursorBeat;
+    for (const track of state.instrumentTracks) {
+      if (!shouldTrackPlayInCurrentPass(track)) continue;
+      if (track.kind === "audio" && track.audio_path) {
+        const buffer = audioBuffers.get(track.id);
+        if (!buffer) continue;
+        const source = context.createBufferSource();
+        const gain = context.createGain();
+        gain.gain.value = Number(track.volume ?? 0.85) * Number(el.instrumentMasterVolume.value || 0.8);
+        source.buffer = buffer;
+        source.connect(gain).connect(destination);
+        if (cursorSeconds >= buffer.duration) continue;
+        source.start(startAt, cursorSeconds);
+        state.instrumentPlayingSources.push(source);
+        continue;
+      }
+      for (const note of track.notes || []) {
+        if (note.start + note.duration < cursorBeat) continue;
+        const trimBeats = Math.max(0, cursorBeat - note.start);
+        const scheduledNote = {
+          ...note,
+          start: Math.max(0, note.start - cursorBeat),
+          duration: Math.max(0.05, note.duration - trimBeats),
+        };
+        state.instrumentPlayingSources.push(scheduleSynthNote(context, destination, scheduledNote, track, startAt));
+      }
+    }
+    updateInstrumentTransportStatus(recording ? "Recording" : "Playing", recording ? "warn" : "ok");
+  } catch (error) {
+    if (playbackId === state.instrumentPlaybackId) {
+      setPill(el.instrumentLabState, "Playback failed", "bad");
+      showToast(error.message || "Playback failed.");
+    }
+  } finally {
+    if (playbackId === state.instrumentPlaybackId) {
+      el.playInstrumentButton.disabled = false;
+      el.recordInstrumentButton.disabled = false;
+    }
+  }
+}
+
+async function playInstrumentLab() {
+  await startInstrumentTransport({ recording: false });
+}
+
+async function recordInstrumentLab() {
+  await startInstrumentTransport({ recording: true });
+}
+
+function stopInstrumentLab() {
+  state.instrumentPlaybackId += 1;
+  stopInstrumentSources();
+  setInstrumentRecording(false);
+  el.playInstrumentButton.disabled = false;
+  el.recordInstrumentButton.disabled = false;
+  setPill(el.instrumentLabState, "Ready", "neutral");
+}
+
+function audioBufferToWav(buffer) {
+  const channels = buffer.numberOfChannels;
+  const sampleRate = buffer.sampleRate;
+  const samples = buffer.length;
+  const bytesPerSample = 2;
+  const blockAlign = channels * bytesPerSample;
+  const dataSize = samples * blockAlign;
+  const wav = new ArrayBuffer(44 + dataSize);
+  const view = new DataView(wav);
+  const writeString = (offset, value) => {
+    for (let i = 0; i < value.length; i += 1) view.setUint8(offset + i, value.charCodeAt(i));
+  };
+  writeString(0, "RIFF");
+  view.setUint32(4, 36 + dataSize, true);
+  writeString(8, "WAVE");
+  writeString(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, channels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true);
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, 16, true);
+  writeString(36, "data");
+  view.setUint32(40, dataSize, true);
+  let offset = 44;
+  for (let i = 0; i < samples; i += 1) {
+    for (let channel = 0; channel < channels; channel += 1) {
+      let value = buffer.getChannelData(channel)[i];
+      value = Math.max(-1, Math.min(1, value));
+      view.setInt16(offset, value < 0 ? value * 0x8000 : value * 0x7fff, true);
+      offset += bytesPerSample;
+    }
+  }
+  return wav;
+}
+
+async function renderInstrumentLabBuffer(tracks = state.instrumentTracks) {
+  const duration = instrumentTotalSeconds();
+  const context = new OfflineAudioContext(2, Math.ceil(44100 * duration), 44100);
+  const master = context.createGain();
+  master.gain.value = Number(el.instrumentMasterVolume.value || 0.8);
+  master.connect(context.destination);
+  await prepareInstrumentSamples(context, tracks);
+
+  for (const track of tracks) {
+    if (track.muted) continue;
+    if (track.kind === "audio" && track.audio_path) {
+      const buffer = await decodedAssetBuffer(context, track.audio_path);
+      const source = context.createBufferSource();
+      const gain = context.createGain();
+      gain.gain.value = Number(track.volume ?? 0.85);
+      source.buffer = buffer;
+      source.connect(gain).connect(master);
+      source.start(0);
+      continue;
+    }
+    for (const note of track.notes || []) {
+      scheduleSynthNote(context, master, note, track, 0);
+    }
+  }
+  return context.startRendering();
+}
+
+function instrumentProjectPayload(tracks = state.instrumentTracks, activeTrackId = state.activeInstrumentTrackId) {
+  return {
+    bpm: Number(el.instrumentBpm.value || 120),
+    key: el.instrumentKey.value.trim(),
+    bars: Number(el.instrumentBars.value || 4),
+    master_volume: Number(el.instrumentMasterVolume.value || 0.8),
+    active_track_id: activeTrackId,
+    cursor_beat: state.instrumentCursorBeat || 0,
+    tracks,
+  };
+}
+
+async function renderInstrumentPreview(tracks = state.instrumentTracks, label = el.instrumentClipLabel.value || "instrument") {
+  setPill(el.instrumentRenderState, "Rendering", "warn");
+  try {
+    const buffer = await renderInstrumentLabBuffer(tracks);
+    const wav = audioBufferToWav(buffer);
+    if (state.instrumentPreviewUrl) URL.revokeObjectURL(state.instrumentPreviewUrl);
+    state.instrumentPreviewUrl = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
+    el.instrumentPreviewAudio.src = state.instrumentPreviewUrl;
+    setPill(el.instrumentRenderState, "Rendered", "ok");
+    return new File([wav], `${safeEditFileName(label)}`, { type: "audio/wav" });
+  } catch (error) {
+    setPill(el.instrumentRenderState, "Error", "error");
+    showToast(error.message);
+    throw error;
+  }
+}
+
+async function saveInstrumentClip({ trackOnly = false } = {}) {
+  const active = activeInstrumentTrack();
+  if (trackOnly && (!active || active.kind !== "instrument")) {
+    showToast("Select an instrument track to save");
+    return;
+  }
+  const defaultLabel = trackOnly && active ? active.label : el.instrumentClipLabel.value;
+  const label = (defaultLabel || "").trim();
+  if (!label) {
+    showToast("Enter a clip name");
+    return;
+  }
+  const saveButton = trackOnly ? el.saveInstrumentTrackButton : el.saveInstrumentButton;
+  saveButton.disabled = true;
+  try {
+    const tracks = trackOnly ? [{ ...active, muted: false }] : state.instrumentTracks;
+    const file = await renderInstrumentPreview(tracks, label);
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("label", label);
+    formData.append("clip_type", trackOnly ? "instrumenttrack" : "instrument");
+    formData.append("project_json", JSON.stringify(instrumentProjectPayload(tracks, trackOnly ? active.id : state.activeInstrumentTrackId)));
+    const response = await fetch("/api/instrument-lab/clips", { method: "POST", body: formData });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(body && body.detail ? body.detail : `Save failed: ${response.status}`);
+    }
+    await refreshInstrumentClips();
+    await refreshEditorAssets();
+    showToast(trackOnly ? "Instrument track saved" : "Instrument clip saved");
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    saveButton.disabled = false;
+  }
+}
+
+function renderInstrumentTracks() {
+  el.instrumentTrackList.replaceChildren();
+  for (const track of state.instrumentTracks) {
+    const row = document.createElement("article");
+    row.className = `instrument-track-item${track.id === state.activeInstrumentTrackId ? " active" : ""}`;
+    row.innerHTML = `
+      <button class="track-select-button" type="button">${escapeHtml(track.label)}</button>
+      <span class="category-badge">${escapeHtml(track.kind)}</span>
+      <input class="track-volume" type="number" min="0" max="1" step="0.05" value="${Number(track.volume ?? 0.85)}" aria-label="Track volume" />
+      <label class="track-toggle"><input type="checkbox" ${track.playDuringRecord === false ? "" : "checked"} /> Play in record</label>
+      <label class="track-mute"><input type="checkbox" ${track.muted ? "checked" : ""} /> Mute</label>
+    `;
+    row.querySelector(".track-select-button").addEventListener("click", () => {
+      state.activeInstrumentTrackId = track.id;
+      setSelectedInstrumentNotes([]);
+      renderInstrumentTracks();
+      drawInstrumentPianoRoll();
+    });
+    row.querySelector(".track-volume").addEventListener("change", (event) => {
+      track.volume = Number(event.target.value || 0.85);
+    });
+    row.querySelector(".track-toggle input").addEventListener("change", (event) => {
+      track.playDuringRecord = event.target.checked;
+    });
+    row.querySelector(".track-mute input").addEventListener("change", (event) => {
+      track.muted = event.target.checked;
+      renderInstrumentTracks();
+    });
+    el.instrumentTrackList.appendChild(row);
+  }
+  const active = activeInstrumentTrack();
+  el.instrumentActiveTrackReadout.textContent = active ? `${active.kind}: ${active.label}` : "No track selected";
+  if (active && active.kind === "instrument") {
+    const instrumentId = legacyInstrumentId(active.instrument);
+    if ([...el.instrumentPatch.options].some((option) => option.value === instrumentId)) {
+      el.instrumentPatch.value = instrumentId;
+    }
+  }
+  updateInstrumentInfo();
+}
+
+function addInstrumentTrack() {
+  const count = state.instrumentTracks.filter((track) => track.kind === "instrument").length + 1;
+  const track = {
+    id: `track-${Date.now().toString(16)}`,
+    label: `Track ${count}`,
+    kind: "instrument",
+    instrument: legacyInstrumentId(el.instrumentPatch.value || "synth.lead"),
+    volume: 0.85,
+    pan: 0,
+    muted: false,
+    playDuringRecord: true,
+    notes: [],
+  };
+  state.instrumentTracks.push(track);
+  state.activeInstrumentTrackId = track.id;
+  renderInstrumentTracks();
+  drawInstrumentPianoRoll();
+}
+
+function importInstrumentAssetTrack() {
+  const asset = selectedSourceAsset(el.instrumentAssetSelect);
+  if (!asset || !asset.audio_path) {
+    showToast("Choose an existing creation");
+    return;
+  }
+  const track = {
+    id: `audio-${Date.now().toString(16)}`,
+    label: asset.label,
+    kind: "audio",
+    source_asset_id: asset.asset_id,
+    category: asset.category,
+    audio_path: asset.audio_path,
+    duration_seconds: Number(asset.duration_seconds || 0),
+    volume: 0.85,
+    pan: 0,
+    muted: false,
+    playDuringRecord: true,
+    notes: [],
+  };
+  state.instrumentTracks.push(track);
+  state.activeInstrumentTrackId = track.id;
+  renderInstrumentTracks();
+  drawInstrumentPianoRoll();
+  showToast("Audio track added");
+}
+
+function renderInstrumentClipList() {
+  el.instrumentClipList.replaceChildren();
+  if (!state.instrumentClips.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-result";
+    empty.textContent = "No instrument clips yet.";
+    el.instrumentClipList.appendChild(empty);
+    return;
+  }
+  state.instrumentClips.forEach((clip) => {
+    const item = document.createElement("article");
+    item.className = "generated-item";
+    item.innerHTML = `
+      <div class="generated-title">
+        <strong>${escapeHtml(clip.label || clip.clip_id)}</strong>
+        <span>${escapeHtml(clip.type || "instrument")}</span>
+      </div>
+      <div class="button-row generated-actions">
+        <button class="secondary-button load-instrument-project-button" type="button">Load</button>
+      </div>
+      <audio controls preload="metadata" src="/api/instrument-lab/audio?path=${encodeURIComponent(clip.generated_audio_path)}"></audio>
+      <p>${escapeHtml(clip.message || "")}</p>
+    `;
+    item.querySelector(".load-instrument-project-button").addEventListener("click", () => loadInstrumentProject(clip));
+    el.instrumentClipList.appendChild(item);
+  });
+}
+
+function loadInstrumentProject(clip) {
+  const project = clip.project || {};
+  if (!Array.isArray(project.tracks) || !project.tracks.length) {
+    showToast("Saved clip has no editable project data");
+    return;
+  }
+  state.instrumentTracks = project.tracks.map((track, index) => ({
+    id: track.id || `track-${Date.now().toString(16)}-${index}`,
+    label: track.label || `Track ${index + 1}`,
+    kind: track.kind || "instrument",
+    instrument: legacyInstrumentId(track.instrument || "synth.lead"),
+    volume: Number(track.volume ?? 0.85),
+    pan: Number(track.pan ?? 0),
+    muted: Boolean(track.muted),
+    playDuringRecord: track.playDuringRecord !== false,
+    source_asset_id: track.source_asset_id || "",
+    category: track.category || "",
+    audio_path: track.audio_path || "",
+    duration_seconds: Number(track.duration_seconds || 0),
+    notes: Array.isArray(track.notes) ? track.notes : [],
+  }));
+  state.activeInstrumentTrackId = project.active_track_id || state.instrumentTracks[0].id;
+  state.instrumentCursorBeat = Number(project.cursor_beat || 0);
+  el.instrumentBpm.value = String(project.bpm || 120);
+  el.instrumentKey.value = project.key || "";
+  el.instrumentBars.value = String(project.bars || 4);
+  el.instrumentMasterVolume.value = String(project.master_volume ?? 0.8);
+  setSelectedInstrumentNotes([]);
+  renderInstrumentTracks();
+  drawInstrumentPianoRoll();
+  showToast("Instrument project loaded");
+}
+
+const PIANO_MIN_PITCH = 21;
+const PIANO_MAX_PITCH = 108;
+const PIANO_ROLL_RULER_HEIGHT = 28;
+
+function allInstrumentNotes() {
+  return state.instrumentTracks.flatMap((track) => track.kind === "instrument" ? (track.notes || []) : []);
+}
+
+function pianoRollContentBounds() {
+  const notes = allInstrumentNotes();
+  const noteEnd = notes.reduce((maximum, note) => Math.max(maximum, Number(note.start || 0) + Number(note.duration || 0)), 0);
+  const audioEnd = state.instrumentTracks.reduce((maximum, track) => {
+    if (track.kind !== "audio") return maximum;
+    const durationSeconds = Number(track.duration_seconds || 0);
+    return Math.max(maximum, durationSeconds / beatDurationSeconds());
+  }, 0);
+  const noteMinPitch = notes.reduce((minimum, note) => Math.min(minimum, Number(note.pitch || 60)), PIANO_MAX_PITCH);
+  const noteMaxPitch = notes.reduce((maximum, note) => Math.max(maximum, Number(note.pitch || 60)), PIANO_MIN_PITCH);
+  const minPitch = notes.length ? Math.max(0, Math.min(PIANO_MIN_PITCH, noteMinPitch - 4)) : PIANO_MIN_PITCH;
+  const maxPitch = notes.length ? Math.min(127, Math.max(PIANO_MAX_PITCH, noteMaxPitch + 4)) : PIANO_MAX_PITCH;
+  return {
+    totalBeats: Math.max(instrumentTotalBeats(), Math.ceil(Math.max(noteEnd, audioEnd) + 1)),
+    minPitch,
+    maxPitch,
+    noteStart: notes.length ? Math.max(0, Math.min(...notes.map((note) => Number(note.start || 0)))) : 0,
+    noteEnd,
+    noteMinPitch: notes.length ? noteMinPitch : minPitch,
+    noteMaxPitch: notes.length ? noteMaxPitch : maxPitch,
+  };
+}
+
+function clampPianoRollView() {
+  const bounds = pianoRollContentBounds();
+  const totalBeats = bounds.totalBeats;
+  const totalPitches = bounds.maxPitch - bounds.minPitch + 1;
+  const view = state.pianoRollView;
+  view.visibleBeats = Math.max(1, Math.min(totalBeats, view.visibleBeats || totalBeats));
+  view.visiblePitches = Math.max(12, Math.min(totalPitches, view.visiblePitches || totalPitches));
+  view.beatOffset = Math.max(0, Math.min(totalBeats - view.visibleBeats, view.beatOffset || 0));
+  view.pitchOffset = Math.max(bounds.minPitch, Math.min(bounds.maxPitch - view.visiblePitches + 1, view.pitchOffset || bounds.minPitch));
+}
+
+function updatePianoRollViewportReadout() {
+  if (!el.pianoRollViewportReadout) return;
+  const view = state.pianoRollView;
+  const bounds = pianoRollContentBounds();
+  const beatStart = view.beatOffset;
+  const beatEnd = view.beatOffset + view.visibleBeats;
+  const pitchEnd = view.pitchOffset + view.visiblePitches - 1;
+  el.pianoRollViewportReadout.textContent = `Beats ${beatStart.toFixed(1)}-${beatEnd.toFixed(1)} | MIDI ${view.pitchOffset}-${pitchEnd}`;
+  if (el.pianoRollScroll) {
+    const max = Math.max(0, bounds.totalBeats - view.visibleBeats);
+    el.pianoRollScroll.max = String(max);
+    el.pianoRollScroll.value = String(Math.min(max, view.beatOffset));
+    el.pianoRollScroll.disabled = max <= 0;
+  }
+}
+
+function pianoRollMetrics() {
+  clampPianoRollView();
+  const canvas = el.instrumentPianoRoll;
+  const rect = canvas.getBoundingClientRect();
+  const width = canvas.width;
+  const height = canvas.height;
+  const noteHeight = Math.max(1, height - PIANO_ROLL_RULER_HEIGHT);
+  const view = state.pianoRollView;
+  return {
+    canvas,
+    width,
+    height,
+    rulerHeight: PIANO_ROLL_RULER_HEIGHT,
+    noteHeight,
+    beatWidth: width / view.visibleBeats,
+    pitchHeight: noteHeight / view.visiblePitches,
+    scaleX: width / rect.width,
+    scaleY: height / rect.height,
+    beatOffset: view.beatOffset,
+    pitchOffset: view.pitchOffset,
+    visibleBeats: view.visibleBeats,
+    visiblePitches: view.visiblePitches,
+  };
+}
+
+function drawInstrumentPianoRoll() {
+  const canvas = el.instrumentPianoRoll;
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  const metrics = pianoRollMetrics();
+  const active = activeInstrumentTrack();
+  ctx.clearRect(0, 0, metrics.width, metrics.height);
+  ctx.fillStyle = "#111317";
+  ctx.fillRect(0, 0, metrics.width, metrics.height);
+  ctx.fillStyle = "#181b21";
+  ctx.fillRect(0, 0, metrics.width, metrics.rulerHeight);
+
+  const topPitch = metrics.pitchOffset + metrics.visiblePitches - 1;
+  for (let pitch = metrics.pitchOffset; pitch <= topPitch; pitch += 1) {
+    const y = pitchToCanvasY(pitch, metrics);
+    const isBlack = [1, 3, 6, 8, 10].includes(pitch % 12);
+    ctx.fillStyle = isBlack ? "rgba(255,255,255,0.025)" : "rgba(255,255,255,0.045)";
+    ctx.fillRect(0, y, metrics.width, metrics.pitchHeight);
+  }
+  const firstBeat = Math.floor(metrics.beatOffset);
+  const lastBeat = Math.ceil(metrics.beatOffset + metrics.visibleBeats);
+  for (let beat = firstBeat; beat <= lastBeat; beat += 1) {
+    const x = beatToCanvasX(beat, metrics);
+    ctx.strokeStyle = beat % 4 === 0 ? "rgba(242,184,75,0.45)" : "rgba(255,255,255,0.12)";
+    ctx.beginPath();
+    ctx.moveTo(x, metrics.rulerHeight);
+    ctx.lineTo(x, metrics.height);
+    ctx.stroke();
+    if (beat % 4 === 0) {
+      ctx.fillStyle = "rgba(231,235,242,0.72)";
+      ctx.font = "12px system-ui, sans-serif";
+      ctx.fillText(String(beat), x + 4, 18);
+    }
+  }
+  drawPianoRollSelection(ctx, metrics);
+  drawPianoRollCursor(ctx, metrics);
+  updatePianoRollViewportReadout();
+  if (!active || active.kind !== "instrument") return;
+
+  active.notes.forEach((note) => {
+    if (!noteIntersectsView(note, metrics)) return;
+    const x = beatToCanvasX(note.start, metrics);
+    const y = pitchToCanvasY(note.pitch, metrics);
+    const w = Math.max(6, note.duration * metrics.beatWidth);
+    const h = Math.max(8, metrics.pitchHeight - 2);
+    ctx.fillStyle = state.selectedInstrumentNoteIds.includes(note.id) || note.id === state.selectedInstrumentNoteId ? "#f2b84b" : "#2dd4bf";
+    ctx.fillRect(x, y + 1, w, h);
+    ctx.strokeStyle = "rgba(0,0,0,0.45)";
+    ctx.strokeRect(x, y + 1, w, h);
+  });
+}
+
+function beatToCanvasX(beat, metrics) {
+  return (beat - metrics.beatOffset) * metrics.beatWidth;
+}
+
+function pitchToCanvasY(pitch, metrics) {
+  return metrics.rulerHeight + metrics.noteHeight - (pitch - metrics.pitchOffset + 1) * metrics.pitchHeight;
+}
+
+function canvasXToBeat(x, metrics) {
+  return metrics.beatOffset + x / metrics.beatWidth;
+}
+
+function canvasYToPitch(y, metrics) {
+  const bounds = pianoRollContentBounds();
+  return Math.max(bounds.minPitch, Math.min(bounds.maxPitch, metrics.pitchOffset + Math.floor((metrics.rulerHeight + metrics.noteHeight - y) / metrics.pitchHeight)));
+}
+
+function drawPianoRollCursor(ctx, metrics) {
+  const x = beatToCanvasX(state.instrumentCursorBeat || 0, metrics);
+  if (x < 0 || x > metrics.width) return;
+  ctx.strokeStyle = "#f2b84b";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, metrics.height);
+  ctx.stroke();
+  ctx.lineWidth = 1;
+}
+
+function drawPianoRollSelection(ctx, metrics) {
+  if (!state.instrumentDrag || state.instrumentDrag.mode !== "select-range") return;
+  const start = Math.min(state.instrumentDrag.startBeat, state.instrumentDrag.currentBeat);
+  const end = Math.max(state.instrumentDrag.startBeat, state.instrumentDrag.currentBeat);
+  const x = beatToCanvasX(start, metrics);
+  const width = Math.max(1, (end - start) * metrics.beatWidth);
+  ctx.fillStyle = "rgba(242,184,75,0.18)";
+  ctx.fillRect(x, metrics.rulerHeight, width, metrics.noteHeight);
+  ctx.strokeStyle = "rgba(242,184,75,0.75)";
+  ctx.strokeRect(x, metrics.rulerHeight, width, metrics.noteHeight);
+}
+
+function noteIntersectsView(note, metrics) {
+  const beatStart = metrics.beatOffset;
+  const beatEnd = metrics.beatOffset + metrics.visibleBeats;
+  const pitchStart = metrics.pitchOffset;
+  const pitchEnd = metrics.pitchOffset + metrics.visiblePitches - 1;
+  return note.start + note.duration >= beatStart && note.start <= beatEnd && note.pitch >= pitchStart && note.pitch <= pitchEnd;
+}
+
+function noteAtCanvasPoint(x, y) {
+  const active = activeInstrumentTrack();
+  if (!active || active.kind !== "instrument") return null;
+  const metrics = pianoRollMetrics();
+  return [...active.notes].reverse().find((note) => {
+    if (!noteIntersectsView(note, metrics)) return false;
+    const nx = beatToCanvasX(note.start, metrics);
+    const ny = pitchToCanvasY(note.pitch, metrics);
+    const nw = Math.max(6, note.duration * metrics.beatWidth);
+    const nh = Math.max(8, metrics.pitchHeight - 2);
+    return x >= nx && x <= nx + nw && y >= ny && y <= ny + nh;
+  }) || null;
+}
+
+function canvasPoint(event) {
+  const metrics = pianoRollMetrics();
+  const rect = metrics.canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * metrics.scaleX,
+    y: (event.clientY - rect.top) * metrics.scaleY,
+  };
+}
+
+function quantizeBeat(value) {
+  return Math.max(0, Math.round(value * 4) / 4);
+}
+
+function pitchFromY(y) {
+  const metrics = pianoRollMetrics();
+  return canvasYToPitch(y, metrics);
+}
+
+function setSelectedInstrumentNotes(noteIds) {
+  state.selectedInstrumentNoteIds = [...new Set(noteIds)];
+  state.selectedInstrumentNoteId = state.selectedInstrumentNoteIds[0] || null;
+}
+
+function activeSelectedNotes() {
+  const active = activeInstrumentTrack();
+  if (!active || active.kind !== "instrument") return [];
+  return (active.notes || []).filter((note) => state.selectedInstrumentNoteIds.includes(note.id));
+}
+
+function selectNotesInBeatRange(startBeat, endBeat) {
+  const active = activeInstrumentTrack();
+  if (!active || active.kind !== "instrument") return;
+  const start = Math.min(startBeat, endBeat);
+  const end = Math.max(startBeat, endBeat);
+  const ids = (active.notes || [])
+    .filter((note) => note.start + note.duration >= start && note.start <= end)
+    .map((note) => note.id);
+  setSelectedInstrumentNotes(ids);
+}
+
+function copySelectedInstrumentNotes() {
+  const notes = activeSelectedNotes();
+  if (!notes.length) {
+    showToast("Select notes to copy");
+    return;
+  }
+  const start = Math.min(...notes.map((note) => note.start));
+  state.instrumentNoteClipboard = notes.map((note) => ({ ...note, id: "", start: note.start - start }));
+  showToast(`${notes.length} note${notes.length === 1 ? "" : "s"} copied`);
+}
+
+function pasteInstrumentNotes() {
+  const active = activeInstrumentTrack();
+  if (!active || active.kind !== "instrument") {
+    showToast("Select an instrument track");
+    return;
+  }
+  if (!state.instrumentNoteClipboard.length) {
+    showToast("Copy notes first");
+    return;
+  }
+  const pasted = state.instrumentNoteClipboard.map((note, index) => ({
+    ...note,
+    id: `note-${Date.now().toString(16)}-${index}`,
+    start: Math.max(0, quantizeBeat((state.instrumentCursorBeat || 0) + note.start)),
+  }));
+  active.notes.push(...pasted);
+  ensureInstrumentLengthForBeat(Math.max(...pasted.map((note) => note.start + note.duration)));
+  setSelectedInstrumentNotes(pasted.map((note) => note.id));
+  drawInstrumentPianoRoll();
+}
+
+function scrollPianoRoll(deltaBeats = 0, deltaPitches = 0) {
+  const view = state.pianoRollView;
+  view.beatOffset += deltaBeats;
+  view.pitchOffset += deltaPitches;
+  clampPianoRollView();
+  drawInstrumentPianoRoll();
+}
+
+function zoomPianoRoll(factor, anchorBeat = null) {
+  const view = state.pianoRollView;
+  const oldVisible = view.visibleBeats;
+  const oldOffset = view.beatOffset;
+  const anchor = anchorBeat === null ? oldOffset + oldVisible / 2 : anchorBeat;
+  const ratio = oldVisible > 0 ? (anchor - oldOffset) / oldVisible : 0.5;
+  view.visibleBeats = oldVisible * factor;
+  clampPianoRollView();
+  view.beatOffset = anchor - view.visibleBeats * ratio;
+  clampPianoRollView();
+  drawInstrumentPianoRoll();
+}
+
+function fitPianoRoll() {
+  const bounds = pianoRollContentBounds();
+  state.pianoRollView.beatOffset = 0;
+  state.pianoRollView.visibleBeats = Math.max(1, bounds.totalBeats);
+  state.pianoRollView.pitchOffset = bounds.minPitch;
+  state.pianoRollView.visiblePitches = bounds.maxPitch - bounds.minPitch + 1;
+  clampPianoRollView();
+  drawInstrumentPianoRoll();
+}
+
+function handlePianoRollWheel(event) {
+  event.preventDefault();
+  const metrics = pianoRollMetrics();
+  if (event.ctrlKey || event.metaKey) {
+    const point = canvasPoint(event);
+    zoomPianoRoll(event.deltaY > 0 ? 1.25 : 0.8, canvasXToBeat(point.x, metrics));
+    return;
+  }
+  if (event.shiftKey) {
+    scrollPianoRoll((event.deltaY || event.deltaX) * metrics.visibleBeats / 900, 0);
+    return;
+  }
+  scrollPianoRoll(0, event.deltaY > 0 ? -3 : 3);
+}
+
+function beginPianoRollEdit(event) {
+  const point = canvasPoint(event);
+  const metrics = pianoRollMetrics();
+  if (point.y <= metrics.rulerHeight) {
+    const beat = Math.max(0, canvasXToBeat(point.x, metrics));
+    setInstrumentCursorBeat(beat);
+    state.instrumentDrag = { mode: "select-range", startBeat: state.instrumentCursorBeat, currentBeat: state.instrumentCursorBeat };
+    return;
+  }
+  const active = activeInstrumentTrack();
+  if (!active || active.kind !== "instrument") {
+    showToast("Select an instrument track");
+    return;
+  }
+  const note = noteAtCanvasPoint(point.x, point.y);
+  if (note) {
+    const rightEdge = beatToCanvasX(note.start + note.duration, metrics);
+    if (!state.selectedInstrumentNoteIds.includes(note.id)) {
+      setSelectedInstrumentNotes([note.id]);
+    }
+    state.instrumentDrag = {
+      mode: Math.abs(point.x - rightEdge) < 8 ? "resize" : "move",
+      note,
+      startX: point.x,
+      startY: point.y,
+      originalStart: note.start,
+      originalDuration: note.duration,
+      originalPitch: note.pitch,
+      originalNotes: activeSelectedNotes().map((selected) => ({ note: selected, start: selected.start, pitch: selected.pitch })),
+    };
+  } else {
+    const start = quantizeBeat(canvasXToBeat(point.x, metrics));
+    const pitch = pitchFromY(point.y);
+    const bounds = pianoRollContentBounds();
+    const newNote = {
+      id: `note-${Date.now().toString(16)}`,
+      pitch,
+      start: Math.min(start, bounds.totalBeats - 0.25),
+      duration: 1,
+      velocity: 0.85,
+    };
+    active.notes.push(newNote);
+    setSelectedInstrumentNotes([newNote.id]);
+    state.instrumentDrag = { mode: "resize", note: newNote, startX: point.x, startY: point.y, originalStart: newNote.start, originalDuration: 1, originalPitch: pitch };
+  }
+  drawInstrumentPianoRoll();
+}
+
+function movePianoRollEdit(event) {
+  if (!state.instrumentDrag) return;
+  const point = canvasPoint(event);
+  const metrics = pianoRollMetrics();
+  const drag = state.instrumentDrag;
+  const bounds = pianoRollContentBounds();
+  if (drag.mode === "select-range") {
+    drag.currentBeat = Math.max(0, canvasXToBeat(point.x, metrics));
+    setInstrumentCursorBeat(drag.currentBeat);
+    selectNotesInBeatRange(drag.startBeat, drag.currentBeat);
+    drawInstrumentPianoRoll();
+    return;
+  }
+  if (drag.mode === "resize") {
+    const duration = quantizeBeat(canvasXToBeat(point.x, metrics) - drag.note.start);
+    drag.note.duration = Math.max(0.25, Math.min(bounds.totalBeats - drag.note.start, duration));
+  } else {
+    const beatDelta = quantizeBeat((point.x - drag.startX) / metrics.beatWidth);
+    const pitchDelta = Math.round((drag.startY - point.y) / metrics.pitchHeight);
+    const originals = drag.originalNotes && drag.originalNotes.length ? drag.originalNotes : [{ note: drag.note, start: drag.originalStart, pitch: drag.originalPitch }];
+    originals.forEach((item) => {
+      item.note.start = Math.max(0, Math.min(bounds.totalBeats - item.note.duration, item.start + beatDelta));
+      item.note.pitch = Math.max(bounds.minPitch, Math.min(bounds.maxPitch, item.pitch + pitchDelta));
+    });
+  }
+  drawInstrumentPianoRoll();
+}
+
+function endPianoRollEdit() {
+  state.instrumentDrag = null;
+}
+
+function deleteSelectedInstrumentNote() {
+  const active = activeInstrumentTrack();
+  if (!active || active.kind !== "instrument") return;
+  const selectedIds = state.selectedInstrumentNoteIds.length ? state.selectedInstrumentNoteIds : [state.selectedInstrumentNoteId].filter(Boolean);
+  if (!selectedIds.length) return;
+  active.notes = active.notes.filter((note) => !selectedIds.includes(note.id));
+  setSelectedInstrumentNotes([]);
+  drawInstrumentPianoRoll();
+}
+
+const KEYBOARD_NOTE_OFFSETS = {
+  a: 0,
+  w: 1,
+  s: 2,
+  e: 3,
+  d: 4,
+  f: 5,
+  t: 6,
+  g: 7,
+  y: 8,
+  h: 9,
+  u: 10,
+  j: 11,
+  k: 12,
+};
+
+async function playKeyboardPitch(pitch) {
+  const context = ensureInstrumentAudioContext();
+  context.resume();
+  const track = activeInstrumentTrack() || { instrument: el.instrumentPatch.value, volume: 0.85 };
+  await prepareInstrumentSamples(context, [track]);
+  scheduleSynthNote(context, context.destination, { pitch, start: 0, duration: 0.5, velocity: 0.9 }, track, context.currentTime);
+  if (state.instrumentRecording && track.kind === "instrument") {
+    const transportBeat = transportBeatAtCurrentTime();
+    if (transportBeat === null || transportBeat < 0) return;
+    const start = Math.max(0, quantizeBeat(transportBeat));
+    ensureInstrumentLengthForBeat(start + 1);
+    track.notes.push({ id: `note-${Date.now().toString(16)}`, pitch, start, duration: 1, velocity: 0.9 });
+    drawInstrumentPianoRoll();
+  }
+}
+
+function handleInstrumentKeydown(event) {
+  if (!el.instrumentLabPage.classList.contains("active")) return;
+  if (event.target && ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
+  const key = event.key.toLowerCase();
+  if (!(key in KEYBOARD_NOTE_OFFSETS)) return;
+  event.preventDefault();
+  const pitch = Number(el.instrumentOctave.value || 4) * 12 + 12 + KEYBOARD_NOTE_OFFSETS[key];
+  playKeyboardPitch(pitch).catch((error) => showToast(error.message));
+}
+
+function renderInstrumentPianoKeys() {
+  el.instrumentPianoKeys.replaceChildren();
+  for (let offset = 0; offset <= 12; offset += 1) {
+    const pitch = Number(el.instrumentOctave.value || 4) * 12 + 12 + offset;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `piano-key ${[1, 3, 6, 8, 10].includes(offset % 12) ? "black" : "white"}`;
+    button.textContent = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", "C"][offset];
+    button.addEventListener("pointerdown", () => {
+      playKeyboardPitch(pitch).catch((error) => showToast(error.message));
+    });
+    el.instrumentPianoKeys.appendChild(button);
+  }
+}
+
 function addGeneratedResult(result, plan) {
   state.generatedResults.unshift({ result, plan });
   state.generatedResults = state.generatedResults.slice(0, 12);
@@ -884,7 +2170,8 @@ function addGeneratedResult(result, plan) {
 }
 
 async function loadAll() {
-  const [status, runtime, presets, models, tracks, extractions, musicGenerations, editorAssets, logs] = await Promise.all([
+  await loadInstrumentBank();
+  const [status, runtime, presets, models, tracks, extractions, musicGenerations, instrumentClips, editorAssets, logs] = await Promise.all([
     api("/api/status"),
     api("/api/runtime/status"),
     api("/api/presets"),
@@ -892,6 +2179,7 @@ async function loadAll() {
     api("/api/extractions/tracks"),
     api("/api/extractions"),
     api("/api/music-generations"),
+    api("/api/instrument-lab/clips"),
     api("/api/editor/assets"),
     api("/api/logs"),
   ]);
@@ -900,6 +2188,7 @@ async function loadAll() {
   state.extractionTracks = tracks;
   state.extractionResults = extractions;
   state.musicResults = musicGenerations;
+  state.instrumentClips = instrumentClips;
   state.editorAssets = editorAssets;
   renderStatus(status);
   renderRuntime(runtime);
@@ -909,6 +2198,10 @@ async function loadAll() {
   renderExtractionList();
   applyMusicModelDefaults();
   renderMusicList();
+  renderInstrumentTracks();
+  renderInstrumentPianoKeys();
+  drawInstrumentPianoRoll();
+  renderInstrumentClipList();
   renderSourceAssetOptions();
   renderEditorAssets();
   renderLogs(logs);
@@ -1292,6 +2585,7 @@ async function refreshStatus() {
 el.transitionTabButton.addEventListener("click", () => setActivePage("transition"));
 el.extractionTabButton.addEventListener("click", () => setActivePage("extraction"));
 el.musicTabButton.addEventListener("click", () => setActivePage("music"));
+el.instrumentLabTabButton.addEventListener("click", () => setActivePage("instrument"));
 el.audioEditTabButton.addEventListener("click", () => setActivePage("audioedit"));
 el.reloadAudioEditorButton.addEventListener("click", reloadAudioEditor);
 el.openAudioEditorButton.addEventListener("click", openAudioEditorWindow);
@@ -1317,6 +2611,53 @@ el.runExtractionButton.addEventListener("click", runExtraction);
 el.mergeExtractionsButton.addEventListener("click", mergeSelectedExtractions);
 el.runMusicButton.addEventListener("click", runMusicGeneration);
 el.musicModelSelect.addEventListener("change", applyMusicModelDefaults);
+el.addInstrumentTrackButton.addEventListener("click", addInstrumentTrack);
+el.importInstrumentAssetButton.addEventListener("click", importInstrumentAssetTrack);
+el.playInstrumentButton.addEventListener("click", playInstrumentLab);
+el.stopInstrumentButton.addEventListener("click", stopInstrumentLab);
+el.recordInstrumentButton.addEventListener("click", () => {
+  if (state.instrumentRecording) {
+    stopInstrumentLab();
+    return;
+  }
+  recordInstrumentLab().catch(() => {});
+});
+el.deleteInstrumentNoteButton.addEventListener("click", deleteSelectedInstrumentNote);
+el.copyInstrumentNotesButton.addEventListener("click", copySelectedInstrumentNotes);
+el.pasteInstrumentNotesButton.addEventListener("click", pasteInstrumentNotes);
+el.renderInstrumentButton.addEventListener("click", () => {
+  renderInstrumentPreview().catch(() => {});
+});
+el.saveInstrumentTrackButton.addEventListener("click", () => saveInstrumentClip({ trackOnly: true }));
+el.saveInstrumentButton.addEventListener("click", saveInstrumentClip);
+el.instrumentPatch.addEventListener("change", () => {
+  const active = activeInstrumentTrack();
+  if (active && active.kind === "instrument") {
+    active.instrument = legacyInstrumentId(el.instrumentPatch.value);
+    renderInstrumentTracks();
+  }
+  updateInstrumentInfo();
+});
+el.importSfzButton.addEventListener("click", importSfzInstrument);
+el.instrumentBars.addEventListener("change", () => {
+  clampPianoRollView();
+  drawInstrumentPianoRoll();
+});
+el.instrumentBpm.addEventListener("change", drawInstrumentPianoRoll);
+el.instrumentOctave.addEventListener("change", renderInstrumentPianoKeys);
+el.pianoRollScroll.addEventListener("input", (event) => {
+  state.pianoRollView.beatOffset = Number(event.target.value || 0);
+  clampPianoRollView();
+  drawInstrumentPianoRoll();
+});
+el.pianoRollZoomOutButton.addEventListener("click", () => zoomPianoRoll(1.25));
+el.pianoRollZoomInButton.addEventListener("click", () => zoomPianoRoll(0.8));
+el.pianoRollFitButton.addEventListener("click", fitPianoRoll);
+el.instrumentPianoRoll.addEventListener("pointerdown", beginPianoRollEdit);
+el.instrumentPianoRoll.addEventListener("pointermove", movePianoRollEdit);
+el.instrumentPianoRoll.addEventListener("wheel", handlePianoRollWheel, { passive: false });
+window.addEventListener("pointerup", endPianoRollEdit);
+window.addEventListener("keydown", handleInstrumentKeydown);
 el.refreshMusicButton.addEventListener("click", async () => {
   await refreshMusicGenerations();
   await refreshEditorAssets();
