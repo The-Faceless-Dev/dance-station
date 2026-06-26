@@ -257,6 +257,8 @@ class AceStepApiClient:
         prompt: str,
         model: str,
         save_dir: Path,
+        lyrics: str = "[Instrumental]",
+        vocal_language: str = "unknown",
         audio_duration: float = 30.0,
         audio_format: str = "flac",
         inference_steps: int = 8,
@@ -275,7 +277,8 @@ class AceStepApiClient:
         payload: dict[str, Any] = {
             "task_type": "text2music",
             "prompt": prompt,
-            "lyrics": "[Instrumental]",
+            "lyrics": lyrics.strip() or "[Instrumental]",
+            "vocal_language": vocal_language.strip() or "unknown",
             "audio_duration": audio_duration,
             "audio_format": _raw_text2music_audio_format(audio_format),
             "batch_size": 1,

@@ -738,6 +738,8 @@ def test_ui_music_generation_runs_and_records_history(tmp_path: Path, monkeypatc
         prompt,
         model,
         save_dir,
+        lyrics="[Instrumental]",
+        vocal_language="unknown",
         audio_duration=30.0,
         audio_format="flac",
         inference_steps=8,
@@ -752,7 +754,9 @@ def test_ui_music_generation_runs_and_records_history(tmp_path: Path, monkeypatc
     ):
         assert prompt == "dark music"
         assert model == "acestep-v15-turbo"
-        assert audio_duration == 30.0
+        assert lyrics == "This is the hook"
+        assert vocal_language == "en"
+        assert audio_duration == 300.0
         assert inference_steps == 8
         assert guidance_scale == 1.0
         output = save_dir / "music.flac"
@@ -770,7 +774,10 @@ def test_ui_music_generation_runs_and_records_history(tmp_path: Path, monkeypatc
             "prompt": "dark music",
             "model": "acestep-v15-turbo",
             "label": "Dark cue",
-            "audio_duration": 30,
+            "instrumental": False,
+            "lyrics": "This is the hook",
+            "vocal_language": "en",
+            "audio_duration": 300,
             "inference_steps": 8,
             "guidance_scale": 1.0,
             "shift": 3.0,
@@ -782,8 +789,44 @@ def test_ui_music_generation_runs_and_records_history(tmp_path: Path, monkeypatc
     item = response.json()["generation"]
     assert item["status"] == "complete"
     assert item["label"] == "Dark cue"
+    assert item["settings"]["instrumental"] is False
+    assert item["settings"]["lyrics"] == "This is the hook"
+    assert item["settings"]["vocal_language"] == "en"
     assert Path(item["generated_audio_path"]).exists()
     assert history.json()[0]["generation_id"] == item["generation_id"]
+
+
+def test_ui_music_generation_accepts_legacy_xl_base_model_value(tmp_path: Path, monkeypatch) -> None:
+    from autotransition.models.acestep_api import AceStepApiClient, RepaintResult
+
+    client = TestClient(create_app(runtime_config=RuntimeConfig(ace_step_dir=tmp_path / "runtime")))
+
+    def fake_music(self, *, prompt, model, save_dir, **kwargs):
+        assert model == "acestep-v15-base"
+        output = save_dir / "music.flac"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"audio")
+        metadata = save_dir / "ace.json"
+        metadata.write_text("{}", encoding="utf-8")
+        return RepaintResult(output_path=output, metadata_path=metadata, model_name="ACE-Step API")
+
+    monkeypatch.setattr(AceStepApiClient, "text2music_standalone", fake_music)
+
+    response = client.post(
+        "/api/music-generations/run",
+        json={
+            "prompt": "dark music",
+            "model": "acestep-v15-xl-base",
+            "vocal_language": "auto",
+            "audio_duration": 30,
+            "inference_steps": 8,
+            "guidance_scale": 1.0,
+            "shift": 3.0,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["generation"]["model"] == "acestep-v15-base"
 
 
 def test_ui_selection_scaffold_uses_configured_future_length(tmp_path: Path) -> None:

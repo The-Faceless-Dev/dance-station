@@ -141,7 +141,7 @@ class ExtractionRunRequest(BaseModel):
 class BaseGenerationTestRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
     output_format: Literal["flac", "wav", "wav32", "mp3", "opus", "aac"] = "flac"
-    audio_duration: float = Field(30.0, ge=10.0, le=120.0)
+    audio_duration: float = Field(30.0, ge=10.0, le=300.0)
     inference_steps: int = Field(BASE_RUNTIME_INFERENCE_STEPS, ge=1, le=200)
     guidance_scale: float = Field(BASE_RUNTIME_GUIDANCE_SCALE, ge=0)
     shift: float = Field(BASE_RUNTIME_SHIFT, ge=0)
@@ -165,10 +165,13 @@ class ExtractionMergeRequest(BaseModel):
 
 class MusicGenerationRequest(BaseModel):
     prompt: str = Field(..., min_length=1)
-    model: Literal["acestep-v15-turbo", "acestep-v15-base"] = "acestep-v15-turbo"
+    model: str = "acestep-v15-turbo"
     label: str | None = None
+    instrumental: bool = True
+    lyrics: str | None = None
+    vocal_language: str = "unknown"
     output_format: Literal["flac", "wav", "wav32", "mp3", "opus", "aac"] = "flac"
-    audio_duration: float = Field(30.0, ge=10.0, le=120.0)
+    audio_duration: float = Field(30.0, ge=10.0, le=300.0)
     inference_steps: int = Field(8, ge=1, le=200)
     guidance_scale: float = Field(1.0, ge=0)
     shift: float = Field(3.0, ge=0)
@@ -178,6 +181,13 @@ class MusicGenerationRequest(BaseModel):
     velocity_norm_threshold: float = Field(0.0, ge=0)
     velocity_ema_factor: float = Field(0.0, ge=0, le=1)
     seed: int | None = None
+
+
+def _music_generation_model(value: str) -> str:
+    model = (value or "").strip()
+    if model in {"acestep-v15-base", "acestep-v15-xl-base"}:
+        return "acestep-v15-base"
+    return "acestep-v15-turbo"
 
 
 def _setting_or_default(value: Any, default: Any) -> Any:
@@ -791,13 +801,18 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
         metadata_path = save_dir / "generation.json"
         created_at = _datetime.datetime.now(_datetime.UTC).isoformat()
         prompt = request.prompt.strip()
+        lyrics = "[Instrumental]" if request.instrumental else (request.lyrics or "").strip() or "[Instrumental]"
+        model = _music_generation_model(request.model)
+        vocal_language = (request.vocal_language or "unknown").strip() or "unknown"
         label = request.label.strip() if request.label else prompt[:80]
-        ui_log.add("info", f"Running ACE-Step {request.model} text-to-music generation.")
+        ui_log.add("info", f"Running ACE-Step {model} text-to-music generation.")
         try:
             result = AceStepApiClient(runtime_config).text2music_standalone(
                 prompt=prompt,
-                model=request.model,
+                model=model,
                 save_dir=save_dir,
+                lyrics=lyrics,
+                vocal_language=vocal_language,
                 audio_duration=request.audio_duration,
                 audio_format=request.output_format,
                 inference_steps=request.inference_steps,
@@ -819,7 +834,7 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
                 "created_at": created_at,
                 "label": label,
                 "prompt": prompt,
-                "model": request.model,
+                "model": model,
                 "output_format": request.output_format,
                 "metadata_path": str(metadata_path),
                 "settings": request.model_dump(),
@@ -834,7 +849,7 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             "created_at": created_at,
             "label": label,
             "prompt": prompt,
-            "model": request.model,
+            "model": model,
             "output_format": request.output_format,
             "generated_audio_path": str(result.output_path),
             "generated_metadata_path": str(result.metadata_path),

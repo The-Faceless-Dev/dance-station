@@ -79,6 +79,8 @@ Completed extractions are saved as reusable results. You can label individual ex
 
 The Music Generation section creates new music directly from a text prompt.
 
+It supports instrumental generation by default, plus optional vocal generation with a lyrics field and vocal language hint. Voice character is controlled through the prompt, such as "female vocal", "male baritone", "choir", or "rap verse"; ACE-Step does not expose a fixed singer selector through the local runtime path used here.
+
 It exposes the generation controls that are useful for the active ACE-Step model path, including duration, seed, steps, guidance, shift, sampler mode, tiled decoding, DCW, and velocity settings. Turbo and Base generation use different defaults based on the working settings found during testing.
 
 Completed generations are listed in the UI with playable audio and saved metadata.

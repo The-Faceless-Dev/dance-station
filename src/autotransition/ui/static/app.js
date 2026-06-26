@@ -147,6 +147,9 @@ const el = {
   musicActionState: document.querySelector("#musicActionState"),
   musicModelState: document.querySelector("#musicModelState"),
   musicPrompt: document.querySelector("#musicPrompt"),
+  musicInstrumental: document.querySelector("#musicInstrumental"),
+  musicVocalLanguage: document.querySelector("#musicVocalLanguage"),
+  musicLyrics: document.querySelector("#musicLyrics"),
   musicLabelInput: document.querySelector("#musicLabelInput"),
   musicModelSelect: document.querySelector("#musicModelSelect"),
   musicOutputFormat: document.querySelector("#musicOutputFormat"),
@@ -228,10 +231,25 @@ async function api(path, options = {}) {
   });
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = body && body.detail ? body.detail : `Request failed: ${response.status}`;
+    const detail = formatApiDetail(body && body.detail ? body.detail : `Request failed: ${response.status}`);
     throw new Error(detail);
   }
   return body;
+}
+
+function formatApiDetail(detail) {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        const location = Array.isArray(item.loc) ? item.loc.join(".") : "request";
+        return `${location}: ${item.msg || JSON.stringify(item)}`;
+      })
+      .join("; ");
+  }
+  if (detail && typeof detail === "object") return detail.message || JSON.stringify(detail);
+  return String(detail);
 }
 
 function setPill(node, text, tone = "neutral") {
@@ -692,6 +710,17 @@ function applyMusicModelDefaults() {
   el.musicVelocityNormThreshold.value = "0";
   el.musicVelocityEmaFactor.value = "0";
   setPill(el.musicModelState, base ? "Base" : "Turbo", "neutral");
+}
+
+function syncMusicVocalControls() {
+  const instrumental = el.musicInstrumental.checked;
+  el.musicLyrics.disabled = instrumental;
+  el.musicVocalLanguage.disabled = instrumental;
+  if (instrumental) {
+    el.musicLyrics.placeholder = "Instrumental mode sends [Instrumental] to ACE-Step";
+  } else {
+    el.musicLyrics.placeholder = "Verse and chorus lyrics to sing";
+  }
 }
 
 function activityTone(phase) {
@@ -2197,6 +2226,7 @@ async function loadAll() {
   renderExtractionTracks();
   renderExtractionList();
   applyMusicModelDefaults();
+  syncMusicVocalControls();
   renderMusicList();
   renderInstrumentTracks();
   renderInstrumentPianoKeys();
@@ -2458,6 +2488,9 @@ async function runMusicGeneration() {
         prompt,
         model: el.musicModelSelect.value,
         label: el.musicLabelInput.value.trim() || null,
+        instrumental: el.musicInstrumental.checked,
+        lyrics: el.musicLyrics.value.trim() || null,
+        vocal_language: el.musicVocalLanguage.value,
         output_format: el.musicOutputFormat.value,
         audio_duration: numericValue(el.musicDuration),
         inference_steps: numericValue(el.musicInferenceSteps),
@@ -2611,6 +2644,7 @@ el.runExtractionButton.addEventListener("click", runExtraction);
 el.mergeExtractionsButton.addEventListener("click", mergeSelectedExtractions);
 el.runMusicButton.addEventListener("click", runMusicGeneration);
 el.musicModelSelect.addEventListener("change", applyMusicModelDefaults);
+el.musicInstrumental.addEventListener("change", syncMusicVocalControls);
 el.addInstrumentTrackButton.addEventListener("click", addInstrumentTrack);
 el.importInstrumentAssetButton.addEventListener("click", importInstrumentAssetTrack);
 el.playInstrumentButton.addEventListener("click", playInstrumentLab);

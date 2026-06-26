@@ -552,6 +552,8 @@ def test_standalone_text2music_turbo_uses_active_runtime(tmp_path: Path, monkeyp
             assert payload["task_type"] == "text2music"
             assert payload["prompt"] == "dark music"
             assert "model" not in payload
+            assert payload["lyrics"] == "[Instrumental]"
+            assert payload["vocal_language"] == "unknown"
             assert payload["inference_steps"] == 8
             assert payload["guidance_scale"] == 1.0
             assert payload["shift"] == 3.0
@@ -573,6 +575,50 @@ def test_standalone_text2music_turbo_uses_active_runtime(tmp_path: Path, monkeyp
 
     assert result.output_path.read_bytes() == b"music"
     assert not any(call[1].endswith("/v1/init") for call in calls)
+
+
+def test_text2music_standalone_passes_vocal_lyrics_and_language(tmp_path: Path, monkeypatch) -> None:
+    captured_payloads = []
+
+    class Response:
+        def __init__(self, body, content=b"music") -> None:
+            self._body = body
+            self.status_code = 200
+            self.content = content
+            self.text = str(body)
+            self.request = SimpleNamespace(method="POST", url="http://127.0.0.1:8001")
+
+        def json(self):
+            return self._body
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(url, **kwargs):
+        if url.endswith("/v1/audio"):
+            return Response({}, content=b"music")
+        return Response({})
+
+    def fake_post(url, **kwargs):
+        if url.endswith("/release_task"):
+            captured_payloads.append(kwargs["json"])
+            return Response({"data": {"task_id": "task-1"}})
+        if url.endswith("/query_result"):
+            return Response({"data": [{"task_id": "task-1", "status": 1, "file": "music.flac"}]})
+        return Response({})
+
+    monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace(get=fake_get, post=fake_post))
+
+    AceStepApiClient(RuntimeConfig()).text2music_standalone(
+        prompt="pop vocal hook",
+        model="acestep-v15-turbo",
+        save_dir=tmp_path / "music",
+        lyrics="This is the chorus",
+        vocal_language="en",
+    )
+
+    assert captured_payloads[0]["lyrics"] == "This is the chorus"
+    assert captured_payloads[0]["vocal_language"] == "en"
 
 
 def test_text2music_uses_working_bpm_and_key_defaults_when_ui_omits_them(tmp_path: Path, monkeypatch) -> None:
