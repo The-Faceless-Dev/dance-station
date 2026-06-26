@@ -1,0 +1,26 @@
+{
+  "file": "/v1/audio?path=D%3A%5Cautotransition%5Cruntimes%5CACE-Step-1.5%5C.cache%5Cacestep%5Ctmp%5Capi_audio%5Cd496052e-6eb3-2336-d41f-4af939be7385.flac",
+  "wave": "",
+  "status": 1,
+  "create_time": 1782424012,
+  "env": "development",
+  "prompt": "90s pop song, catchy",
+  "lyrics": "[Instrumental]",
+  "metas": {
+    "bpm": 120,
+    "duration": 30.0,
+    "genres": "N/A",
+    "keyscale": "G major",
+    "timesignature": "4",
+    "prompt": "90s pop song, catchy",
+    "lyrics": "[Instrumental]"
+  },
+  "generation_info": "**\ud83c\udfb5 Total generation time (1 song): 12.25s**\n- 12.25s per song\n- LM phase (1 song): 9.42s\n- DiT phase (1 song): 2.82s",
+  "seed_value": "3587672231",
+  "lm_model": "acestep-5Hz-lm-0.6B",
+  "dit_model": "acestep-v15-turbo",
+  "progress": 1.0,
+  "stage": "succeeded",
+  "downloaded_audio_path": "data\\generations\\music-349a4f73dba9\\7d2d3d6d-f08d-4f21-b52b-bf71396d0091.flac",
+  "ace_audio_path": "D:\\autotransition\\runtimes\\ACE-Step-1.5\\.cache\\acestep\\tmp\\api_audio\\d496052e-6eb3-2336-d41f-4af939be7385.flac"
+}
