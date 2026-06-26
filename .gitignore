@@ -24,6 +24,7 @@ external/
 data/input/
 data/output/
 data/generated/
+data/generations/
 data/scaffolds/
 data/exports/
 data/extractions/
