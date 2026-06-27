@@ -4,11 +4,12 @@ Dance Station is an AI-assisted audio workstation distributed by **The Faceless 
 
 The goal is to give creators, streamers, visualizers, rhythm-game experimenters, and media builders one practical local workspace for generating, extending, separating, editing, performing, arranging, and reusing music clips.
 
-The app currently includes five main work areas:
+The app currently includes six main work areas:
 
 - **Autotransition**: continue a source song from a selected point and create a natural transition into newly generated music.
 - **Extraction**: separate useful musical parts from a song using ACE-Step extraction.
 - **Generation**: create new music directly from a prompt.
+- **LoKr Training**: build captioned music datasets, preprocess them with Side-Step, train LoKr style adapters, and use completed adapters during generation.
 - **Instrument Lab**: create and edit instrument performances with tracks, piano-roll editing, computer-key input, sampled instruments, and SFZ imports.
 - **Audio Editor**: edit, repair, record, export, and arrange audio with the integrated AudioMass editor.
 
@@ -31,6 +32,8 @@ First-time setup:
 ```powershell
 autotransition setup
 ```
+
+This installs the app dependencies plus the external ACE-Step and Side-Step runtimes used by the generation, extraction, transition, and LoKr training workflows.
 
 Run the full local app:
 
@@ -83,7 +86,28 @@ It supports instrumental generation by default, plus optional vocal generation w
 
 It exposes the generation controls that are useful for the active ACE-Step model path, including duration, seed, steps, guidance, shift, sampler mode, tiled decoding, DCW, and velocity settings. Turbo and Base generation use different defaults based on the working settings found during testing.
 
-Completed generations are listed in the UI with playable audio and saved metadata.
+Completed generations are listed in the UI with playable audio and saved metadata. If you have trained LoKr adapters, the Generation tab can select one, set its strength, and apply it to a compatible ACE-Step model while generating.
+
+## LoKr Training
+
+The LoKr Training section builds reusable style adapters with Side-Step.
+
+The workflow is:
+
+1. Create or load a dataset.
+2. Add audio from disk or from existing Dance Station creations.
+3. Add captions and lyrics for each entry. Instrumental entries can use `[Instrumental]`.
+4. Set dataset-level defaults such as genre, language, trigger tag, and whether the whole set is instrumental.
+5. Run preprocess to build the Side-Step tensor dataset.
+6. Start LoKr training from the preprocessed tensors.
+7. Monitor epoch, step, and loss progress in the UI.
+8. Use the completed LoKr from the Generation tab.
+
+Each preprocess or training run is saved under `data/lokr-training/runs/` with its own metadata, logs, and outputs. Reusing the same dataset creates a new training run and a new adapter; it does not overwrite earlier trained LoKrs.
+
+The UI prevents starting another Side-Step preprocess/training run while one is already active. Running jobs can be stopped from the LoKr Training panel, and the log view can be cleared without deleting saved run files or trained adapters.
+
+Default LoKr training is configured for practical local use: batch size 1, gradient accumulation, gradient checkpointing, encoder offload, and AdamW 8-bit. These defaults are intended to make training possible on smaller GPUs while preserving useful quality and speed.
 
 ## Instrument Lab
 
@@ -140,6 +164,12 @@ autotransition run
 
 First-run runtime and model downloads can take a while and require enough disk space. Dance Station manages the ACE-Step runtime through the app command so users do not need to start ACE-Step separately.
 
+LoKr training uses Side-Step, which is installed by the same setup command. To install only the Side-Step runtime later, use:
+
+```powershell
+autotransition runtime setup-sidestep
+```
+
 ## Project Layout
 
 ```text
@@ -147,6 +177,7 @@ src/autotransition/
   audio/        Audio probing, slicing, silence, merge, and composition helpers.
   models/       ACE-Step runtime/API integration.
   pipeline/     Transition planning and scaffold state.
+  runtime/      External runtime setup/status helpers for ACE-Step and Side-Step.
   scoring/      Candidate scoring interfaces.
   ui/           Local web UI and API.
   ui/static/    Browser UI assets, including the instrument bank.
@@ -160,5 +191,6 @@ src/autotransition/
 - Candidate scoring is only an interface placeholder.
 - ACE-Step first-run runtime/model downloads can take a long time and require enough disk space.
 - Track extraction uses ACE-Step Base and may require more startup/download time than transition generation.
+- LoKr training requires the Side-Step runtime and can take substantial GPU time depending on dataset size and training settings.
 - Audio loading, merging, and scaffold generation depend on `pydub` and `ffmpeg`.
 - SFZ import supports a practical subset of SFZ regions and sample mapping. Native binary `.sf2` import is not implemented yet.
