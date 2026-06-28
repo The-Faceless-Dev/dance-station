@@ -511,6 +511,11 @@ h3 {
   gap: 12px;
 }
 
+.compact-library-list {
+  max-height: 520px;
+  overflow: auto;
+}
+
 .editor-asset-item,
 .library-item {
   border: 1px solid var(--line);
@@ -549,7 +554,29 @@ h3 {
   white-space: nowrap;
 }
 
-.editor-asset-item audio {
+.imported-badge {
+  border-color: rgba(250, 204, 21, 0.42);
+  color: #fde68a;
+  background: rgba(250, 204, 21, 0.1);
+}
+
+.library-card-art {
+  min-height: 96px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-position: center;
+  background-size: cover;
+}
+
+.library-card-art.empty-art {
+  background:
+    radial-gradient(circle at 22% 18%, rgba(45, 212, 191, 0.2), transparent 28%),
+    linear-gradient(135deg, #1b2430, #0f1115);
+}
+
+.editor-asset-item audio,
+.library-item audio {
   width: 100%;
   margin: 4px 0 8px;
   accent-color: var(--accent);

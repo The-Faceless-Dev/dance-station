@@ -33,6 +33,7 @@ from autotransition.library.publish import (
     LibraryPublishError,
     LibraryPublisher,
     LibraryPublishSettings,
+    PublicLibraryClient,
     load_publish_settings,
     public_settings_response,
     save_publish_settings,
@@ -1201,6 +1202,35 @@ def _editor_assets() -> list[dict[str, Any]]:
         if asset:
             assets.append(asset)
 
+    for item in _local_library().list_items():
+        if not bool((item.metadata or {}).get("imported")):
+            continue
+        audio_file = next((file for file in item.files if file.role in {"audio", "preview", "stem"}), None)
+        if audio_file is None:
+            continue
+        audio_path = Path(audio_file.path)
+        if not audio_path.exists() or not audio_path.is_file():
+            continue
+        creator = (item.metadata or {}).get("creator") or {}
+        creator_name = creator.get("display_name") or creator.get("creator_slug") or ""
+        assets.append(
+            {
+                "asset_id": item.id,
+                "category": item.kind,
+                "label": item.title,
+                "audio_path": str(audio_path),
+                "audio_url": f"/api/editor/audio?path={quote(str(audio_path))}",
+                "duration_seconds": audio_file.metadata.get("duration_seconds") or 0,
+                "created_at": item.created_at,
+                "metadata_path": str(_local_library()._manifest_path(item.id)),
+                "message": f"Imported public library item{f' by {creator_name}' if creator_name else ''}",
+                "source_path": audio_file.public_url or "",
+                "source_asset_id": item.source_lineage.get("remote_item_id") or "",
+                "imported": True,
+                "creator_name": creator_name,
+            }
+        )
+
     return sorted(assets, key=lambda item: str(item.get("created_at") or ""), reverse=True)
 
 
@@ -1514,6 +1544,25 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
 
         ui_log.add("info", f"Published local library item '{updated.title}' to the public library.")
         return {"item": _library_item_response(updated), "publish": publish_result}
+
+    @app.get("/api/library/public")
+    def list_public_library(kind: str = Query("all", max_length=80)) -> dict[str, Any]:
+        try:
+            items = PublicLibraryClient(load_publish_settings()).list_items(kind=kind, limit=80)
+        except LibraryPublishError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"items": items, "count": len(items)}
+
+    @app.post("/api/library/public/{item_id}/import")
+    def import_public_library_item(item_id: str) -> dict[str, Any]:
+        try:
+            imported = PublicLibraryClient(load_publish_settings()).import_item(item_id)
+            item = _local_library().write_item(imported)
+        except LibraryPublishError as exc:
+            ui_log.add("error", str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        ui_log.add("info", f"Imported public library item: {item.title}")
+        return {"item": _library_item_response(item)}
 
     @app.get("/api/lokr/datasets")
     def list_lokr_datasets() -> list[dict[str, Any]]:

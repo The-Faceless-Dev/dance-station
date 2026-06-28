@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from autotransition.library.schema import LibraryItem
+from autotransition.library.schema import LibraryFile
 
 
 @dataclass
@@ -97,6 +98,108 @@ class LibraryPublisher:
         }
 
 
+class PublicLibraryClient:
+    def __init__(self, settings: LibraryPublishSettings, timeout_seconds: float = 120.0) -> None:
+        self.settings = settings
+        self.timeout_seconds = timeout_seconds
+
+    def list_items(self, *, kind: str | None = None, limit: int = 80) -> list[dict[str, Any]]:
+        if not self.settings.site_url.strip():
+            raise LibraryPublishError("Public library site URL is not configured.")
+        params: dict[str, Any] = {"limit": limit}
+        if kind and kind != "all":
+            params["kind"] = kind
+        with httpx.Client(timeout=self.timeout_seconds) as client:
+            response = _checked_json(
+                client.get(f"{self.settings.site_url.rstrip('/')}/api/library", params=params),
+                "load public library",
+            )
+        return list(response.get("items") or [])
+
+    def import_item(self, item_id: str, *, root: Path = Path("data/library/imports")) -> LibraryItem:
+        if not self.settings.site_url.strip():
+            raise LibraryPublishError("Public library site URL is not configured.")
+        api_base = self.settings.site_url.rstrip("/")
+        with httpx.Client(timeout=self.timeout_seconds, follow_redirects=True) as client:
+            response = _checked_json(client.get(f"{api_base}/api/library/{item_id}"), "load public library item")
+            remote = response.get("item") or {}
+            files = list(remote.get("files") or [])
+            if not files:
+                raise LibraryPublishError("Public library item has no downloadable files.")
+
+            local_item_id = f"imported-{item_id}"
+            import_dir = root / _safe_path_part(local_item_id)
+            import_dir.mkdir(parents=True, exist_ok=True)
+            local_files: list[LibraryFile] = []
+            for remote_file in files:
+                public_url = str(remote_file.get("publicUrl") or "")
+                if not public_url:
+                    continue
+                file_id = str(remote_file.get("id") or "file")
+                original_name = str((remote_file.get("metadata") or {}).get("originalName") or Path(public_url).name or file_id)
+                local_path = import_dir / f"{_safe_path_part(file_id)}-{_safe_path_part(original_name)}"
+                download = client.get(public_url)
+                if not download.is_success:
+                    raise LibraryPublishError(f"Could not download {public_url}: HTTP {download.status_code}")
+                local_path.write_bytes(download.content)
+                local_files.append(
+                    LibraryFile(
+                        id=f"import-{file_id}",
+                        role=remote_file.get("role") or "audio",
+                        mime_type=remote_file.get("mimeType") or "application/octet-stream",
+                        size_bytes=local_path.stat().st_size,
+                        storage_provider="local",
+                        path=str(local_path),
+                        public_url=public_url,
+                        sha256=remote_file.get("sha256") or None,
+                        metadata={
+                            **(remote_file.get("metadata") or {}),
+                            "remote_file_id": file_id,
+                            "remote_public_url": public_url,
+                        },
+                    )
+                )
+
+        creator = remote.get("creator") or {}
+        return LibraryItem(
+            id=f"imported-{item_id}",
+            owner_id=remote.get("ownerId") or None,
+            visibility="local",
+            status="draft",
+            kind=remote.get("kind") or "audio",
+            title=remote.get("title") or item_id,
+            description=remote.get("description") or None,
+            tags=list(remote.get("tags") or []),
+            files=local_files,
+            metadata={
+                **(remote.get("metadata") or {}),
+                "imported": True,
+                "category": remote.get("kind") or "audio",
+                "public_library": {
+                    "remote_item_id": item_id,
+                    "remote_status": remote.get("status") or "",
+                    "remote_visibility": remote.get("visibility") or "",
+                    "public_url": f"{api_base}/library",
+                },
+                "creator": {
+                    "display_name": creator.get("displayName") or "",
+                    "creator_slug": creator.get("creatorSlug") or "",
+                    "avatar_url": creator.get("avatarUrl") or "",
+                    "banner_url": creator.get("bannerUrl") or "",
+                },
+            },
+            source_lineage={
+                **(remote.get("sourceLineage") or {}),
+                "remote_item_id": item_id,
+                "imported_from": api_base,
+            },
+            license=remote.get("license") or None,
+            attribution=remote.get("attribution") or None,
+            created_at=remote.get("createdAt") or "",
+            updated_at=remote.get("updatedAt") or "",
+        )
+
+
 def load_publish_settings(path: Path = Path("data/library/publish-connection.json")) -> LibraryPublishSettings:
     if not path.exists():
         return LibraryPublishSettings()
@@ -149,3 +252,8 @@ def _checked_json(response: httpx.Response, action: str) -> dict[str, Any]:
         body = {"error": response.text}
     message = body.get("error") or body.get("detail") or response.text
     raise LibraryPublishError(f"Could not {action}: {message}")
+
+
+def _safe_path_part(value: str) -> str:
+    clean = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value).strip("._")
+    return (clean or "file")[:140]

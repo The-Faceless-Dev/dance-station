@@ -949,6 +949,37 @@
       <aside class="side-stack">
         <section class="panel">
           <div class="panel-heading">
+            <h2>Public Library</h2>
+            <span id="publicLibraryState" class="mini-state">Not loaded</span>
+          </div>
+          <div class="control-grid">
+            <label class="field">
+              <span>Kind</span>
+              <select id="publicLibraryKind">
+                <option value="all">All</option>
+                <option value="generation">Generations</option>
+                <option value="transition">Transitions</option>
+                <option value="extraction">Extractions</option>
+                <option value="merge">Merges</option>
+                <option value="edit">Edits</option>
+                <option value="instrument">Instrument Clips</option>
+                <option value="instrumenttrack">Instrument Tracks</option>
+                <option value="dataset">Datasets</option>
+                <option value="lokr">LoKr Adapters</option>
+              </select>
+            </label>
+            <div class="field button-field">
+              <span>Browse</span>
+              <button id="refreshPublicLibraryButton" class="secondary-button" type="button">Load Public</button>
+            </div>
+          </div>
+          <div id="publicLibraryList" class="library-list compact-library-list">
+            <div class="empty-result">Load the public library to import items.</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
             <h2>Public Connection</h2>
             <span id="libraryPublishState" class="mini-state">Not configured</span>
           </div>

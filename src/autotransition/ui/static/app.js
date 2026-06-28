@@ -59,6 +59,7 @@ const state = {
   localLibraryItems: [],
   localLibraryIndexPath: "",
   publicLibraryConnection: null,
+  publicLibraryItems: [],
   selectedEditorAsset: null,
   extractSourceProbe: null,
 };
@@ -292,6 +293,10 @@ const el = {
   librarySiteUrl: document.querySelector("#librarySiteUrl"),
   libraryPublishToken: document.querySelector("#libraryPublishToken"),
   saveLibraryConnectionButton: document.querySelector("#saveLibraryConnectionButton"),
+  publicLibraryState: document.querySelector("#publicLibraryState"),
+  publicLibraryKind: document.querySelector("#publicLibraryKind"),
+  refreshPublicLibraryButton: document.querySelector("#refreshPublicLibraryButton"),
+  publicLibraryList: document.querySelector("#publicLibraryList"),
   libraryList: document.querySelector("#libraryList"),
   librarySummary: document.querySelector("#librarySummary"),
   toast: document.querySelector("#toast"),
@@ -565,10 +570,14 @@ function renderLocalLibrary() {
     const primaryFile = (item.files || [])[0] || {};
     const detailBadges = libraryDetailBadges(item);
     const publish = (item.metadata || {}).public_library || null;
+    const imported = Boolean((item.metadata || {}).imported);
+    const creator = (item.metadata || {}).creator || {};
+    const creatorName = creator.display_name || creator.creator_slug || "";
     row.innerHTML = `
       <div class="editor-asset-title">
         <strong>${escapeHtml(item.title)}</strong>
         <span class="category-badge">${escapeHtml(item.kind)}</span>
+        ${imported ? `<span class="category-badge imported-badge">Imported</span>` : ""}
       </div>
       ${audioUrl ? `<audio controls preload="metadata" src="${audioUrl}"></audio>` : ""}
       <p class="asset-path">${escapeHtml(primaryFile.path || "No file path")}</p>
@@ -576,6 +585,7 @@ function renderLocalLibrary() {
         <span>${escapeHtml(item.status)}</span>
         <span>${escapeHtml(item.visibility)}</span>
         <span>${escapeHtml(formatLibraryDate(item.updated_at || item.created_at))}</span>
+        ${creatorName ? `<span>Creator: ${escapeHtml(creatorName)}</span>` : ""}
         ${detailBadges.map((badge) => `<span>${escapeHtml(badge)}</span>`).join("")}
         ${publish ? `<span>Public: ${escapeHtml(publish.remote_status || "uploaded")}</span>` : ""}
       </div>
@@ -601,6 +611,45 @@ function renderLocalLibrary() {
     row.querySelector(".library-save-button").addEventListener("click", () => saveLibraryItem(row, item));
     row.querySelector(".library-publish-button").addEventListener("click", () => publishLibraryItem(row, item));
     el.libraryList.appendChild(row);
+  });
+}
+
+function renderPublicLibrary() {
+  el.publicLibraryList.replaceChildren();
+  const items = state.publicLibraryItems || [];
+  setPill(el.publicLibraryState, items.length ? `${items.length} public` : "Not loaded", items.length ? "ok" : "neutral");
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-result";
+    empty.textContent = "Load the public library to import items.";
+    el.publicLibraryList.appendChild(empty);
+    return;
+  }
+  items.forEach((item) => {
+    const row = document.createElement("article");
+    row.className = "library-item public-library-item";
+    const creator = item.creator || {};
+    const creatorName = creator.displayName || creator.creatorSlug || "Faceless creator";
+    const cover = (item.files || []).find((file) => file.role === "cover");
+    const audio = (item.files || []).find((file) => file.role === "audio" || file.role === "preview");
+    const cardImage = (cover && cover.publicUrl) || creator.bannerUrl || creator.avatarUrl || "";
+    row.innerHTML = `
+      ${cardImage ? `<div class="library-card-art" style="background-image:url('${escapeHtml(cardImage)}')"></div>` : `<div class="library-card-art empty-art"></div>`}
+      <div class="editor-asset-title">
+        <strong>${escapeHtml(item.title)}</strong>
+        <span class="category-badge">${escapeHtml(item.kind)}</span>
+      </div>
+      <div class="library-meta-row">
+        <span>Creator: ${escapeHtml(creatorName)}</span>
+        <span>${(item.files || []).length} files</span>
+      </div>
+      ${audio && audio.publicUrl ? `<audio controls preload="metadata" src="${escapeHtml(audio.publicUrl)}"></audio>` : ""}
+      <div class="button-row generated-actions">
+        <button class="primary-button public-import-button" type="button">Import</button>
+      </div>
+    `;
+    row.querySelector(".public-import-button").addEventListener("click", () => importPublicLibraryItem(row, item));
+    el.publicLibraryList.appendChild(row);
   });
 }
 
@@ -692,7 +741,9 @@ function renderSourceAssetOptions() {
     state.editorAssets.forEach((asset) => {
       const option = document.createElement("option");
       option.value = asset.asset_id;
-      option.textContent = `${asset.category}: ${asset.label}`;
+      const imported = asset.imported ? " • imported" : "";
+      const creator = asset.creator_name ? ` • ${asset.creator_name}` : "";
+      option.textContent = `${asset.category}: ${asset.label}${imported}${creator}`;
       option.dataset.audioPath = asset.audio_path || "";
       select.appendChild(option);
     });
@@ -1398,6 +1449,40 @@ async function saveLibraryConnection() {
     showToast("Public library connection saved");
   } catch (error) {
     showToast(error.message);
+  }
+}
+
+async function refreshPublicLibrary() {
+  const kind = el.publicLibraryKind.value || "all";
+  setPill(el.publicLibraryState, "Loading", "warn");
+  const response = await api(`/api/library/public?kind=${encodeURIComponent(kind)}`);
+  state.publicLibraryItems = response.items || [];
+  renderPublicLibrary();
+}
+
+async function importPublicLibraryItem(row, item) {
+  const button = row.querySelector(".public-import-button");
+  try {
+    button.disabled = true;
+    button.textContent = "Importing...";
+    setPill(el.publicLibraryState, "Importing", "warn");
+    const response = await api(`/api/library/public/${encodeURIComponent(item.id)}/import`, { method: "POST" });
+    const existingIndex = state.localLibraryItems.findIndex((candidate) => candidate.id === response.item.id);
+    if (existingIndex >= 0) {
+      state.localLibraryItems[existingIndex] = response.item;
+    } else {
+      state.localLibraryItems.unshift(response.item);
+    }
+    await refreshEditorAssets();
+    renderLocalLibrary();
+    renderPublicLibrary();
+    showToast("Imported public library item");
+  } catch (error) {
+    showToast(error.message);
+    setPill(el.publicLibraryState, "Import failed", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Import";
   }
 }
 
@@ -3102,6 +3187,7 @@ async function loadAll() {
   renderSourceAssetOptions();
   renderEditorAssets();
   renderLocalLibrary();
+  renderPublicLibrary();
   renderLogs(logs);
 }
 
@@ -3511,6 +3597,12 @@ el.reindexLibraryButton.addEventListener("click", async () => {
   }
 });
 el.saveLibraryConnectionButton.addEventListener("click", () => saveLibraryConnection());
+el.refreshPublicLibraryButton.addEventListener("click", () => {
+  refreshPublicLibrary().catch((error) => showToast(error.message));
+});
+el.publicLibraryKind.addEventListener("change", () => {
+  if (state.publicLibraryItems.length) refreshPublicLibrary().catch((error) => showToast(error.message));
+});
 el.editorAssetSearch.addEventListener("input", renderEditorAssets);
 el.editorCategoryFilter.addEventListener("change", renderEditorAssets);
 el.librarySearch.addEventListener("input", renderLocalLibrary);
