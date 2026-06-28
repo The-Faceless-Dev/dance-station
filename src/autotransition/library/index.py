@@ -79,6 +79,14 @@ class LocalLibraryIndex:
         item.updated_at = utc_now_iso()
         return self.write_item(item)
 
+    def update_publish_metadata(self, item_id: str, publish_metadata: dict[str, Any]) -> LibraryItem:
+        item = self.read_item(item_id)
+        if item is None:
+            raise FileNotFoundError(f"Library item not found: {item_id}")
+        item.metadata["public_library"] = publish_metadata
+        item.updated_at = utc_now_iso()
+        return self.write_item(item)
+
     def _index_ids(self) -> list[str]:
         if not self.index_path.exists():
             return []

@@ -949,6 +949,29 @@
       <aside class="side-stack">
         <section class="panel">
           <div class="panel-heading">
+            <h2>Public Connection</h2>
+            <span id="libraryPublishState" class="mini-state">Not configured</span>
+          </div>
+          <div class="control-grid">
+            <label class="field">
+              <span>Site API</span>
+              <input id="librarySiteUrl" type="text" value="http://localhost:3001" />
+            </label>
+            <label class="field">
+              <span>Creator publish token</span>
+              <input id="libraryPublishToken" type="password" placeholder="Paste token from the site" />
+            </label>
+          </div>
+          <div class="button-row generated-actions">
+            <button id="saveLibraryConnectionButton" class="primary-button" type="button">Save Connection</button>
+          </div>
+          <div class="summary">
+            Create a publish token on the Dance Station page of the site, then paste it here. Media uploads go through the site to Bunny CDN.
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-heading">
             <h2>Library Status</h2>
             <span id="libraryDetailState" class="mini-state">Local</span>
           </div>

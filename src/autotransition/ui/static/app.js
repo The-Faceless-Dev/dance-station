@@ -58,6 +58,7 @@ const state = {
   editorAssets: [],
   localLibraryItems: [],
   localLibraryIndexPath: "",
+  publicLibraryConnection: null,
   selectedEditorAsset: null,
   extractSourceProbe: null,
 };
@@ -287,6 +288,10 @@ const el = {
   libraryKindFilter: document.querySelector("#libraryKindFilter"),
   reindexLibraryButton: document.querySelector("#reindexLibraryButton"),
   refreshLibraryButton: document.querySelector("#refreshLibraryButton"),
+  libraryPublishState: document.querySelector("#libraryPublishState"),
+  librarySiteUrl: document.querySelector("#librarySiteUrl"),
+  libraryPublishToken: document.querySelector("#libraryPublishToken"),
+  saveLibraryConnectionButton: document.querySelector("#saveLibraryConnectionButton"),
   libraryList: document.querySelector("#libraryList"),
   librarySummary: document.querySelector("#librarySummary"),
   toast: document.querySelector("#toast"),
@@ -542,6 +547,7 @@ function renderLocalLibrary() {
     "The local library references existing Dance Station files in place.",
     "Use Reindex Creations after generating, editing, extracting, or training new assets.",
   ].join("<br>");
+  renderLibraryConnection();
 
   if (!items.length) {
     const empty = document.createElement("div");
@@ -558,6 +564,7 @@ function renderLocalLibrary() {
     const audioUrl = libraryAudioUrl(item);
     const primaryFile = (item.files || [])[0] || {};
     const detailBadges = libraryDetailBadges(item);
+    const publish = (item.metadata || {}).public_library || null;
     row.innerHTML = `
       <div class="editor-asset-title">
         <strong>${escapeHtml(item.title)}</strong>
@@ -570,6 +577,7 @@ function renderLocalLibrary() {
         <span>${escapeHtml(item.visibility)}</span>
         <span>${escapeHtml(formatLibraryDate(item.updated_at || item.created_at))}</span>
         ${detailBadges.map((badge) => `<span>${escapeHtml(badge)}</span>`).join("")}
+        ${publish ? `<span>Public: ${escapeHtml(publish.remote_status || "uploaded")}</span>` : ""}
       </div>
       <div class="control-grid library-edit-grid">
         <label class="field">
@@ -587,11 +595,22 @@ function renderLocalLibrary() {
       </label>
       <div class="button-row generated-actions">
         <button class="secondary-button library-save-button" type="button">Save Metadata</button>
+        <button class="primary-button library-publish-button" type="button">Publish</button>
       </div>
     `;
     row.querySelector(".library-save-button").addEventListener("click", () => saveLibraryItem(row, item));
+    row.querySelector(".library-publish-button").addEventListener("click", () => publishLibraryItem(row, item));
     el.libraryList.appendChild(row);
   });
+}
+
+function renderLibraryConnection() {
+  const connection = state.publicLibraryConnection || {};
+  if (el.librarySiteUrl && connection.site_url) {
+    el.librarySiteUrl.value = connection.site_url;
+  }
+  const configured = Boolean(connection.configured);
+  setPill(el.libraryPublishState, configured ? "Ready" : "Not configured", configured ? "ok" : "warn");
 }
 
 function formatLibraryDate(value) {
@@ -1316,9 +1335,13 @@ async function refreshEditorAssets() {
 }
 
 async function refreshLocalLibrary() {
-  const response = await api("/api/library/local");
+  const [response, connection] = await Promise.all([
+    api("/api/library/local"),
+    api("/api/library/publish/connection"),
+  ]);
   state.localLibraryItems = response.items || [];
   state.localLibraryIndexPath = response.index_path || "";
+  state.publicLibraryConnection = connection;
   renderLocalLibrary();
 }
 
@@ -1354,6 +1377,50 @@ async function saveLibraryItem(row, item) {
     showToast("Library metadata saved");
   } catch (error) {
     showToast(error.message);
+  }
+}
+
+async function saveLibraryConnection() {
+  const siteUrl = el.librarySiteUrl.value.trim();
+  const token = el.libraryPublishToken.value.trim();
+  if (!siteUrl) {
+    showToast("Enter the site URL");
+    return;
+  }
+  try {
+    const connection = await api("/api/library/publish/connection", {
+      method: "POST",
+      body: JSON.stringify({ site_url: siteUrl, token }),
+    });
+    state.publicLibraryConnection = connection;
+    el.libraryPublishToken.value = "";
+    renderLibraryConnection();
+    showToast("Public library connection saved");
+  } catch (error) {
+    showToast(error.message);
+  }
+}
+
+async function publishLibraryItem(row, item) {
+  const button = row.querySelector(".library-publish-button");
+  try {
+    button.disabled = true;
+    button.textContent = "Publishing...";
+    setPill(el.libraryPublishState, "Publishing", "warn");
+    const response = await api(`/api/library/local/${encodeURIComponent(item.id)}/publish`, {
+      method: "POST",
+      body: JSON.stringify({ publish_public: true }),
+    });
+    const index = state.localLibraryItems.findIndex((candidate) => candidate.id === item.id);
+    if (index >= 0) state.localLibraryItems[index] = response.item;
+    renderLocalLibrary();
+    showToast(`Published ${response.publish.file_count || 0} files`);
+  } catch (error) {
+    showToast(error.message);
+    setPill(el.libraryPublishState, "Publish failed", "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = "Publish";
   }
 }
 
@@ -2985,7 +3052,7 @@ function addGeneratedResult(result, plan) {
 
 async function loadAll() {
   await loadInstrumentBank();
-  const [status, runtime, presets, models, tracks, extractions, musicGenerations, lokrDatasets, lokrRuns, lokrAdapters, instrumentClips, editorAssets, localLibrary, logs] = await Promise.all([
+  const [status, runtime, presets, models, tracks, extractions, musicGenerations, lokrDatasets, lokrRuns, lokrAdapters, instrumentClips, editorAssets, localLibrary, libraryConnection, logs] = await Promise.all([
     api("/api/status"),
     api("/api/runtime/status"),
     api("/api/presets"),
@@ -2999,6 +3066,7 @@ async function loadAll() {
     api("/api/instrument-lab/clips"),
     api("/api/editor/assets"),
     api("/api/library/local"),
+    api("/api/library/publish/connection"),
     api("/api/logs"),
   ]);
   state.presets = presets;
@@ -3013,6 +3081,7 @@ async function loadAll() {
   state.editorAssets = editorAssets;
   state.localLibraryItems = localLibrary.items || [];
   state.localLibraryIndexPath = localLibrary.index_path || "";
+  state.publicLibraryConnection = libraryConnection;
   renderStatus(status);
   renderRuntime(runtime);
   renderPresets();
@@ -3441,6 +3510,7 @@ el.reindexLibraryButton.addEventListener("click", async () => {
     showToast(error.message);
   }
 });
+el.saveLibraryConnectionButton.addEventListener("click", () => saveLibraryConnection());
 el.editorAssetSearch.addEventListener("input", renderEditorAssets);
 el.editorCategoryFilter.addEventListener("change", renderEditorAssets);
 el.librarySearch.addEventListener("input", renderLocalLibrary);

@@ -29,6 +29,14 @@ from autotransition.audio.formats import DEFAULT_SCAFFOLD_FORMAT, SUPPORTED_INPU
 from autotransition.config import OutputConfig, RuntimeConfig, TransitionConfig
 from autotransition.generation import GenerationResult, GenerationStatus
 from autotransition.library.index import LocalLibraryIndex
+from autotransition.library.publish import (
+    LibraryPublishError,
+    LibraryPublisher,
+    LibraryPublishSettings,
+    load_publish_settings,
+    public_settings_response,
+    save_publish_settings,
+)
 from autotransition.library.schema import LibraryFile, LibraryItem, audio_mime_type_for_path, library_item_from_editor_asset
 from autotransition.models import (
     AceStepRepaintAdapter,
@@ -169,6 +177,15 @@ class LocalLibraryUpdateRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     license: str | None = Field(None, max_length=160)
     attribution: str | None = Field(None, max_length=1000)
+
+
+class PublicLibraryConnectionRequest(BaseModel):
+    site_url: str = Field("http://localhost:3001", min_length=1, max_length=500)
+    token: str | None = Field(None, max_length=400)
+
+
+class PublicLibraryPublishRequest(BaseModel):
+    publish_public: bool = True
 
 
 class ExtractionMergeRequest(BaseModel):
@@ -1464,6 +1481,39 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         ui_log.add("info", f"Updated local library item: {item.title}")
         return {"item": _library_item_response(item)}
+
+    @app.get("/api/library/publish/connection")
+    def get_public_library_connection() -> dict[str, Any]:
+        return public_settings_response(load_publish_settings())
+
+    @app.post("/api/library/publish/connection")
+    def save_public_library_connection(request: PublicLibraryConnectionRequest) -> dict[str, Any]:
+        existing = load_publish_settings()
+        token = request.token if request.token is not None and request.token.strip() else existing.token
+        settings = LibraryPublishSettings(site_url=request.site_url.strip().rstrip("/"), token=token)
+        save_publish_settings(settings)
+        ui_log.add("info", f"Saved public library connection for {settings.site_url}.")
+        return public_settings_response(settings)
+
+    @app.post("/api/library/local/{item_id}/publish")
+    def publish_local_library_item(item_id: str, request: PublicLibraryPublishRequest) -> dict[str, Any]:
+        library = _local_library()
+        item = library.read_item(item_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail=f"Library item not found: {item_id}")
+
+        try:
+            publish_result = LibraryPublisher(load_publish_settings()).publish(
+                item,
+                publish_public=request.publish_public,
+            )
+            updated = library.update_publish_metadata(item_id, publish_result)
+        except (FileNotFoundError, LibraryPublishError) as exc:
+            ui_log.add("error", str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        ui_log.add("info", f"Published local library item '{updated.title}' to the public library.")
+        return {"item": _library_item_response(updated), "publish": publish_result}
 
     @app.get("/api/lokr/datasets")
     def list_lokr_datasets() -> list[dict[str, Any]]:
