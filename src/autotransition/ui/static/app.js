@@ -523,6 +523,68 @@ function assetAudioUrl(asset) {
   return `/api/editor/audio?path=${encodeURIComponent(asset.audio_path)}`;
 }
 
+function waitForAudioEditorFrame() {
+  return new Promise((resolve) => {
+    const frame = el.audioEditorFrame;
+    if (!frame) {
+      resolve(null);
+      return;
+    }
+    const startedAt = Date.now();
+    function bridgeWindow() {
+      try {
+        const frameWindow = frame.contentWindow;
+        if (frameWindow && frameWindow.DanceStationAudioMassBridge) return frameWindow;
+      } catch (error) {
+        return null;
+      }
+      return null;
+    }
+    function pollBridge() {
+      const frameWindow = bridgeWindow();
+      if (frameWindow) {
+        frame.removeEventListener("load", onLoad);
+        resolve(frameWindow);
+        return;
+      }
+      if (Date.now() - startedAt > 4000) {
+        frame.removeEventListener("load", onLoad);
+        resolve(frame.contentWindow || null);
+        return;
+      }
+      window.setTimeout(pollBridge, 100);
+    }
+    const timeout = window.setTimeout(pollBridge, 120);
+    const onLoad = () => {
+      frame.removeEventListener("load", onLoad);
+      window.clearTimeout(timeout);
+      pollBridge();
+    };
+    frame.addEventListener("load", onLoad);
+    pollBridge();
+  });
+}
+
+async function sendAudioBufferToEditor(url, name) {
+  const frameWindow = await waitForAudioEditorFrame();
+  if (!frameWindow) throw new Error("Audio editor is not ready");
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Could not load audio for editor (${response.status})`);
+  const buffer = await response.arrayBuffer();
+  frameWindow.postMessage(
+    {
+      type: "dance-station:load-audio-buffer",
+      payload: {
+        buffer,
+        name,
+        mimeType: response.headers.get("content-type") || "audio/wav",
+      },
+    },
+    window.location.origin,
+    [buffer],
+  );
+}
+
 function libraryAudioUrl(item) {
   const audioFile = (item.files || []).find((file) => file.role === "audio") || (item.files || [])[0];
   return audioFile ? `/api/audio?path=${encodeURIComponent(audioFile.path)}` : "";
@@ -1329,10 +1391,9 @@ async function loadExistingCreationAsExtractionSource() {
   await loadExtractionSource();
 }
 
-function openAssetInEditor(asset) {
+async function openAssetInEditor(asset) {
   state.selectedEditorAsset = asset;
   const url = assetAudioUrl(asset);
-  el.audioEditorFrame.src = `/audiomass/?ds_audio=${encodeURIComponent(url)}&ds_name=${encodeURIComponent(asset.label)}`;
   el.editorCurrentAsset.textContent = `${asset.category}: ${asset.label}`;
   el.editSourceAssetReadout.innerHTML = [
     `<strong>${escapeHtml(asset.label)}</strong>`,
@@ -1342,7 +1403,12 @@ function openAssetInEditor(asset) {
   if (!el.editSaveLabelInput.value.trim()) {
     el.editSaveLabelInput.value = `${asset.label} edit`;
   }
-  showToast("Loaded asset in Audio Editor");
+  try {
+    await sendAudioBufferToEditor(url, asset.label);
+    showToast("Loaded asset in Audio Editor");
+  } catch (error) {
+    showToast(error.message);
+  }
 }
 
 function renameEndpointForAsset(asset) {
