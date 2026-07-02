@@ -35,6 +35,7 @@ data/cache/
 data/logs/
 data/runtime/
 data/library/
+data/rhythm-beats/
 /models/
 /checkpoints/
 /runtimes/
