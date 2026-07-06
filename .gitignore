@@ -34,11 +34,14 @@ data/lokr-training/
 data/cache/
 data/logs/
 data/runtime/
+data/seed-vc/
+data/voice-work/
 data/library/
 data/rhythm-beats/
 /models/
 /checkpoints/
 /runtimes/
+tmp/
 
 # Media outputs
 *.wav
