@@ -581,6 +581,7 @@ def _sound_effect_model() -> Any:
     with _SOUND_EFFECT_MODEL_LOCK:
         if _SOUND_EFFECT_MODEL is not None:
             return _SOUND_EFFECT_MODEL
+        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
         try:
             from tangoflux import TangoFluxInference
         except Exception as exc:  # pragma: no cover - import depends on optional install
