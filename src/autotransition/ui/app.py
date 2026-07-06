@@ -115,6 +115,12 @@ from autotransition.rhythm_beats import (
     upsert_volume as upsert_rhythm_volume,
     write_project as write_rhythm_project,
 )
+from autotransition.sound_effects import (
+    generation_path as sound_effect_generation_path,
+    library_item_from_generation as library_item_from_sound_effect_generation,
+    list_generations as list_sound_effect_generations,
+    write_generation as write_sound_effect_generation,
+)
 from autotransition.ui.activity import summarize_runtime_activity
 from autotransition.ui.state import UiLog, system_status
 from autotransition.voice_work import (
@@ -390,6 +396,14 @@ class Vocal2BgmRequest(BaseModel):
     audio_cover_strength: float = Field(1.0, ge=0.0, le=1.0)
 
 
+class SoundEffectRequest(BaseModel):
+    label: str = Field(..., min_length=1, max_length=120)
+    prompt: str = Field(..., min_length=1, max_length=240)
+    duration_seconds: float = Field(10.0, ge=1.0, le=30.0)
+    steps: int = Field(50, ge=1, le=200)
+    output_format: Literal["wav", "wav32", "flac", "mp3", "opus", "aac"] = "wav"
+
+
 class LokrDatasetCreateRequest(BaseModel):
     label: str = Field("New LoKr dataset", min_length=1, max_length=120)
     custom_tag: str | None = None
@@ -550,6 +564,126 @@ def _update_extraction_metadata(
 
 def _music_generation_root() -> Path:
     return Path("data/generations")
+
+
+def _sound_effect_root() -> Path:
+    return Path("data/sound-effects")
+
+
+_SOUND_EFFECT_MODEL: Any | None = None
+_SOUND_EFFECT_MODEL_LOCK = threading.Lock()
+
+
+def _sound_effect_model() -> Any:
+    global _SOUND_EFFECT_MODEL
+    if _SOUND_EFFECT_MODEL is not None:
+        return _SOUND_EFFECT_MODEL
+    with _SOUND_EFFECT_MODEL_LOCK:
+        if _SOUND_EFFECT_MODEL is not None:
+            return _SOUND_EFFECT_MODEL
+        try:
+            from tangoflux import TangoFluxInference
+        except Exception as exc:  # pragma: no cover - import depends on optional install
+            raise RuntimeError(
+                "TangoFlux is not installed. Run 'autotransition setup' again to install sound effects support."
+            ) from exc
+        _SOUND_EFFECT_MODEL = TangoFluxInference(name="declare-lab/TangoFlux")
+        return _SOUND_EFFECT_MODEL
+
+
+def _sound_effect_output_extension(output_format: str) -> str:
+    format_name = (output_format or "wav").strip().lower()
+    if format_name == "wav32":
+        return ".wav"
+    return f".{format_name}" if format_name else ".wav"
+
+
+def _sound_effect_audio_to_wav(
+    audio: Any,
+    wav_path: Path,
+    *,
+    sample_rate: int = 44100,
+) -> None:
+    try:
+        import torch
+    except Exception as exc:  # pragma: no cover - torch is expected when TangoFlux is installed
+        raise RuntimeError("Torch is required to save TangoFlux output.") from exc
+
+    tensor = audio.detach().cpu() if isinstance(audio, torch.Tensor) else torch.tensor(audio)
+    if tensor.ndim == 1:
+        tensor = tensor.unsqueeze(0)
+    if tensor.ndim >= 3:
+        tensor = tensor.squeeze(0)
+    if tensor.ndim != 2:
+        raise RuntimeError(f"Unexpected TangoFlux output shape: {tuple(tensor.shape)}")
+    if tensor.shape[0] not in {1, 2} and tensor.shape[1] in {1, 2}:
+        tensor = tensor.transpose(0, 1)
+
+    if tensor.shape[0] not in {1, 2}:
+        raise RuntimeError(f"Unexpected TangoFlux channel layout: {tuple(tensor.shape)}")
+
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import torchaudio
+
+        torchaudio.save(str(wav_path), tensor.float(), sample_rate)
+        return
+    except Exception:
+        pass
+
+    import numpy as np
+    from pydub import AudioSegment
+
+    audio_array = tensor.float().clamp(-1.0, 1.0).numpy()
+    pcm = (audio_array.transpose(1, 0) * 32767.0).astype(np.int16)
+    AudioSegment(
+        pcm.tobytes(),
+        frame_rate=sample_rate,
+        sample_width=2,
+        channels=tensor.shape[0],
+    ).export(wav_path, format="wav")
+
+
+def _sound_effect_write_output(audio: Any, output_path: Path, output_format: str) -> Path:
+    output_format = (output_format or "wav").strip().lower()
+    wav_path = output_path.with_suffix(".wav")
+    _sound_effect_audio_to_wav(audio, wav_path)
+
+    if output_format == "wav":
+        if wav_path != output_path:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            wav_path.replace(output_path)
+        return output_path
+
+    ffmpeg = resolve_ffmpeg()
+    if output_format == "wav32":
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg is required to export 32-bit WAV output.")
+        subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(wav_path),
+                "-c:a",
+                "pcm_s32le",
+                str(output_path),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        wav_path.unlink(missing_ok=True)
+        return output_path
+
+    from pydub import AudioSegment
+
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required to export TangoFlux output.")
+    segment = AudioSegment.from_wav(wav_path)
+    segment.export(output_path, format=output_format)
+    wav_path.unlink(missing_ok=True)
+    return output_path
 
 
 def _transition_root() -> Path:
@@ -3203,11 +3337,75 @@ def _library_items_from_rhythm_projects() -> list[LibraryItem]:
 
 def _local_library_scanned_items() -> list[LibraryItem]:
     items = [item for asset in _editor_assets() if (item := library_item_from_editor_asset(asset)) is not None]
+    items.extend(_library_items_from_music_generations())
     items.extend(_library_items_from_lokr_datasets())
     items.extend(_library_items_from_lokr_adapters())
+    items.extend(_library_items_from_sound_effects())
     items.extend(_library_items_from_voice_work())
     items.extend(_library_items_from_rhythm_projects())
     return items
+
+
+def _library_items_from_sound_effects() -> list[LibraryItem]:
+    items: list[LibraryItem] = []
+    for generation in list_sound_effect_generations():
+        item = library_item_from_sound_effect_generation(generation)
+        if item is not None:
+            items.append(item)
+    return items
+
+
+def _library_items_from_music_generations() -> list[LibraryItem]:
+    items: list[LibraryItem] = []
+    for metadata_path in _music_generation_root().glob("*/generation.json"):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        generation_id = str(metadata.get("generation_id") or "")
+        audio_path = Path(str(metadata.get("generated_audio_path") or "")).expanduser()
+        if not generation_id or not audio_path.exists() or not audio_path.is_file():
+            continue
+        items.append(
+            LibraryItem(
+                id=generation_id,
+                visibility="local",
+                status="draft",
+                kind="generation",
+                title=str(metadata.get("label") or generation_id),
+                description=str(metadata.get("prompt") or "")[:600] or None,
+                files=[
+                    LibraryFile(
+                        role="audio",
+                        mime_type=audio_mime_type_for_path(audio_path),
+                        size_bytes=audio_path.stat().st_size,
+                        path=str(audio_path),
+                        metadata={
+                            "duration_seconds": metadata.get("audio_duration") or 0,
+                            "model": metadata.get("model") or "",
+                            "lokr_adapter": (metadata.get("lokr_adapter") or {}).get("adapter_id") if isinstance(metadata.get("lokr_adapter"), dict) else "",
+                            "render_type": metadata.get("type") or "music",
+                        },
+                    ),
+                    LibraryFile(
+                        role="metadata",
+                        mime_type="application/json",
+                        size_bytes=metadata_path.stat().st_size if metadata_path.exists() else 0,
+                        path=str(metadata_path),
+                    ),
+                ],
+                metadata={
+                    "category": "generation",
+                    "type": metadata.get("type") or "music",
+                    "prompt": metadata.get("prompt") or "",
+                    "model": metadata.get("model") or "",
+                    "output_format": metadata.get("output_format") or "flac",
+                },
+                created_at=str(metadata.get("created_at") or utc_now_iso()),
+                updated_at=str(metadata.get("created_at") or utc_now_iso()),
+            )
+        )
+    return sorted(items, key=lambda item: item.created_at or item.updated_at, reverse=True)
 
 
 def _dataset_source_id(kind: str, value: str) -> str:
@@ -4893,92 +5091,105 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             "settings": request.model_dump(),
         }
         _write_metadata(metadata_path, metadata)
+        _sync_local_library_index()
         ui_log.add("info", f"Generated music: {result.output_path}")
         return {"generation": metadata}
 
-    @app.post("/api/music-generations/vocal2bgm")
-    def run_vocal2bgm_generation(request: Vocal2BgmRequest) -> dict[str, object]:
+    @app.get("/api/sound-effects")
+    def list_sound_effect_generations() -> list[dict[str, Any]]:
+        root = _sound_effect_root()
+        if not root.exists():
+            return []
+        items: list[dict[str, Any]] = []
+        for metadata_path in root.glob("*/generation.json"):
+            try:
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            items.append(metadata)
+        return sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+    @app.get("/api/sound-effects/audio")
+    def get_sound_effect_audio(path: str = Query(..., min_length=1)) -> FileResponse:
+        return get_audio_file(path)
+
+    @app.post("/api/sound-effects/run")
+    def run_sound_effect_generation(request: SoundEffectRequest) -> dict[str, object]:
         import datetime as _datetime
 
-        generation_id = f"vocal2bgm-{uuid4().hex[:12]}"
-        save_dir = _music_generation_root() / generation_id
+        generation_id = f"sound-effect-{uuid4().hex[:12]}"
+        save_dir = _sound_effect_root() / "generations" / generation_id
         metadata_path = save_dir / "generation.json"
         created_at = _datetime.datetime.now(_datetime.UTC).isoformat()
-        source_path = Path(request.source_audio_path).expanduser()
-        if not source_path.exists():
-            raise HTTPException(status_code=400, detail=f"Source audio not found: {source_path}")
+        payload = request.model_dump()
+        label = str(payload.get("label") or "").strip()
+        prompt = str(payload.get("prompt") or "").strip()
+        duration_seconds = float(payload.get("duration_seconds") or 10)
+        steps = int(payload.get("steps") or 50)
+        output_format = str(payload.get("output_format") or "wav").strip().lower()
+        if not label:
+            raise HTTPException(status_code=400, detail="Enter a label for the sound effect.")
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Enter a prompt for the sound effect.")
+        if duration_seconds < 1 or duration_seconds > 30:
+            raise HTTPException(status_code=400, detail="Sound effect duration must be between 1 and 30 seconds.")
+        ui_log.add("info", f"Running TangoFlux sound effect generation: {label}.")
         try:
-            probe = probe_audio(source_path)
+            audio = _sound_effect_model().generate(prompt, steps=steps, duration=int(duration_seconds))
+            output_path = save_dir / f"sound_effect{_sound_effect_output_extension(output_format)}"
+            written_path = _sound_effect_write_output(audio, output_path, output_format)
         except Exception as exc:
             ui_log.add("error", str(exc))
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-        label = request.label.strip()
-        prompt = (request.prompt or "").strip()
-        ui_log.add("info", f"Running ACE-Step Base Vocal2BGM generation from {source_path}.")
-
-        try:
-            result = AceStepApiClient(runtime_config).vocal2bgm(
-                source_path=source_path,
-                label=label,
-                prompt=prompt,
-                save_dir=save_dir,
-                audio_duration=request.audio_duration or probe.duration_seconds,
-                audio_format=request.output_format,
-                inference_steps=request.inference_steps,
-                guidance_scale=request.guidance_scale,
-                shift=request.shift,
-                infer_method=request.infer_method,
-                use_tiled_decode=request.use_tiled_decode,
-                dcw_enabled=request.dcw_enabled,
-                velocity_norm_threshold=request.velocity_norm_threshold,
-                velocity_ema_factor=request.velocity_ema_factor,
-                seed=request.seed,
-                audio_cover_strength=request.audio_cover_strength,
-            )
-        except AceStepApiError as exc:
-            failure = _handle_ace_runtime_failure(runtime_config, ui_log, "ACE-Step Vocal2BGM generation failed.", exc)
             metadata = {
                 "generation_id": generation_id,
-                "type": "vocal2bgm",
-                "status": "recovering" if failure["recovery_active"] else "failed",
-                "message": failure["message"],
+                "type": "sound_effect",
+                "status": "failed",
+                "message": str(exc),
                 "created_at": created_at,
                 "label": label,
                 "prompt": prompt,
-                "model": ACE_STEP_BASE_MODEL,
-                "source_audio_path": str(source_path),
-                "source_duration_seconds": probe.duration_seconds,
-                "source_format": probe.source_format,
-                "output_format": request.output_format,
+                "steps": steps,
+                "duration_seconds": duration_seconds,
+                "output_format": output_format,
                 "generated_audio_path": "",
                 "metadata_path": str(metadata_path),
-                "settings": request.model_dump(),
-                "runtime_recovery": failure["recovery"],
+                "settings": payload,
             }
-            _write_metadata(metadata_path, metadata)
+            write_sound_effect_generation(metadata)
             return {"generation": metadata}
 
         metadata = {
             "generation_id": generation_id,
-            "type": "vocal2bgm",
+            "type": "sound_effect",
             "status": "complete",
-            "message": "Vocal2BGM generation complete.",
+            "message": "Sound effect generation complete.",
             "created_at": created_at,
             "label": label,
             "prompt": prompt,
-            "model": ACE_STEP_BASE_MODEL,
-            "source_audio_path": str(source_path),
-            "source_duration_seconds": probe.duration_seconds,
-            "source_format": probe.source_format,
-            "output_format": request.output_format,
-            "generated_audio_path": str(result.output_path),
-            "generated_metadata_path": str(result.metadata_path),
+            "model": "declare-lab/TangoFlux",
+            "steps": steps,
+            "duration_seconds": duration_seconds,
+            "output_format": output_format,
+            "generated_audio_path": str(written_path),
             "metadata_path": str(metadata_path),
-            "settings": request.model_dump(),
+            "settings": payload,
         }
-        _write_metadata(metadata_path, metadata)
-        ui_log.add("info", f"Generated Vocal2BGM audio: {result.output_path}")
+        write_sound_effect_generation(metadata)
+        _sync_local_library_index()
+        ui_log.add("info", f"Generated sound effect audio: {written_path}")
+        return {"generation": metadata}
+
+    @app.post("/api/music-generations/vocal2bgm")
+    def run_vocal2bgm_generation(request: Vocal2BgmRequest) -> dict[str, object]:
+        raise HTTPException(status_code=410, detail="Vocal2BGM has been replaced by Sound Effects.")
+
+    @app.post("/api/sound-effects/{generation_id}/rename")
+    def rename_sound_effect_generation(generation_id: str, request: ExtractionRenameRequest) -> dict[str, object]:
+        metadata_path = sound_effect_generation_path(generation_id)
+        metadata = _read_json_file(metadata_path, "Sound effect generation")
+        metadata["label"] = request.label.strip()
+        write_sound_effect_generation(metadata)
+        ui_log.add("info", f"Renamed sound effect generation {generation_id}: {metadata['label']}")
         return {"generation": metadata}
 
     @app.post("/api/music-generations/{generation_id}/rename")
