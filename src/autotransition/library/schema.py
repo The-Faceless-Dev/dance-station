@@ -22,6 +22,8 @@ LibraryItemKind = Literal[
     "dataset",
     "lokr",
     "rhythm_game",
+    "voice",
+    "speech",
     "tool",
 ]
 LibraryFileRole = Literal[
@@ -35,6 +37,10 @@ LibraryFileRole = Literal[
     "chart",
     "stem",
     "project",
+    "voice_reference",
+    "voice_embedding",
+    "voice_model",
+    "voice_index",
 ]
 LibraryStorageProvider = Literal["local", "bunny"]
 
@@ -134,6 +140,8 @@ def _category_to_kind(category: str) -> LibraryItemKind:
         "dataset",
         "lokr",
         "rhythm_game",
+        "voice",
+        "speech",
         "tool",
     }
     return category if category in allowed else "audio"  # type: ignore[return-value]

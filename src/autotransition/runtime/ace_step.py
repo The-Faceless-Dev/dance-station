@@ -245,6 +245,10 @@ def _run_uv_sync(uv: Path, config: RuntimeConfig) -> None:
     Path(env["UV_CACHE_DIR"]).mkdir(parents=True, exist_ok=True)
     Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
     command = [str(uv), "sync", "--link-mode", "copy"]
+    existing_processes = find_runtime_processes(config)
+    for process in existing_processes:
+        stop_runtime_process_tree(process.pid, config)
+    time.sleep(1)
     try:
         subprocess.run(command, check=True, cwd=config.ace_step_dir, env=env)
     except subprocess.CalledProcessError:
@@ -253,6 +257,9 @@ def _run_uv_sync(uv: Path, config: RuntimeConfig) -> None:
         if venv.parent != runtime_dir or venv.name != ".venv":
             raise
         if venv.exists():
+            for process in find_runtime_processes(config):
+                stop_runtime_process_tree(process.pid, config)
+            time.sleep(1)
             shutil.rmtree(venv)
         subprocess.run(command, check=True, cwd=config.ace_step_dir, env=env)
 

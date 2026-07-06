@@ -34,6 +34,10 @@ class RuntimeConfig:
 
     ace_step_dir: Path = Path("runtimes/ACE-Step-1.5")
     side_step_dir: Path = Path("runtimes/Side-Step")
+    rvc_dir: Path = Path("runtimes/Seed-VC")
+    rvc_host: str = "127.0.0.1"
+    rvc_port: int = 7898
+    rvc_timeout_seconds: float = 240.0
     api_host: str = "127.0.0.1"
     api_port: int = 8001
     api_timeout_seconds: float = 10.0

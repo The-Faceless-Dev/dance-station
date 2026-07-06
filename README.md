@@ -4,17 +4,18 @@ Dance Station is an AI-assisted audio workstation distributed by **The Faceless 
 
 The goal is to give creators, streamers, visualizers, rhythm-game experimenters, and media builders one practical local workspace for generating, extending, separating, editing, performing, arranging, and reusing music clips.
 
-The app currently includes seven main work areas:
+The app currently includes eight main work areas:
 
 - **Autotransition**: continue a source song from a selected point and create a natural transition into newly generated music.
 - **Extraction**: separate useful musical parts from a song using ACE-Step extraction.
 - **Generation**: create new music directly from a prompt.
+- **Voice Work**: manage reusable voice assets, train clones, and convert speech with an embedded RVC runtime.
 - **LoKr Training**: build captioned music datasets, preprocess them with Side-Step, train LoKr style adapters, and use completed adapters during generation.
 - **Instrument Lab**: create and edit instrument performances with tracks, piano-roll editing, computer-key input, sampled instruments, and SFZ imports.
 - **Audio Editor**: edit, repair, record, export, and arrange audio with the integrated AudioMass editor.
 - **Rhythm Beat Lab**: author rhythm-game beat charts from a source song and extracted layers, then save final chart assets into the local library.
 
-All saved outputs become reusable Dance Station assets. Transitions, generations, extractions, merges, edits, instrument clips, instrument tracks, datasets, LoKr adapters, and rhythm beat charts can be labeled, played or inspected in the UI, loaded into compatible tabs, and reused as source material for the next step.
+All saved outputs become reusable Dance Station assets. Transitions, generations, extractions, merges, edits, instrument clips, instrument tracks, voice assets, speech generations, datasets, LoKr adapters, and rhythm beat charts can be labeled, played or inspected in the UI, loaded into compatible tabs, and reused as source material for the next step.
 
 The current command-line package is still named `autotransition`, so setup and run commands use that executable.
 
@@ -88,6 +89,22 @@ It supports instrumental generation by default, plus optional vocal generation w
 It exposes the generation controls that are useful for the active ACE-Step model path, including duration, seed, steps, guidance, shift, sampler mode, tiled decoding, DCW, and velocity settings. Turbo and Base generation use different defaults based on the working settings found during testing.
 
 Completed generations are listed in the UI with playable audio and saved metadata. If you have trained LoKr adapters, the Generation tab can select one, set its strength, and apply it to a compatible ACE-Step model while generating.
+
+## Voice Work
+
+Voice Work adds reusable voice assets, local voice training, sample conversion, and text-to-speech generation through an embedded RVC runtime.
+
+The first-pass workflow is:
+
+1. add a voice asset from one or more reference audio files and optional embedding files
+2. train or refresh a voice clone from those local assets
+3. select that saved clone inside the Voice Work tab
+4. enter text or upload a sample for conversion
+5. run the embedded RVC workflow and save the result as a reusable speech asset
+
+Voice assets are directory-backed. Each voice can include copied reference audio, embeddings, and metadata under `data/voice-work/voices/`. Generated speech and converted samples are saved under `data/voice-work/outputs/` and become part of the local library.
+
+Dance Station manages the local RVC runtime from the app and exposes runtime status plus launch controls directly in the Voice Work tab.
 
 ## LoKr Training
 
@@ -196,7 +213,7 @@ src/autotransition/
   audio/        Audio probing, slicing, silence, merge, and composition helpers.
   models/       ACE-Step runtime/API integration.
   pipeline/     Transition planning and scaffold state.
-  runtime/      External runtime setup/status helpers for ACE-Step and Side-Step.
+  runtime/      External runtime setup/status helpers for ACE-Step, Side-Step, and RVC.
   scoring/      Candidate scoring interfaces.
   ui/           Local web UI and API.
   ui/static/    Browser UI assets, including the instrument bank.
@@ -211,5 +228,6 @@ src/autotransition/
 - ACE-Step first-run runtime/model downloads can take a long time and require enough disk space.
 - Track extraction uses ACE-Step Base and may require more startup/download time than transition generation.
 - LoKr training requires the Side-Step runtime and can take substantial GPU time depending on dataset size and training settings.
+- Voice Work depends on a reachable local RVC runtime.
 - Audio loading, merging, and scaffold generation depend on `pydub` and `ffmpeg`.
 - SFZ import supports a practical subset of SFZ regions and sample mapping. Native binary `.sf2` import is not implemented yet.

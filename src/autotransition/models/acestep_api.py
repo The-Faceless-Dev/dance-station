@@ -320,6 +320,66 @@ class AceStepApiClient:
             payload["seed"] = seed
         return self._submit_and_wait(payload=payload, save_dir=save_dir, use_json=True)
 
+    def vocal2bgm(
+        self,
+        *,
+        source_path: Path,
+        label: str,
+        prompt: str = "",
+        save_dir: Path,
+        audio_duration: float,
+        audio_format: str = "flac",
+        inference_steps: int = BASE_RUNTIME_INFERENCE_STEPS,
+        guidance_scale: float = BASE_RUNTIME_GUIDANCE_SCALE,
+        shift: float = BASE_RUNTIME_SHIFT,
+        infer_method: str = BASE_RUNTIME_INFER_METHOD,
+        use_tiled_decode: bool = BASE_RUNTIME_USE_TILED_DECODE,
+        dcw_enabled: bool = BASE_RUNTIME_DCW_ENABLED,
+        velocity_norm_threshold: float = BASE_RUNTIME_VELOCITY_NORM_THRESHOLD,
+        velocity_ema_factor: float = BASE_RUNTIME_VELOCITY_EMA_FACTOR,
+        seed: int | None = None,
+        audio_cover_strength: float = 1.0,
+    ) -> RepaintResult:
+        self._ensure_base_extract_model()
+        payload: dict[str, Any] = {
+            "task_type": "complete",
+            "model": ACE_STEP_BASE_MODEL,
+            "prompt": prompt.strip() or label.strip() or "Vocal2BGM",
+            "lyrics": "[Instrumental]",
+            "vocal_language": "unknown",
+            "instruction": "Complete the input track with BASS | DRUMS | GUITAR | KEYBOARD | STRINGS | SYNTH | PERCUSSION | BRASS | WOODWINDS | FX | BACKING_VOCALS.",
+            "audio_duration": audio_duration,
+            "audio_format": _raw_text2music_audio_format(audio_format),
+            "batch_size": 1,
+            "inference_steps": inference_steps,
+            "thinking": False,
+            "use_format": False,
+            "time_signature": "4",
+            "bpm": DEFAULT_TEXT2MUSIC_BPM,
+            "key_scale": "",
+            "guidance_scale": guidance_scale,
+            "shift": shift,
+            "infer_method": infer_method,
+            "sampler_mode": "euler",
+            "use_adg": False,
+            "use_tiled_decode": use_tiled_decode,
+            "dcw_enabled": dcw_enabled,
+            "velocity_norm_threshold": velocity_norm_threshold,
+            "velocity_ema_factor": velocity_ema_factor,
+            "audio_cover_strength": audio_cover_strength,
+            "cover_noise_strength": 0.0,
+        }
+        if seed is not None:
+            payload["use_random_seed"] = False
+            payload["seed"] = seed
+
+        with source_path.open("rb") as source_file:
+            return self._submit_and_wait(
+                payload=payload,
+                save_dir=save_dir,
+                files={"src_audio": (source_path.name, source_file, "audio/wav")},
+            )
+
     def _prepare_lokr_adapter(
         self,
         lokr_path: str | Path,
