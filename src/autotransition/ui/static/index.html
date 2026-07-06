@@ -23,6 +23,7 @@
       <button id="transitionTabButton" class="tab-button active" type="button">Autotransition</button>
       <button id="extractionTabButton" class="tab-button" type="button">Track Extraction</button>
       <button id="musicTabButton" class="tab-button" type="button">Music Generation</button>
+      <button id="voiceWorkTabButton" class="tab-button" type="button">Voice Work</button>
       <button id="datasetEditorTabButton" class="tab-button" type="button">Dataset Editor</button>
       <button id="lokrTrainingTabButton" class="tab-button" type="button">LoKr Training</button>
       <button id="instrumentLabTabButton" class="tab-button" type="button">Instrument Lab</button>
@@ -322,6 +323,113 @@
         </div>
       </section>
 
+      <section class="panel workflow-panel vocal2bgm-panel">
+        <div class="panel-heading">
+          <h2>Vocal2BGM</h2>
+          <span id="vocal2bgmActionState" class="mini-state">Ready</span>
+        </div>
+
+        <div class="summary">Turn vocals-only source audio into a finished backing mix with ACE-Step Base.</div>
+
+        <label class="field">
+          <span>Result label</span>
+          <input id="vocal2bgmLabelInput" type="text" placeholder="Song title or mix name" />
+        </label>
+
+        <label class="field">
+          <span>Music prompt</span>
+          <input id="vocal2bgmPromptInput" type="text" placeholder="heavy trap with dark synth bass" />
+        </label>
+
+        <div class="source-choice-group">
+          <label class="choice-option">
+            <input id="vocal2bgmSourceUploadMode" type="radio" name="vocal2bgmSourceInputMode" value="upload" checked />
+            <span>Upload</span>
+          </label>
+          <label class="choice-option">
+            <input id="vocal2bgmSourceAssetMode" type="radio" name="vocal2bgmSourceInputMode" value="asset" />
+            <span>Existing creation</span>
+          </label>
+        </div>
+
+        <div id="vocal2bgmSourceUploadBlock" class="picker-block">
+          <label class="field">
+            <span>Source vocals file</span>
+            <input id="vocal2bgmSourceFile" type="file" accept="audio/*" />
+          </label>
+          <div id="vocal2bgmSourceFileName" class="summary">No file selected.</div>
+        </div>
+
+        <div id="vocal2bgmSourceAssetBlock" class="picker-block is-hidden">
+          <label class="field">
+            <span>Existing creation</span>
+            <select id="vocal2bgmSourceAssetSelect"></select>
+          </label>
+          <div id="vocal2bgmSourceAssetName" class="summary">No creation selected.</div>
+        </div>
+
+        <div id="vocal2bgmSourceReadout" class="summary">No source audio loaded.</div>
+
+        <div class="control-grid">
+          <label class="field">
+            <span>Output format</span>
+            <select id="vocal2bgmOutputFormat">
+              <option value="flac">FLAC</option>
+              <option value="wav">WAV</option>
+              <option value="wav32">WAV 32-bit</option>
+              <option value="mp3">MP3</option>
+              <option value="opus">Opus</option>
+              <option value="aac">AAC</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Inference steps</span>
+            <input id="vocal2bgmInferenceSteps" type="number" min="1" max="200" step="1" value="80" />
+          </label>
+          <label class="field">
+            <span>Guidance scale</span>
+            <input id="vocal2bgmGuidanceScale" type="number" min="0" step="0.1" value="0.6" />
+          </label>
+          <label class="field">
+            <span>Shift</span>
+            <input id="vocal2bgmShift" type="number" min="0" step="0.1" value="1" />
+          </label>
+          <label class="field">
+            <span>Source strength</span>
+            <input id="vocal2bgmSourceStrength" type="number" min="0" max="1" step="0.05" value="1" />
+          </label>
+          <label class="field">
+            <span>Infer method</span>
+            <select id="vocal2bgmInferMethod">
+              <option value="sde" selected>SDE</option>
+              <option value="ode">ODE</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Seed</span>
+            <input id="vocal2bgmSeed" type="number" step="1" placeholder="optional" />
+          </label>
+        </div>
+
+        <div class="toggle-row">
+          <label><input id="vocal2bgmUseTiledDecode" type="checkbox" checked /> Tiled decode</label>
+          <label><input id="vocal2bgmDcwEnabled" type="checkbox" /> DCW</label>
+        </div>
+
+        <div class="button-row">
+          <button id="runVocal2BgmButton" class="primary-button" type="button">Generate Vocal2BGM</button>
+          <button id="refreshVocal2BgmButton" class="secondary-button" type="button">Refresh Results</button>
+        </div>
+
+        <div class="output-block">
+          <h3>Vocal2BGM Output</h3>
+          <div id="vocal2bgmActivity" class="activity-readout">No Vocal2BGM generation running.</div>
+          <div id="vocal2bgmList" class="generated-list">
+            <div class="empty-result">No Vocal2BGM generations yet.</div>
+          </div>
+        </div>
+      </section>
+
       <aside class="side-stack">
         <section class="panel">
           <div class="panel-heading">
@@ -371,6 +479,163 @@
           <ol id="musicLogList" class="log-list"></ol>
         </section>
       </aside>
+    </main>
+
+    <main id="voiceWorkPage" class="workspace app-page">
+      <section class="panel workflow-panel">
+        <div class="panel-heading">
+          <h2>Runtime Controls</h2>
+          <span id="voiceWorkRuntimeActionState" class="mini-state">Idle</span>
+        </div>
+        <div class="button-row">
+          <button id="installVoiceWorkRuntimeButton" class="primary-button full-width" type="button">Install Runtime</button>
+          <button id="startVoiceWorkRuntimeButton" class="primary-button full-width" type="button">Start Runtime</button>
+          <button id="stopVoiceWorkRuntimeButton" class="secondary-button full-width" type="button">Stop Runtime</button>
+        </div>
+        <div id="voiceWorkRuntimeActionDetails" class="summary">Install the runtime once, then start it here. Seed-VC talks directly to the backend service.</div>
+        <div class="panel-divider"></div>
+        <div class="panel-heading compact-heading">
+          <h3>Runtime Status</h3>
+          <span id="voiceWorkRuntimeState" class="mini-state">Checking</span>
+        </div>
+        <div id="voiceWorkRuntimeDetails" class="summary"></div>
+        <div class="panel-divider"></div>
+        <div class="panel-heading">
+          <h2>Target Voices</h2>
+          <span id="voiceWorkState" class="mini-state">Idle</span>
+        </div>
+        <div id="voiceWorkSelectedVoice" class="summary">No target voice selected.</div>
+        <label class="field">
+          <span>Target voice label</span>
+          <input id="voiceWorkLabel" type="text" placeholder="Narrator, Announcer, Main Voice" />
+        </label>
+        <div class="source-choice-group">
+          <label class="choice-option">
+            <input id="voiceWorkTargetUploadMode" type="radio" name="voiceWorkTargetInputMode" value="upload" checked />
+            <span>Upload</span>
+          </label>
+          <label class="choice-option">
+            <input id="voiceWorkTargetAssetMode" type="radio" name="voiceWorkTargetInputMode" value="asset" />
+            <span>Existing creation</span>
+          </label>
+        </div>
+        <div class="control-grid">
+          <label class="field">
+            <span>Language</span>
+            <input id="voiceWorkLanguage" type="text" value="auto" />
+          </label>
+        </div>
+        <div id="voiceWorkTargetUploadBlock" class="picker-block">
+          <label class="field">
+            <span>Description</span>
+            <textarea id="voiceWorkDescription" rows="4" placeholder="Optional notes about the reference voice or intended use."></textarea>
+          </label>
+          <div class="file-picker">
+            <label class="file-button" for="voiceWorkReferenceFiles">Reference Audio</label>
+            <input id="voiceWorkReferenceFiles" type="file" multiple accept=".wav,.mp3,.flac,.m4a,.ogg,.opus,.aac,.webm,audio/*" />
+            <span id="voiceWorkReferenceFilesName">No files selected</span>
+          </div>
+        </div>
+        <div id="voiceWorkTargetAssetBlock" class="picker-block is-hidden">
+          <div class="existing-source-picker single-column">
+            <label class="field">
+              <span>Existing creation</span>
+              <select id="voiceWorkAssetSelect">
+                <option value="">Choose an existing creation</option>
+              </select>
+            </label>
+          </div>
+          <span id="voiceWorkAssetName" class="inline-readout">No creation selected</span>
+        </div>
+        <div class="button-row">
+          <button id="createVoiceWorkCloneButton" class="primary-button" type="button" onclick="window.voiceWorkCreateTargetVoiceFromFiles && window.voiceWorkCreateTargetVoiceFromFiles(); return false;">Add Target Voice</button>
+          <button id="updateVoiceWorkButton" class="secondary-button" type="button">Update Selected</button>
+          <button id="refreshVoiceWorkButton" class="secondary-button" type="button">Refresh Voices</button>
+        </div>
+        <div id="voiceWorkList" class="generated-list">
+          <div class="empty-result">No target voices yet.</div>
+        </div>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-heading">
+          <h2>Convert Sample</h2>
+          <span id="voiceWorkGenerateState" class="mini-state">Idle</span>
+        </div>
+        <div class="summary">
+          Choose a target voice, load a source sample, and convert it with Seed-VC. This page no longer trains or synthesizes voices.
+        </div>
+        <label class="field">
+          <span>Target voice</span>
+          <select id="voiceWorkSampleVoiceSelect">
+            <option value="">Choose a target voice</option>
+          </select>
+        </label>
+        <div class="source-choice-group">
+          <label class="choice-option">
+            <input id="voiceWorkSourceUploadMode" type="radio" name="voiceWorkSourceInputMode" value="upload" checked />
+            <span>Upload</span>
+          </label>
+          <label class="choice-option">
+            <input id="voiceWorkSourceAssetMode" type="radio" name="voiceWorkSourceInputMode" value="asset" />
+            <span>Existing creation</span>
+          </label>
+        </div>
+        <div id="voiceWorkSourceUploadBlock" class="picker-block">
+          <label class="field">
+            <span>Source audio</span>
+            <input id="voiceWorkSampleFile" type="file" accept=".wav,.mp3,.flac,.m4a,.ogg,.opus,.aac,.webm,audio/*" />
+          </label>
+          <span id="voiceWorkSampleFileName" class="inline-readout">No file selected</span>
+        </div>
+        <label class="field">
+          <span>Conversion mode</span>
+          <select id="voiceWorkSampleMode">
+            <option value="singing" selected>Singing</option>
+            <option value="speaking">Speaking</option>
+          </select>
+        </label>
+        <div id="voiceWorkSourceAssetBlock" class="picker-block is-hidden">
+          <div class="existing-source-picker single-column">
+            <label class="field">
+              <span>Existing source</span>
+              <select id="voiceWorkSourceAssetSelect">
+                <option value="">Choose an existing creation</option>
+              </select>
+            </label>
+          </div>
+          <span id="voiceWorkSourceAssetName" class="inline-readout">No source asset selected</span>
+        </div>
+        <label class="field">
+          <span>Output label</span>
+          <input id="voiceWorkSampleLabel" type="text" placeholder="Converted sample name" />
+        </label>
+        <div class="control-grid">
+          <label class="field">
+            <span>Diffusion steps</span>
+            <input id="voiceWorkSampleDiffusionSteps" type="number" min="1" max="200" step="1" value="25" />
+          </label>
+          <label class="field">
+            <span>Length adjust</span>
+            <input id="voiceWorkSampleLengthAdjust" type="number" min="0.5" max="2" step="0.05" value="1" />
+          </label>
+          <label class="field">
+            <span>CFG rate</span>
+            <input id="voiceWorkSampleCfgRate" type="number" min="0" max="2" step="0.05" value="0.7" />
+          </label>
+        </div>
+        <div class="button-row">
+          <button id="convertVoiceWorkSampleButton" class="primary-button" type="button">Convert Sample</button>
+        </div>
+        <div class="panel-divider"></div>
+        <div class="panel-heading compact-heading">
+          <h3>Conversions</h3>
+          <span id="voiceWorkTrainingState" class="mini-state">Idle</span>
+        </div>
+        <div id="voiceWorkGenerationList" class="generated-list">
+          <div class="empty-result">No conversions yet.</div>
+        </div>
+      </section>
     </main>
 
     <main id="extractionPage" class="workspace app-page">
@@ -1324,6 +1589,8 @@
               <option value="dataset">Datasets</option>
               <option value="lokr">LoKr Adapters</option>
               <option value="rhythm_game">Rhythm Beats</option>
+              <option value="voice">Voice Assets</option>
+              <option value="speech">Speech</option>
             </select>
           </label>
           <div class="field button-field">
@@ -1365,6 +1632,8 @@
                 <option value="instrumenttrack">Instrument Tracks</option>
                 <option value="dataset">Datasets</option>
                 <option value="lokr">LoKr Adapters</option>
+                <option value="voice">Voice Assets</option>
+                <option value="speech">Speech</option>
               </select>
             </label>
             <div class="field button-field">

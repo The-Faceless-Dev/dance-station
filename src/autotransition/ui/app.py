@@ -8,8 +8,11 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import threading
 import time
+import tempfile
+from dataclasses import replace
 from urllib.parse import quote
 from pathlib import Path
 from typing import Any, Literal
@@ -27,6 +30,7 @@ from autotransition.audio import (
     merge_audio_files,
     probe_audio,
 )
+from autotransition.audio.ffmpeg import resolve_ffmpeg
 from autotransition.audio.formats import DEFAULT_SCAFFOLD_FORMAT, SUPPORTED_INPUT_FORMATS, validate_supported_source
 from autotransition.config import OutputConfig, RuntimeConfig, TransitionConfig
 from autotransition.generation import GenerationResult, GenerationStatus
@@ -65,6 +69,7 @@ from autotransition.models import (
 from autotransition.models.acestep_api import (
     AceStepApiClient,
     AceStepApiError,
+    ACE_STEP_BASE_MODEL,
     BASE_EXTRACT_GUIDANCE_SCALE,
     BASE_RUNTIME_DCW_ENABLED,
     BASE_RUNTIME_GUIDANCE_SCALE,
@@ -76,6 +81,16 @@ from autotransition.models.acestep_api import (
     BASE_RUNTIME_VELOCITY_NORM_THRESHOLD,
     _repaint_defaults_for_profile,
     _text2music_defaults_for_profile,
+)
+from autotransition.runtime.seed_vc import (
+    api_health as rvc_api_health,
+    ensure_runtime_api as ensure_rvc_runtime_api,
+    managed_runtime_alive as rvc_managed_runtime_alive,
+    read_runtime_pid as read_rvc_runtime_pid,
+    run_install as run_rvc_install,
+    startup_progress_snapshot as rvc_startup_progress_snapshot,
+    stop_runtime as stop_rvc_runtime,
+    runtime_status as rvc_runtime_status,
 )
 from autotransition.runtime.side_step import build_side_step_command, side_step_status
 from autotransition.models.download import local_model_path
@@ -102,6 +117,22 @@ from autotransition.rhythm_beats import (
 )
 from autotransition.ui.activity import summarize_runtime_activity
 from autotransition.ui.state import UiLog, system_status
+from autotransition.voice_work import (
+    VOICE_AUDIO_EXTENSIONS,
+    VOICE_EMBEDDING_EXTENSIONS,
+    create_voice_asset,
+    create_generation_record,
+    create_voice_render_record,
+    delete_voice,
+    library_item_from_voice,
+    library_item_from_generation,
+    list_generations,
+    list_voices,
+    read_voice,
+    update_voice,
+    voice_runtime_index_path,
+    voice_runtime_model_name,
+)
 
 
 _extract_retry_lock = threading.Lock()
@@ -278,6 +309,41 @@ class PublicLibraryPublishRequest(BaseModel):
     publish_public: bool = True
 
 
+class VoiceWorkTrainRequest(BaseModel):
+    epochs: int = Field(20, ge=1, le=1000)
+    save_every: int = Field(5, ge=1, le=100)
+    batch_size: int = Field(1, ge=1, le=16)
+    use_f0: bool = True
+    sample_rate: Literal["32k", "40k", "48k"] = "48k"
+    version: Literal["v1", "v2"] = "v2"
+    cpu_threads: int | None = Field(None, ge=1, le=64)
+
+
+class VoiceWorkConvertRequest(BaseModel):
+    request_id: str | None = Field(None, max_length=80)
+    voice_id: str = Field(..., min_length=1)
+    source_audio_path: str = Field(..., min_length=1)
+    label: str | None = Field(None, max_length=160)
+    mode: Literal["speaking", "singing"] = "singing"
+    diffusion_steps: int = Field(25, ge=1, le=200)
+    length_adjust: float = Field(1.0, ge=0.5, le=2.0)
+    inference_cfg_rate: float = Field(0.7, ge=0.0, le=1.0)
+
+
+class VoiceWorkTtsRequest(BaseModel):
+    voice_id: str = Field(..., min_length=1)
+    text: str = Field(..., min_length=1, max_length=10000)
+    label: str | None = Field(None, max_length=160)
+    language: str = Field("auto", max_length=32)
+
+
+class VoiceWorkTargetVoiceFromAssetRequest(BaseModel):
+    asset_id: str = Field(..., min_length=1)
+    label: str | None = Field(None, max_length=160)
+    description: str = Field("", max_length=2000)
+    language: str = Field("auto", max_length=32)
+
+
 class ExtractionMergeRequest(BaseModel):
     extraction_ids: list[str] = Field(..., min_length=2)
     label: str = Field(..., min_length=1, max_length=120)
@@ -304,6 +370,24 @@ class MusicGenerationRequest(BaseModel):
     seed: int | None = None
     lokr_adapter_id: str | None = None
     lokr_scale: float = Field(1.0, ge=0.0, le=1.0)
+
+
+class Vocal2BgmRequest(BaseModel):
+    source_audio_path: str = Field(..., min_length=1)
+    label: str = Field(..., min_length=1, max_length=120)
+    prompt: str | None = Field(None, max_length=240)
+    output_format: Literal["flac", "wav", "wav32", "mp3", "opus", "aac"] = "flac"
+    audio_duration: float | None = Field(None, ge=1.0, le=600.0)
+    inference_steps: int = Field(BASE_RUNTIME_INFERENCE_STEPS, ge=1, le=200)
+    guidance_scale: float = Field(BASE_RUNTIME_GUIDANCE_SCALE, ge=0)
+    shift: float = Field(BASE_RUNTIME_SHIFT, ge=0)
+    infer_method: Literal["ode", "sde"] = BASE_RUNTIME_INFER_METHOD
+    use_tiled_decode: bool = True
+    dcw_enabled: bool = False
+    velocity_norm_threshold: float = Field(BASE_RUNTIME_VELOCITY_NORM_THRESHOLD, ge=0)
+    velocity_ema_factor: float = Field(BASE_RUNTIME_VELOCITY_EMA_FACTOR, ge=0, le=1)
+    seed: int | None = None
+    audio_cover_strength: float = Field(1.0, ge=0.0, le=1.0)
 
 
 class LokrDatasetCreateRequest(BaseModel):
@@ -408,6 +492,50 @@ def _write_metadata(metadata_path: Path, metadata: dict[str, Any]) -> dict[str, 
     return metadata
 
 
+def _copy_upload_to_temp(file: UploadFile, temp_root: Path) -> Path:
+    filename = Path(file.filename or "upload").name
+    suffix = Path(filename).suffix.lower()
+    safe_stem = _safe_label_stem(Path(filename).stem, "upload")
+    temp_root.mkdir(parents=True, exist_ok=True)
+    temp_path = temp_root / f"{safe_stem}-{uuid4().hex[:8]}{suffix}"
+    with temp_path.open("wb") as output:
+        shutil.copyfileobj(file.file, output)
+    return temp_path
+
+
+def _voice_upload_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in VOICE_AUDIO_EXTENSIONS:
+        return "audio"
+    if suffix in VOICE_EMBEDDING_EXTENSIONS:
+        return "embedding"
+    return "unknown"
+
+
+def _save_float32_pcm_to_wav(pcm_path: Path, wav_path: Path, *, sample_rate: int = 44100, channels: int = 1) -> None:
+    ffmpeg = resolve_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required to convert PCM output into WAV.")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-f",
+            "f32le",
+            "-ar",
+            str(sample_rate),
+            "-ac",
+            str(channels),
+            "-i",
+            str(pcm_path),
+            str(wav_path),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def _update_extraction_metadata(
     extraction_id: str,
     updates: dict[str, Any],
@@ -438,6 +566,10 @@ def _instrument_lab_root() -> Path:
 
 def _lokr_root() -> Path:
     return Path("data/lokr-training")
+
+
+def _voice_work_root() -> Path:
+    return Path("data/seed-vc")
 
 
 def _lokr_dataset_root() -> Path:
@@ -1092,6 +1224,29 @@ def _now_iso() -> str:
 
 
 _LOKR_PROCESSES: dict[str, subprocess.Popen[bytes]] = {}
+_VOICE_RUNTIME_ACTION_LOCK = threading.Lock()
+_VOICE_RUNTIME_ACTION_STATE: dict[str, Any] = {
+    "active": False,
+    "action": "idle",
+    "message": "No Seed-VC runtime action is in progress.",
+    "error": "",
+    "phase": "idle",
+    "started_at": None,
+    "completed_at": None,
+}
+_VOICE_WORK_JOB_LOCK = threading.Lock()
+_VOICE_WORK_JOB_STATE: dict[str, Any] = {
+    "active": False,
+    "action": "idle",
+    "message": "No Seed-VC conversion is in progress.",
+    "error": "",
+    "phase": "idle",
+    "started_at": None,
+    "completed_at": None,
+    "details": {},
+}
+_VOICE_RUNTIME_OWNED_PID: int | None = None
+_VOICE_RUNTIME_OWNED_APP_PID: int | None = None
 
 
 def _active_lokr_run() -> dict[str, Any] | None:
@@ -1099,6 +1254,857 @@ def _active_lokr_run() -> dict[str, Any] | None:
         if run.get("status") == "running":
             return run
     return None
+
+
+def _voice_runtime_action_state() -> dict[str, Any]:
+    with _VOICE_RUNTIME_ACTION_LOCK:
+        return dict(_VOICE_RUNTIME_ACTION_STATE)
+
+
+def _set_voice_runtime_action_state(**updates: Any) -> None:
+    with _VOICE_RUNTIME_ACTION_LOCK:
+        _VOICE_RUNTIME_ACTION_STATE.update(updates)
+
+
+def _voice_work_job_state() -> dict[str, Any]:
+    with _VOICE_WORK_JOB_LOCK:
+        return dict(_VOICE_WORK_JOB_STATE)
+
+
+def _set_voice_work_job_state(**updates: Any) -> None:
+    with _VOICE_WORK_JOB_LOCK:
+        _VOICE_WORK_JOB_STATE.update(updates)
+
+
+def _set_owned_voice_runtime_pid(pid: int | None) -> None:
+    global _VOICE_RUNTIME_OWNED_PID, _VOICE_RUNTIME_OWNED_APP_PID
+    _VOICE_RUNTIME_OWNED_PID = pid
+    _VOICE_RUNTIME_OWNED_APP_PID = os.getpid() if pid is not None else None
+
+
+def _owned_voice_runtime_pid() -> int | None:
+    if _VOICE_RUNTIME_OWNED_APP_PID != os.getpid():
+        return None
+    return _VOICE_RUNTIME_OWNED_PID
+
+
+def _start_voice_runtime_action(
+    action: str,
+    runner: callable,
+    *,
+    ui_log: UiLog,
+) -> bool:
+    with _VOICE_RUNTIME_ACTION_LOCK:
+        if _VOICE_RUNTIME_ACTION_STATE.get("active"):
+            return False
+        _VOICE_RUNTIME_ACTION_STATE.update(
+            {
+                "active": True,
+                "action": action,
+                "message": f"{action.capitalize()} in progress.",
+                "error": "",
+                "phase": f"{action}ing",
+                "started_at": _now_iso(),
+                "completed_at": None,
+            }
+        )
+
+    def _run() -> None:
+        try:
+            message = runner()
+            _set_voice_runtime_action_state(
+                active=False,
+                action=action,
+                message=message,
+                error="",
+                phase="idle",
+                completed_at=_now_iso(),
+            )
+            ui_log.add("info", message)
+        except Exception as exc:
+            _set_voice_runtime_action_state(
+                active=False,
+                action=action,
+                message=f"{action.capitalize()} failed.",
+                error=str(exc),
+                phase="failed",
+                completed_at=_now_iso(),
+            )
+            ui_log.add("error", f"Seed-VC runtime {action} failed: {exc}")
+
+    thread = threading.Thread(target=_run, name=f"voice-runtime-{action}", daemon=True)
+    thread.start()
+    return True
+
+
+def _start_voice_work_job(
+    action: str,
+    runner: callable,
+    *,
+    ui_log: UiLog,
+    details: dict[str, Any] | None = None,
+) -> bool:
+    job_details = dict(details or {})
+    request_id = str(job_details.get("request_id") or "").strip()
+    with _VOICE_WORK_JOB_LOCK:
+        if _VOICE_WORK_JOB_STATE.get("active"):
+            return False
+        _VOICE_WORK_JOB_STATE.update(
+            {
+                "active": True,
+                "action": action,
+                "message": f"{action.capitalize()} in progress." + (f" Request {request_id}." if request_id else ""),
+                "error": "",
+                "phase": f"{action}ing",
+                "started_at": _now_iso(),
+                "completed_at": None,
+                "details": job_details,
+            }
+        )
+
+    def _run() -> None:
+        try:
+            result = runner()
+            _set_voice_work_job_state(
+                active=False,
+                action=action,
+                message=result if isinstance(result, str) else f"{action.capitalize()} complete.",
+                error="",
+                phase="idle",
+                completed_at=_now_iso(),
+            )
+            if isinstance(result, str):
+                ui_log.add("info", result)
+        except Exception as exc:
+            voice_id = str(_VOICE_WORK_JOB_STATE.get("details", {}).get("voice_id") or "")
+            request_id = str(_VOICE_WORK_JOB_STATE.get("details", {}).get("request_id") or "")
+            if action == "train" and voice_id:
+                try:
+                    update_voice(voice_id, {"training_status": "failed", "training_error": str(exc)})
+                except Exception:
+                    pass
+            _set_voice_work_job_state(
+                active=False,
+                action=action,
+                message=f"{action.capitalize()} failed.",
+                error=str(exc),
+                phase="failed",
+                completed_at=_now_iso(),
+            )
+            ui_log.add("error", f"Voice Work {action} failed{f' [{request_id}]' if request_id else ''}: {exc}")
+
+    thread = threading.Thread(target=_run, name=f"voice-work-{action}", daemon=True)
+    thread.start()
+    return True
+
+
+def _voice_runtime_status_payload(runtime_config: RuntimeConfig) -> dict[str, Any]:
+    status = rvc_runtime_status(runtime_config).to_dict()
+    action = _voice_runtime_action_state()
+    managed_pid = read_rvc_runtime_pid()
+    managed_pid_alive = rvc_managed_runtime_alive(runtime_config)
+    startup_progress = rvc_startup_progress_snapshot()
+
+    phase = "installed"
+    phase_message = str(status.get("message") or "Seed-VC runtime status is unknown.")
+
+    if action.get("active"):
+        phase = str(action.get("phase") or "working")
+        phase_message = str(action.get("message") or phase_message)
+    elif action.get("phase") == "failed":
+        phase = "failed"
+        phase_message = str(action.get("error") or action.get("message") or phase_message)
+    elif bool(status.get("api_running")):
+        phase = "ready"
+        phase_message = "Seed-VC runtime is reachable."
+    elif not bool(status.get("installed")):
+        phase = "missing"
+        phase_message = "Seed-VC runtime is not installed."
+    else:
+        phase = "installed"
+        phase_message = "Seed-VC runtime is installed but not running."
+
+    if phase == "installed" and managed_pid_alive:
+        if startup_progress.get("phase") not in {"idle", "failed", "interrupted"}:
+            phase = "starting"
+            phase_message = str(startup_progress.get("message") or "Seed-VC runtime is still starting.")
+        else:
+            phase = "stale"
+            phase_message = str(startup_progress.get("message") or "Seed-VC process exists, but the UI is not reachable.")
+    elif phase == "installed" and action.get("active"):
+        phase = str(action.get("phase") or "working")
+        phase_message = str(action.get("message") or phase_message)
+
+    status["action"] = action
+    status["managed_pid"] = managed_pid
+    status["managed_pid_alive"] = managed_pid_alive
+    start_owned = bool(action.get("active")) and str(action.get("action") or "") in {"start", "restart"} and managed_pid is not None
+    status["owned_by_app"] = (_owned_voice_runtime_pid() == managed_pid and managed_pid is not None) or start_owned
+    status["simple_setup_command"] = "Install Runtime"
+    status["simple_start_command"] = "Restart Runtime" if phase in {"ready", "starting", "stale"} else "Start Runtime"
+    status["startup_progress"] = startup_progress
+    status["phase"] = phase
+    status["phase_message"] = phase_message
+    return status
+
+
+def _voice_work_runtime_python(runtime_config: RuntimeConfig) -> Path:
+    install_dir = runtime_config.rvc_dir.expanduser()
+    if sys.platform == "win32":
+        return install_dir / ".venv" / "Scripts" / "python.exe"
+    return install_dir / ".venv" / "bin" / "python"
+
+
+def _voice_work_runtime_log_path() -> Path:
+    return Path("data/logs/seed-vc.log")
+
+
+def _voice_work_training_progress_summary(log_text: str, *, total_epochs: int) -> str | None:
+    epoch_matches = re.findall(r"Train Epoch:\s*(\d+)\s*\[(\d+)%\]", log_text)
+    if epoch_matches:
+        epoch, percent = epoch_matches[-1]
+        return f"Epoch {epoch}/{total_epochs} ({percent}%)"
+    epoch_records = re.findall(r"====>\s*Epoch:\s*(\d+)\s*\[([^\]]+)\]", log_text)
+    if epoch_records:
+        epoch, elapsed = epoch_records[-1]
+        return f"Epoch {epoch}/{total_epochs} ({elapsed})"
+    return None
+
+
+def _voice_work_log_tail(log_text: str, *, lines: int = 20) -> str:
+    tail = [line.strip() for line in log_text.replace("\r", "\n").splitlines() if line.strip()]
+    if len(tail) > lines:
+        tail = tail[-lines:]
+    return "\n".join(tail)
+
+
+def _run_rvc_client(api_name: str, args: list[Any], runtime_config: RuntimeConfig) -> Any:
+    python_exe = _voice_work_runtime_python(runtime_config)
+    if not python_exe.exists():
+        raise RuntimeError("Voice Work runtime dependencies are not installed.")
+    payload = {
+        "base_url": rvc_runtime_status(runtime_config).api_url,
+        "api_name": api_name,
+        "args": args,
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        temp_path = Path(handle.name)
+    try:
+        script = """
+import json
+import sys
+import tempfile
+from gradio_client import Client, handle_file
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+client = Client(payload["base_url"])
+result = client.predict(*payload["args"], api_name=payload["api_name"])
+
+def materialize(value):
+    if isinstance(value, dict):
+        if isinstance(value.get("path"), str):
+            return value
+        return {key: materialize(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        if len(value) == 2 and isinstance(value[0], (int, float)) and not isinstance(value[1], (str, bytes, bytearray)):
+            sample_rate = int(value[0])
+            data = np.asarray(value[1])
+            out_dir = Path(tempfile.mkdtemp(prefix="voice-work-rvc-"))
+            out_path = out_dir / "output.wav"
+            sf.write(out_path, data, sample_rate)
+            return {"kind": "audio_file", "path": str(out_path), "sample_rate": sample_rate}
+        return [materialize(item) for item in value]
+    return value
+
+print(json.dumps({"result": materialize(result)}, default=str))
+"""
+        command = [str(python_exe), "-c", "from pathlib import Path; " + script, str(temp_path)]
+        env = os.environ.copy()
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("LC_ALL", "C.UTF-8")
+        env.setdefault("LANG", "C.UTF-8")
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            env=env,
+        )
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or completed.stdout.strip() or "Voice Work runtime call failed."
+            raise RuntimeError(stderr)
+        output_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        output = output_lines[-1] if output_lines else ""
+        if not output:
+            return None
+        return json.loads(output).get("result")
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _run_rvc_voice_conversion(
+    *,
+    model_name: str,
+    source_path: Path,
+    f0_up_key: int,
+    f0_method: str,
+    index_path: str,
+    index_rate: float,
+    filter_radius: int,
+    resample_sr: int,
+    rms_mix_rate: float,
+    protect: float,
+    runtime_config: RuntimeConfig,
+) -> dict[str, Any]:
+    python_exe = _voice_work_runtime_python(runtime_config)
+    if not python_exe.exists():
+        raise RuntimeError("Voice Work runtime dependencies are not installed.")
+    runtime_dir = runtime_config.rvc_dir.expanduser().resolve()
+    payload = {
+        "runtime_dir": str(runtime_dir),
+        "model_name": model_name,
+        "source_path": str(source_path),
+        "f0_up_key": int(f0_up_key),
+        "f0_method": "rmvpe" if f0_method == "rmvpe_gpu" else f0_method,
+        "index_path": index_path,
+        "index_rate": float(index_rate),
+        "filter_radius": int(filter_radius),
+        "resample_sr": int(resample_sr),
+        "rms_mix_rate": float(rms_mix_rate),
+        "protect": float(protect),
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        temp_path = Path(handle.name)
+    try:
+        script = """
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+from dotenv import load_dotenv
+
+sys.argv = [sys.argv[0]]
+payload = json.loads(Path(os.environ["VOICE_WORK_PAYLOAD_PATH"]).read_text(encoding="utf-8"))
+runtime_dir = Path(payload["runtime_dir"])
+os.chdir(runtime_dir)
+load_dotenv(runtime_dir / ".env")
+
+from configs.config import Config
+from infer.modules.vc.modules import VC
+
+config = Config()
+vc = VC(config)
+vc.get_vc(payload["model_name"])
+info, audio = vc.vc_single(
+    0,
+    payload["source_path"],
+    int(payload["f0_up_key"]),
+    None,
+    payload["f0_method"],
+    payload["index_path"],
+    "",
+    float(payload["index_rate"]),
+    int(payload["filter_radius"]),
+    int(payload["resample_sr"]),
+    float(payload["rms_mix_rate"]),
+    float(payload["protect"]),
+)
+
+result: dict[str, object] = {"info": info}
+if isinstance(audio, tuple) and len(audio) == 2 and audio[0] is not None and audio[1] is not None:
+    sample_rate = int(audio[0])
+    data = np.asarray(audio[1])
+    out_dir = Path(tempfile.mkdtemp(prefix="voice-work-rvc-"))
+    out_path = out_dir / "output.wav"
+    sf.write(out_path, data, sample_rate)
+    result["result"] = {"kind": "audio_file", "path": str(out_path), "sample_rate": sample_rate}
+else:
+    result["result"] = None
+
+print(json.dumps(result, default=str))
+"""
+        command = [str(python_exe), "-c", "from pathlib import Path; " + script]
+        env = os.environ.copy()
+        env.setdefault("PYTHONUTF8", "1")
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        env.setdefault("LC_ALL", "C.UTF-8")
+        env.setdefault("LANG", "C.UTF-8")
+        env["weight_root"] = "assets/weights"
+        env["weight_uvr5_root"] = "assets/uvr5_weights"
+        env["index_root"] = "logs"
+        env["outside_index_root"] = "assets/indices"
+        env["rmvpe_root"] = "assets/rmvpe"
+        env["VOICE_WORK_PAYLOAD_PATH"] = str(temp_path)
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            env=env,
+            cwd=runtime_dir,
+        )
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or completed.stdout.strip() or "Voice Work runtime conversion failed."
+            raise RuntimeError(stderr)
+        output_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        output = output_lines[-1] if output_lines else ""
+        if not output:
+            raise RuntimeError("Voice Work runtime returned no output.")
+        payload_result = json.loads(output)
+        info = str(payload_result.get("info") or "")
+        runtime_result = payload_result.get("result")
+        if runtime_result is None:
+            raise RuntimeError(info or "Voice Work runtime returned no audio file.")
+        if info and not info.startswith("Success"):
+            raise RuntimeError(info)
+        return {"info": info, "result": runtime_result}
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _voice_work_spawn_tts_wav(text: str, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    ps_script = f"""
+Add-Type -AssemblyName System.Speech
+$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$synth.SetOutputToWaveFile('{str(output_path).replace("'", "''")}')
+$synth.Speak('{text.replace("'", "''")}')
+$synth.Dispose()
+"""
+    subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_script],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+
+def _voice_work_gpu_text() -> str:
+    try:
+        import torch
+
+        return "0" if torch.cuda.is_available() else ""
+    except Exception:
+        return ""
+
+
+def _voice_work_default_threads() -> int:
+    return max(1, min(4, (os.cpu_count() or 4) // 2))
+
+
+def _voice_work_runtime_assets_dir(runtime_config: RuntimeConfig) -> Path:
+    return runtime_config.rvc_dir.expanduser() / "assets" / "weights"
+
+
+def _voice_work_runtime_logs_dir(runtime_config: RuntimeConfig) -> Path:
+    return runtime_config.rvc_dir.expanduser() / "logs"
+
+
+def _voice_work_latest_index_path(experiment_name: str, runtime_config: RuntimeConfig) -> Path | None:
+    logs_dir = _voice_work_runtime_logs_dir(runtime_config) / experiment_name
+    if not logs_dir.exists():
+        return None
+    candidates = sorted(logs_dir.glob("added_*.index")) or sorted(logs_dir.glob("trained_*.index"))
+    if candidates:
+        return candidates[-1]
+    return None
+
+
+def _voice_work_training_run_name(voice_id: str) -> str:
+    return f"{voice_id}-{uuid4().hex[:8]}"
+
+
+def _voice_work_extract_existing_path(result: Any) -> Path | None:
+    if isinstance(result, str):
+        candidate = Path(result).expanduser()
+        if candidate.exists() and candidate.is_file():
+            return candidate
+        return None
+    if isinstance(result, dict):
+        for key in ("path", "file", "value", "name"):
+            candidate = result.get(key)
+            if isinstance(candidate, str):
+                path = Path(candidate).expanduser()
+                if path.exists() and path.is_file():
+                    return path
+        for value in result.values():
+            path = _voice_work_extract_existing_path(value)
+            if path is not None:
+                return path
+        return None
+    if isinstance(result, (list, tuple)):
+        for value in result:
+            path = _voice_work_extract_existing_path(value)
+            if path is not None:
+                return path
+    return None
+
+
+def _voice_work_normalize_render_output(
+    *,
+    voice: dict[str, Any],
+    source_path: str,
+    runtime_result: Any,
+    label: str,
+    render_type: str,
+    mode: str = "singing",
+    text: str = "",
+    language: str = "auto",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    output_path = _voice_work_extract_existing_path(runtime_result)
+    if output_path is None:
+        raise RuntimeError("Voice Work runtime returned no audio file.")
+    return create_voice_render_record(
+        label=label,
+        voice=voice,
+        source_path=source_path,
+        output_audio_path=output_path,
+        runtime_payload={"result": runtime_result, "mode": mode},
+        render_type=render_type,
+        mode=mode,
+        text=text,
+        language=language,
+        extra=extra,
+    )
+
+
+def _voice_work_train_voice_asset(
+    voice_id: str,
+    *,
+    runtime_config: RuntimeConfig,
+    epochs: int = 20,
+    save_every: int = 5,
+    batch_size: int = 1,
+    use_f0: bool = True,
+    sample_rate: str = "48k",
+    version: str = "v2",
+    cpu_threads: int | None = None,
+) -> dict[str, Any]:
+    voice = read_voice(voice_id)
+    training_run_name = _voice_work_training_run_name(voice_id)
+    reference_dir = (Path(str(voice.get("voice_dir") or "")).expanduser().resolve() / "references")
+    if not reference_dir.exists() or not any(reference_dir.iterdir()):
+        raise RuntimeError("Voice clone needs reference audio before training.")
+
+    result = ensure_rvc_runtime_api(runtime_config)
+    if not result.started and not result.already_running and not rvc_api_health(runtime_config):
+        raise RuntimeError(result.message)
+
+    gpu_text = _voice_work_gpu_text()
+    f0_method = "rmvpe_gpu" if gpu_text else "rmvpe"
+    gpus_rmvpe = gpu_text if gpu_text else "-"
+    threads = int(cpu_threads or _voice_work_default_threads())
+    model_path = runtime_config.rvc_dir.expanduser() / "assets" / "weights" / f"{training_run_name}.pth"
+    log_path = _voice_work_runtime_log_path()
+    log_start_size = log_path.stat().st_size if log_path.exists() else 0
+    _set_voice_work_job_state(
+        active=True,
+        action="train",
+        message=f"Training voice '{voice.get('label') or voice_id}'.",
+        error="",
+        phase="training",
+        started_at=_now_iso(),
+        completed_at=None,
+        details={
+            "voice_id": voice_id,
+            "training_run_id": training_run_name,
+            "stage": "training",
+            "reference_dir": str(reference_dir),
+        },
+    )
+    runtime_result = _run_rvc_client(
+        "/train_start_all",
+        [
+            training_run_name,
+            sample_rate,
+            use_f0,
+            str(reference_dir),
+            0,
+            threads,
+            f0_method,
+            save_every,
+            epochs,
+            batch_size,
+            "No",
+            "",
+            "",
+            gpu_text,
+            "No",
+            "Yes",
+            version,
+            gpus_rmvpe,
+        ],
+        runtime_config,
+    )
+    timeout_seconds = max(1800, int(epochs) * 120)
+    deadline = time.monotonic() + timeout_seconds
+    last_progress_message = ""
+    while time.monotonic() < deadline:
+        log_text = ""
+        if log_path.exists():
+            with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(log_start_size)
+                log_text = handle.read()
+        if "Traceback (most recent call last):" in log_text:
+            raise RuntimeError(_voice_work_log_tail(log_text))
+        progress_message = _voice_work_training_progress_summary(log_text, total_epochs=epochs)
+        if progress_message and progress_message != last_progress_message:
+            last_progress_message = progress_message
+            _set_voice_work_job_state(
+                active=True,
+                action="train",
+                message=f"Training voice '{voice.get('label') or voice_id}': {progress_message}.",
+                error="",
+                phase="training",
+                started_at=_VOICE_WORK_JOB_STATE.get("started_at"),
+                completed_at=None,
+                details={
+                    "voice_id": voice_id,
+                    "training_run_id": training_run_name,
+                    "stage": "training",
+                    "reference_dir": str(reference_dir),
+                    "progress": progress_message,
+                },
+            )
+        completion_marker = "Training is done. The program is closed."
+        if model_path.exists() and log_text and completion_marker in log_text:
+            break
+        time.sleep(2)
+    if not model_path.exists():
+        raise RuntimeError(
+            f"Voice training timed out before writing the final model checkpoint: {model_path}"
+        )
+    index_path = _voice_work_latest_index_path(training_run_name, runtime_config)
+    updated = update_voice(
+        voice_id,
+        {
+            "trained_model_path": str(model_path) if model_path.exists() else "",
+            "trained_index_path": str(index_path) if index_path and index_path.exists() else "",
+            "trained_model_name": model_path.name if model_path.exists() else "",
+            "trained_index_name": index_path.name if index_path and index_path.exists() else "",
+            "training_status": "trained",
+            "training_error": "",
+            "training_run_id": training_run_name,
+        },
+    )
+    _set_voice_work_job_state(
+        active=False,
+        action="train",
+        message=f"Voice '{updated.get('label') or voice_id}' trained.",
+        error="",
+        phase="idle",
+        started_at=_VOICE_WORK_JOB_STATE.get("started_at"),
+        completed_at=_now_iso(),
+        details={
+            "voice_id": voice_id,
+            "training_run_id": training_run_name,
+            "stage": "complete",
+            "model_path": str(model_path),
+            "index_path": str(index_path) if index_path else "",
+        },
+    )
+    return {
+        "voice": updated,
+        "runtime_result": runtime_result,
+        "model_path": str(model_path) if model_path.exists() else "",
+        "index_path": str(index_path) if index_path and index_path.exists() else "",
+    }
+
+
+def _voice_work_target_reference_path(voice: dict[str, Any]) -> Path:
+    preview_path = str(voice.get("preview_audio_path") or "")
+    if preview_path:
+        candidate = Path(preview_path).expanduser().resolve()
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    for reference in voice.get("reference_files", []) or []:
+        candidate = Path(str(reference.get("path") or "")).expanduser().resolve()
+        if candidate.exists() and candidate.is_file():
+            return candidate
+    raise RuntimeError("Target voice does not have a usable reference audio file.")
+
+
+def _run_seed_vc_voice_conversion(
+    *,
+    source_path: Path,
+    reference_path: Path,
+    mode: str,
+    diffusion_steps: int,
+    length_adjust: float,
+    inference_cfg_rate: float,
+    runtime_config: RuntimeConfig,
+) -> dict[str, Any]:
+    if not rvc_api_health(runtime_config):
+        raise RuntimeError("Seed-VC runtime is not running.")
+    if mode not in {"speaking", "singing"}:
+        mode = "singing"
+    payload = {
+        "source_path": str(source_path),
+        "reference_path": str(reference_path),
+        "mode": mode,
+        "diffusion_steps": int(diffusion_steps),
+        "length_adjust": float(length_adjust),
+        "inference_cfg_rate": float(inference_cfg_rate),
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        temp_path = Path(handle.name)
+    try:
+        script = """
+import json
+import sys
+from pathlib import Path
+
+import torch
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+module_name = "app_svc" if payload["mode"] == "singing" else "app_vc"
+seed_vc = __import__(module_name)
+seed_vc.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class Args:
+    checkpoint = None
+    config = None
+    fp16 = True
+    gpu = 0
+    share = False
+    port = 7860
+
+
+args = Args()
+loaded = seed_vc.load_models(args)
+loaded_values = list(loaded) if isinstance(loaded, (list, tuple)) else [loaded]
+if len(loaded_values) < 6:
+    raise RuntimeError(f"Seed-VC load_models returned an unexpected result shape: {len(loaded_values)}")
+if payload["mode"] == "singing":
+    seed_vc.model_f0 = loaded_values[0]
+    seed_vc.semantic_fn = loaded_values[1]
+    seed_vc.vocoder_fn = loaded_values[2]
+    seed_vc.campplus_model = loaded_values[3]
+    seed_vc.to_mel_f0 = loaded_values[4]
+    seed_vc.mel_fn_args = loaded_values[5]
+    seed_vc.f0_fn = loaded_values[6] if len(loaded_values) > 6 else None
+    seed_vc.max_context_window = seed_vc.sr // seed_vc.hop_length * 30
+    seed_vc.overlap_wave_len = seed_vc.overlap_frame_len * seed_vc.hop_length
+    result = seed_vc.voice_conversion(
+        payload["source_path"],
+        payload["reference_path"],
+        payload["diffusion_steps"],
+        payload["length_adjust"],
+        payload["inference_cfg_rate"],
+    )
+else:
+    seed_vc.model = loaded_values[0]
+    seed_vc.semantic_fn = loaded_values[1]
+    seed_vc.vocoder_fn = loaded_values[2]
+    seed_vc.campplus_model = loaded_values[3]
+    seed_vc.to_mel = loaded_values[4]
+    seed_vc.mel_fn_args = loaded_values[5]
+    seed_vc.f0_fn = loaded_values[6] if len(loaded_values) > 6 else None
+    seed_vc.max_context_window = seed_vc.sr // seed_vc.hop_length * 30
+    seed_vc.overlap_wave_len = seed_vc.overlap_frame_len * seed_vc.hop_length
+    result = seed_vc.voice_conversion(
+        payload["source_path"],
+        payload["reference_path"],
+        payload["diffusion_steps"],
+        payload["length_adjust"],
+        payload["inference_cfg_rate"],
+    )
+
+print(json.dumps({"result": result}, default=str))
+"""
+        completed = subprocess.run(
+            [str(_voice_work_runtime_python(runtime_config)), "-c", script, str(temp_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            cwd=str(runtime_config.rvc_dir.expanduser()),
+            env={
+                **os.environ.copy(),
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+                "LC_ALL": "C.UTF-8",
+                "LANG": "C.UTF-8",
+            },
+        )
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or completed.stdout.strip() or "Seed-VC runtime conversion failed."
+            raise RuntimeError(stderr)
+        output_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        output = output_lines[-1] if output_lines else ""
+        if not output:
+            raise RuntimeError("Seed-VC runtime returned no output.")
+        payload_result = json.loads(output)
+        return {"result": payload_result.get("result")}
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def _voice_work_convert_audio(
+    *,
+    voice_id: str,
+    source_audio_path: str,
+    label: str,
+    mode: str,
+    diffusion_steps: int,
+    length_adjust: float,
+    inference_cfg_rate: float,
+    runtime_config: RuntimeConfig,
+    request_id: str | None = None,
+    render_type: str = "conversion",
+    text: str = "",
+    language: str = "auto",
+) -> dict[str, Any]:
+    voice = read_voice(voice_id)
+    source_path = Path(source_audio_path).expanduser().resolve()
+    if not source_path.exists() or not source_path.is_file():
+        raise RuntimeError(f"Source audio not found: {source_audio_path}")
+    try:
+        validate_supported_source(source_path)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    reference_path = _voice_work_target_reference_path(voice)
+    runtime_result = _run_seed_vc_voice_conversion(
+        source_path=source_path,
+        reference_path=reference_path,
+        diffusion_steps=diffusion_steps,
+        length_adjust=length_adjust,
+        inference_cfg_rate=inference_cfg_rate,
+        mode=mode,
+        runtime_config=runtime_config,
+    )
+    return _voice_work_normalize_render_output(
+        voice=voice,
+        source_path=str(source_path),
+        runtime_result=runtime_result,
+        label=label or f"{voice.get('label') or voice_id} conversion",
+        render_type=render_type,
+        mode=mode,
+        text=text,
+        language=language,
+        extra={"request_id": (request_id or "").strip()} if (request_id or "").strip() else None,
+    )
 
 
 def _strip_ansi(text: str) -> str:
@@ -2166,6 +3172,19 @@ def _library_items_from_lokr_adapters() -> list[LibraryItem]:
     return items
 
 
+def _library_items_from_voice_work() -> list[LibraryItem]:
+    items: list[LibraryItem] = []
+    for voice in list_voices():
+        item = library_item_from_voice(voice)
+        if item is not None:
+            items.append(item)
+    for generation in list_generations():
+        item = library_item_from_generation(generation)
+        if item is not None:
+            items.append(item)
+    return items
+
+
 def _library_items_from_rhythm_projects() -> list[LibraryItem]:
     items: list[LibraryItem] = []
     for summary in list_rhythm_projects():
@@ -2186,6 +3205,7 @@ def _local_library_scanned_items() -> list[LibraryItem]:
     items = [item for asset in _editor_assets() if (item := library_item_from_editor_asset(asset)) is not None]
     items.extend(_library_items_from_lokr_datasets())
     items.extend(_library_items_from_lokr_adapters())
+    items.extend(_library_items_from_voice_work())
     items.extend(_library_items_from_rhythm_projects())
     return items
 
@@ -2311,6 +3331,30 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
     ui_log = UiLog()
     ui_log.add("info", "UI server started.")
 
+    def _current_voice_runtime_config() -> RuntimeConfig:
+        return runtime_config
+
+    @app.on_event("shutdown")
+    def _shutdown_managed_voice_runtime() -> None:
+        action = _voice_runtime_action_state()
+        runtime_config = _current_voice_runtime_config()
+        should_stop = (
+            _owned_voice_runtime_pid() is not None
+            or (
+                action.get("active")
+                and action.get("action") in {"start", "restart"}
+                and rvc_managed_runtime_alive(runtime_config)
+            )
+            or rvc_managed_runtime_alive(runtime_config)
+            or rvc_runtime_status(runtime_config).api_running
+        )
+        if not should_stop:
+            return
+        try:
+            stop_rvc_runtime(runtime_config)
+        finally:
+            _set_owned_voice_runtime_pid(None)
+
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
     app.mount("/audiomass", StaticFiles(directory=audiomass_dir, html=True), name="audiomass")
 
@@ -2369,6 +3413,10 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             activity["detail"] = recovery.reason
         return activity
 
+    @app.get("/api/voice-work/runtime/url")
+    def get_voice_work_runtime_url() -> dict[str, str]:
+        return {"url": rvc_runtime_status(_current_voice_runtime_config()).ui_url}
+
     @app.get("/api/source/audio")
     def get_source_audio(path: str = Query(..., min_length=1)) -> FileResponse:
         source_path = Path(path).expanduser()
@@ -2386,6 +3434,236 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return FileResponse(audio_path)
+
+    @app.get("/api/voice-work/status")
+    def get_voice_work_status() -> dict[str, object]:
+        status = _voice_runtime_status_payload(_current_voice_runtime_config())
+        status["job"] = _voice_work_job_state()
+        return status
+
+    @app.post("/api/voice-work/runtime/install")
+    def install_voice_work_runtime() -> dict[str, object]:
+        def _runner() -> str:
+            run_rvc_install(_current_voice_runtime_config())
+            status = _voice_runtime_status_payload(_current_voice_runtime_config())
+            if status.get("phase") == "missing":
+                raise RuntimeError("Seed-VC runtime install did not complete.")
+            return "Seed-VC runtime setup complete."
+
+        if not _start_voice_runtime_action("install", _runner, ui_log=ui_log):
+            raise HTTPException(status_code=409, detail="Another Voice Work runtime action is already in progress.")
+        return {"started": True, "action": "install"}
+
+    @app.post("/api/voice-work/runtime/start")
+    def start_voice_work_runtime() -> dict[str, object]:
+        def _runner() -> str:
+            effective_runtime_config = _current_voice_runtime_config()
+            result = ensure_rvc_runtime_api(effective_runtime_config)
+            if result.started or result.already_running:
+                _set_owned_voice_runtime_pid(read_rvc_runtime_pid())
+            status = _voice_runtime_status_payload(effective_runtime_config)
+            if status.get("phase") not in {"ready", "starting", "stale"}:
+                raise RuntimeError(str(result.message))
+            return result.message
+
+        if not _start_voice_runtime_action("start", _runner, ui_log=ui_log):
+            raise HTTPException(status_code=409, detail="Another Voice Work runtime action is already in progress.")
+        return {"started": True, "action": "start"}
+
+    @app.post("/api/voice-work/runtime/restart")
+    def restart_voice_work_runtime() -> dict[str, object]:
+        def _runner() -> str:
+            effective_runtime_config = _current_voice_runtime_config()
+            if rvc_managed_runtime_alive(effective_runtime_config):
+                stop_rvc_runtime(effective_runtime_config)
+                _set_owned_voice_runtime_pid(None)
+            result = ensure_rvc_runtime_api(effective_runtime_config)
+            if result.started or result.already_running:
+                _set_owned_voice_runtime_pid(read_rvc_runtime_pid())
+            status = _voice_runtime_status_payload(effective_runtime_config)
+            if status.get("phase") not in {"ready", "starting", "stale"}:
+                raise RuntimeError(str(result.message))
+            return "Seed-VC runtime restarted."
+
+        if not _start_voice_runtime_action("restart", _runner, ui_log=ui_log):
+            raise HTTPException(status_code=409, detail="Another Voice Work runtime action is already in progress.")
+        return {"started": True, "action": "restart"}
+
+    @app.post("/api/voice-work/runtime/stop")
+    def stop_voice_work_runtime() -> dict[str, object]:
+        stopped = stop_rvc_runtime(_current_voice_runtime_config())
+        if stopped:
+            _set_owned_voice_runtime_pid(None)
+        return {"stopped": stopped, "message": "Seed-VC runtime stopped."}
+
+    @app.get("/api/voice-work/voices")
+    def get_voice_work_voices() -> list[dict[str, Any]]:
+        return list_voices()
+
+    @app.post("/api/voice-work/voices/upload")
+    def upload_voice_work_voice(
+        label: str = Form(...),
+        language: str = Form("auto"),
+        description: str = Form(""),
+        files: list[UploadFile] = File(...),
+    ) -> dict[str, Any]:
+        ui_log.add(
+            "info",
+            f"Voice Work upload requested: label={label!r}, language={language!r}, files={len(files)}",
+        )
+        if not files:
+            raise HTTPException(status_code=400, detail="Upload at least one reference audio file.")
+        temp_dir = _voice_work_root() / ".uploads" / uuid4().hex
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_paths: list[Path] = []
+        try:
+            for file in files:
+                temp_paths.append(_copy_upload_to_temp(file, temp_dir))
+            reference_paths = [path for path in temp_paths if _voice_upload_type(path) == "audio"]
+            if not reference_paths:
+                allowed = ", ".join(sorted(VOICE_AUDIO_EXTENSIONS))
+                raise HTTPException(status_code=400, detail=f"Supported target voice files: {allowed}")
+            voice = create_voice_asset(
+                label=label,
+                language=language,
+                description=description,
+                reference_paths=reference_paths,
+            )
+            ui_log.add("info", f"Voice Work upload stored {len(reference_paths)} reference file(s) for '{voice['label']}'.")
+        finally:
+            for file in files:
+                try:
+                    file.file.close()
+                except Exception:
+                    pass
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        _sync_local_library_index()
+        ui_log.add("info", f"Stored target voice '{voice['label']}'.")
+        return {"voice": voice}
+
+    @app.post("/api/voice-work/voices/from-asset")
+    def create_voice_work_voice_from_asset(request: VoiceWorkTargetVoiceFromAssetRequest) -> dict[str, Any]:
+        try:
+            asset = _find_editor_asset(request.asset_id)
+            audio_path = Path(str(asset.get("audio_path") or "")).expanduser()
+            if not audio_path.exists() or not audio_path.is_file():
+                raise FileNotFoundError(f"Asset audio not found: {audio_path}")
+            voice = create_voice_asset(
+                label=request.label or str(asset.get("label") or audio_path.stem),
+                language=request.language,
+                description=request.description,
+                reference_paths=[audio_path],
+                source_asset_id=str(asset.get("asset_id") or ""),
+                source_asset_label=str(asset.get("label") or audio_path.stem),
+                source_asset_category=str(asset.get("category") or ""),
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        _sync_local_library_index()
+        ui_log.add("info", f"Stored target voice from asset '{voice['label']}'.")
+        return {"voice": voice}
+
+    @app.post("/api/voice-work/tmp-upload")
+    def upload_voice_work_temp_audio(file: UploadFile = File(...)) -> dict[str, str]:
+        temp_dir = _voice_work_root() / ".uploads" / uuid4().hex
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            temp_path = _copy_upload_to_temp(file, temp_dir)
+        finally:
+            try:
+                file.file.close()
+            except Exception:
+                pass
+        return {"path": str(temp_path), "name": temp_path.name}
+
+    @app.get("/api/voice-work/generations")
+    def get_voice_work_generations() -> list[dict[str, Any]]:
+        return list_generations()
+
+    @app.patch("/api/voice-work/voices/{voice_id}")
+    def update_voice_work_voice(
+        voice_id: str,
+        label: str | None = Form(None),
+        language: str | None = Form(None),
+        description: str | None = Form(None),
+    ) -> dict[str, Any]:
+        try:
+            updates: dict[str, Any] = {}
+            if label is not None:
+                updates["label"] = label.strip()
+            if language is not None:
+                updates["language"] = language.strip() or "auto"
+            if description is not None:
+                updates["description"] = description.strip()
+            voice = update_voice(voice_id, updates)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        _sync_local_library_index()
+        return {"voice": voice}
+
+    @app.delete("/api/voice-work/voices/{voice_id}")
+    def delete_voice_work_voice(voice_id: str) -> dict[str, Any]:
+        try:
+            delete_voice(voice_id)
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        _sync_local_library_index()
+        return {"deleted": True, "voice_id": voice_id}
+
+    @app.post("/api/voice-work/voices/{voice_id}/train")
+    def train_voice_work_voice(voice_id: str, request: VoiceWorkTrainRequest) -> dict[str, Any]:
+        raise HTTPException(status_code=410, detail="Voice training has been removed. Use target voice uploads instead.")
+
+    @app.post("/api/voice-work/voices/{voice_id}/convert")
+    def convert_voice_work_sample(voice_id: str, request: VoiceWorkConvertRequest) -> dict[str, Any]:
+        request_id = (request.request_id or uuid4().hex[:12]).strip()
+        ui_log.add(
+            "info",
+            "Voice Work convert request "
+            f"{request_id}: voice={voice_id}, mode={request.mode}, source={request.source_audio_path}, label={request.label or ''}",
+        )
+
+        def _runner() -> str:
+            source_path = Path(request.source_audio_path).expanduser()
+            if not request.label.strip():
+                raise RuntimeError("Enter an output label before converting.")
+            result = _voice_work_convert_audio(
+                voice_id=voice_id,
+                source_audio_path=request.source_audio_path,
+                label=request.label or "",
+                mode=request.mode,
+                diffusion_steps=request.diffusion_steps,
+                length_adjust=request.length_adjust,
+                inference_cfg_rate=request.inference_cfg_rate,
+                runtime_config=_current_voice_runtime_config(),
+                request_id=request_id,
+                render_type="conversion",
+            )
+            if _voice_work_root() in source_path.parents:
+                shutil.rmtree(source_path.parent, ignore_errors=True)
+            _sync_local_library_index()
+            return f"Seed-VC conversion saved as '{result['label']}'."
+
+        if not _start_voice_work_job(
+            "convert",
+            _runner,
+            ui_log=ui_log,
+            details={
+                "request_id": request_id,
+                "voice_id": voice_id,
+                "source_audio_path": request.source_audio_path,
+                "label": request.label or "",
+                "mode": request.mode,
+            },
+        ):
+            raise HTTPException(status_code=409, detail="Another Voice Work job is already in progress.")
+        return {"started": True, "action": "convert", "voice_id": voice_id, "request_id": request_id}
+
+    @app.post("/api/voice-work/voices/{voice_id}/tts")
+    def generate_voice_work_tts(voice_id: str, request: VoiceWorkTtsRequest) -> dict[str, Any]:
+        raise HTTPException(status_code=410, detail="TTS has been removed from Voice Work. Use sample conversion only.")
 
     @app.get("/api/library/file")
     def get_library_file(path: str = Query(..., min_length=1)) -> FileResponse:
@@ -3580,6 +4858,7 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             failure = _handle_ace_runtime_failure(runtime_config, ui_log, "ACE-Step music generation failed.", exc)
             metadata = {
                 "generation_id": generation_id,
+                "type": "music",
                 "status": "recovering" if failure["recovery_active"] else "failed",
                 "message": failure["message"],
                 "created_at": created_at,
@@ -3598,6 +4877,7 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
 
         metadata = {
             "generation_id": generation_id,
+            "type": "music",
             "status": "complete",
             "message": "Music generation complete.",
             "created_at": created_at,
@@ -3614,6 +4894,91 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
         }
         _write_metadata(metadata_path, metadata)
         ui_log.add("info", f"Generated music: {result.output_path}")
+        return {"generation": metadata}
+
+    @app.post("/api/music-generations/vocal2bgm")
+    def run_vocal2bgm_generation(request: Vocal2BgmRequest) -> dict[str, object]:
+        import datetime as _datetime
+
+        generation_id = f"vocal2bgm-{uuid4().hex[:12]}"
+        save_dir = _music_generation_root() / generation_id
+        metadata_path = save_dir / "generation.json"
+        created_at = _datetime.datetime.now(_datetime.UTC).isoformat()
+        source_path = Path(request.source_audio_path).expanduser()
+        if not source_path.exists():
+            raise HTTPException(status_code=400, detail=f"Source audio not found: {source_path}")
+        try:
+            probe = probe_audio(source_path)
+        except Exception as exc:
+            ui_log.add("error", str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        label = request.label.strip()
+        prompt = (request.prompt or "").strip()
+        ui_log.add("info", f"Running ACE-Step Base Vocal2BGM generation from {source_path}.")
+
+        try:
+            result = AceStepApiClient(runtime_config).vocal2bgm(
+                source_path=source_path,
+                label=label,
+                prompt=prompt,
+                save_dir=save_dir,
+                audio_duration=request.audio_duration or probe.duration_seconds,
+                audio_format=request.output_format,
+                inference_steps=request.inference_steps,
+                guidance_scale=request.guidance_scale,
+                shift=request.shift,
+                infer_method=request.infer_method,
+                use_tiled_decode=request.use_tiled_decode,
+                dcw_enabled=request.dcw_enabled,
+                velocity_norm_threshold=request.velocity_norm_threshold,
+                velocity_ema_factor=request.velocity_ema_factor,
+                seed=request.seed,
+                audio_cover_strength=request.audio_cover_strength,
+            )
+        except AceStepApiError as exc:
+            failure = _handle_ace_runtime_failure(runtime_config, ui_log, "ACE-Step Vocal2BGM generation failed.", exc)
+            metadata = {
+                "generation_id": generation_id,
+                "type": "vocal2bgm",
+                "status": "recovering" if failure["recovery_active"] else "failed",
+                "message": failure["message"],
+                "created_at": created_at,
+                "label": label,
+                "prompt": prompt,
+                "model": ACE_STEP_BASE_MODEL,
+                "source_audio_path": str(source_path),
+                "source_duration_seconds": probe.duration_seconds,
+                "source_format": probe.source_format,
+                "output_format": request.output_format,
+                "generated_audio_path": "",
+                "metadata_path": str(metadata_path),
+                "settings": request.model_dump(),
+                "runtime_recovery": failure["recovery"],
+            }
+            _write_metadata(metadata_path, metadata)
+            return {"generation": metadata}
+
+        metadata = {
+            "generation_id": generation_id,
+            "type": "vocal2bgm",
+            "status": "complete",
+            "message": "Vocal2BGM generation complete.",
+            "created_at": created_at,
+            "label": label,
+            "prompt": prompt,
+            "model": ACE_STEP_BASE_MODEL,
+            "source_audio_path": str(source_path),
+            "source_duration_seconds": probe.duration_seconds,
+            "source_format": probe.source_format,
+            "output_format": request.output_format,
+            "generated_audio_path": str(result.output_path),
+            "generated_metadata_path": str(result.metadata_path),
+            "metadata_path": str(metadata_path),
+            "settings": request.model_dump(),
+        }
+        _write_metadata(metadata_path, metadata)
+        ui_log.add("info", f"Generated Vocal2BGM audio: {result.output_path}")
         return {"generation": metadata}
 
     @app.post("/api/music-generations/{generation_id}/rename")

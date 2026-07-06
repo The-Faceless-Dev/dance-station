@@ -156,8 +156,57 @@ h3 {
   margin-bottom: 14px;
 }
 
+.existing-source-picker.single-column {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .existing-source-picker .field {
   margin-bottom: 0;
+}
+
+.source-choice-group {
+  display: flex;
+  gap: 10px;
+  margin: 0 0 12px;
+  flex-wrap: wrap;
+}
+
+.choice-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  min-height: 38px;
+}
+
+.choice-option:has(input:checked) {
+  border-color: var(--accent);
+  background: rgba(20, 184, 166, 0.12);
+}
+
+.choice-option input {
+  margin: 0;
+}
+
+.choice-option input[type="radio"] {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  flex: 0 0 auto;
+}
+
+.picker-block {
+  margin-bottom: 14px;
+}
+
+.picker-block.is-hidden {
+  display: none;
 }
 
 #selectedFileName {
@@ -787,6 +836,12 @@ button:disabled {
   margin-top: 18px;
   border-top: 1px solid var(--line);
   padding-top: 16px;
+}
+
+.panel-divider {
+  height: 1px;
+  margin: 18px 0;
+  background: var(--line);
 }
 
 .generated-list {
