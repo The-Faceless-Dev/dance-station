@@ -22,7 +22,7 @@
     <nav class="tabbar" aria-label="Workspace">
       <button id="transitionTabButton" class="tab-button active" type="button">Autotransition</button>
       <button id="extractionTabButton" class="tab-button" type="button">Track Extraction</button>
-      <button id="musicTabButton" class="tab-button" type="button">Sound Generation</button>
+      <button id="musicTabButton" class="tab-button" type="button">Music Generation</button>
       <button id="voiceWorkTabButton" class="tab-button" type="button">Voice Work</button>
       <button id="datasetEditorTabButton" class="tab-button" type="button">Dataset Editor</button>
       <button id="lokrTrainingTabButton" class="tab-button" type="button">LoKr Training</button>
@@ -230,7 +230,7 @@
     <main id="musicPage" class="workspace app-page">
       <section class="panel workflow-panel">
         <div class="panel-heading">
-          <h2>Sound Generation</h2>
+          <h2>Music Generation</h2>
           <span id="musicActionState" class="mini-state">Ready</span>
         </div>
 
@@ -315,69 +315,15 @@
         </div>
 
         <div class="output-block">
-          <h3>Sound Generation Output</h3>
+          <h3>Music Generation Output</h3>
           <div id="musicActivity" class="activity-readout">No music generation running.</div>
           <div id="musicList" class="generated-list">
-            <div class="empty-result">No sound generations yet.</div>
+            <div class="empty-result">No music generations yet.</div>
           </div>
         </div>
       </section>
 
-      <section class="panel workflow-panel sound-effect-panel">
-        <div class="panel-heading">
-          <h2>Sound Effects</h2>
-          <span id="soundEffectActionState" class="mini-state">Ready</span>
-        </div>
-
-        <div class="summary">Generate short effect cues from text with TangoFlux.</div>
-
-        <label class="field">
-          <span>Result label</span>
-          <input id="soundEffectLabelInput" type="text" placeholder="Effect name" />
-        </label>
-
-        <label class="field">
-          <span>Prompt</span>
-          <input id="soundEffectPromptInput" type="text" placeholder="metallic impact with a long echo" />
-        </label>
-
-        <div class="control-grid">
-          <label class="field">
-            <span>Duration seconds</span>
-            <input id="soundEffectDurationInput" type="number" min="1" max="30" step="1" value="10" />
-          </label>
-          <label class="field">
-            <span>Steps</span>
-            <input id="soundEffectStepsInput" type="number" min="1" max="200" step="1" value="50" />
-          </label>
-          <label class="field">
-            <span>Output format</span>
-            <select id="soundEffectOutputFormat">
-              <option value="wav" selected>WAV</option>
-              <option value="wav32">WAV 32-bit</option>
-              <option value="flac">FLAC</option>
-              <option value="mp3">MP3</option>
-              <option value="opus">Opus</option>
-              <option value="aac">AAC</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="button-row">
-          <button id="runSoundEffectButton" class="primary-button" type="button">Generate Sound Effect</button>
-          <button id="refreshSoundEffectButton" class="secondary-button" type="button">Refresh Results</button>
-        </div>
-
-        <div class="output-block">
-          <h3>Sound Effects Output</h3>
-          <div id="soundEffectActivity" class="activity-readout">No sound effect generation running.</div>
-          <div id="soundEffectList" class="generated-list">
-            <div class="empty-result">No sound effects yet.</div>
-          </div>
-        </div>
-      </section>
-
-      <aside class="side-stack">
+      <aside class="side-stack music-center-stack">
         <section class="panel">
           <div class="panel-heading">
             <h2>Generation Settings</h2>
@@ -424,6 +370,62 @@
             <span class="mini-state">Local</span>
           </div>
           <ol id="musicLogList" class="log-list"></ol>
+        </section>
+      </aside>
+
+      <aside class="side-stack music-sound-stack">
+        <section class="panel workflow-panel sound-effect-panel">
+          <div class="panel-heading">
+            <h2>Sound Effects</h2>
+            <span id="soundEffectActionState" class="mini-state">Ready</span>
+          </div>
+
+          <div class="summary">Generate short effect cues from text with TangoFlux.</div>
+
+          <label class="field">
+            <span>Result label</span>
+            <input id="soundEffectLabelInput" type="text" placeholder="Effect name" />
+          </label>
+
+          <label class="field">
+            <span>Prompt</span>
+            <input id="soundEffectPromptInput" type="text" placeholder="metallic impact with a long echo" />
+          </label>
+
+          <div class="control-grid">
+            <label class="field">
+              <span>Duration seconds</span>
+              <input id="soundEffectDurationInput" type="number" min="1" max="30" step="1" value="10" />
+            </label>
+            <label class="field">
+              <span>Steps</span>
+              <input id="soundEffectStepsInput" type="number" min="1" max="200" step="1" value="50" />
+            </label>
+            <label class="field">
+              <span>Output format</span>
+              <select id="soundEffectOutputFormat">
+                <option value="wav" selected>WAV</option>
+                <option value="wav32">WAV 32-bit</option>
+                <option value="flac">FLAC</option>
+                <option value="mp3">MP3</option>
+                <option value="opus">Opus</option>
+                <option value="aac">AAC</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button id="runSoundEffectButton" class="primary-button" type="button">Generate Sound Effect</button>
+            <button id="refreshSoundEffectButton" class="secondary-button" type="button">Refresh Results</button>
+          </div>
+
+          <div class="output-block">
+            <h3>Sound Effects Output</h3>
+            <div id="soundEffectActivity" class="activity-readout">No sound effect generation running.</div>
+            <div id="soundEffectList" class="generated-list">
+              <div class="empty-result">No sound effects yet.</div>
+            </div>
+          </div>
         </section>
       </aside>
     </main>
