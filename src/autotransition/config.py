@@ -35,6 +35,7 @@ class RuntimeConfig:
     ace_step_dir: Path = Path("runtimes/ACE-Step-1.5")
     side_step_dir: Path = Path("runtimes/Side-Step")
     rvc_dir: Path = Path("runtimes/Seed-VC")
+    tango_flux_dir: Path = Path("runtimes/TangoFlux")
     rvc_host: str = "127.0.0.1"
     rvc_port: int = 7898
     rvc_timeout_seconds: float = 240.0

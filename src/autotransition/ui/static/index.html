@@ -22,7 +22,7 @@
     <nav class="tabbar" aria-label="Workspace">
       <button id="transitionTabButton" class="tab-button active" type="button">Autotransition</button>
       <button id="extractionTabButton" class="tab-button" type="button">Track Extraction</button>
-      <button id="musicTabButton" class="tab-button" type="button">Music Generation</button>
+      <button id="musicTabButton" class="tab-button" type="button">Sound Generation</button>
       <button id="voiceWorkTabButton" class="tab-button" type="button">Voice Work</button>
       <button id="datasetEditorTabButton" class="tab-button" type="button">Dataset Editor</button>
       <button id="lokrTrainingTabButton" class="tab-button" type="button">LoKr Training</button>
@@ -230,7 +230,7 @@
     <main id="musicPage" class="workspace app-page">
       <section class="panel workflow-panel">
         <div class="panel-heading">
-          <h2>Prompt</h2>
+          <h2>Music Generation</h2>
           <span id="musicActionState" class="mini-state">Ready</span>
         </div>
 
@@ -315,7 +315,7 @@
         </div>
 
         <div class="output-block">
-          <h3>Music Output</h3>
+          <h3>Music Generation Output</h3>
           <div id="musicActivity" class="activity-readout">No music generation running.</div>
           <div id="musicList" class="generated-list">
             <div class="empty-result">No music generations yet.</div>
@@ -323,114 +323,7 @@
         </div>
       </section>
 
-      <section class="panel workflow-panel vocal2bgm-panel">
-        <div class="panel-heading">
-          <h2>Vocal2BGM</h2>
-          <span id="vocal2bgmActionState" class="mini-state">Ready</span>
-        </div>
-
-        <div class="summary">Turn vocals-only source audio into a finished backing mix with ACE-Step Base.</div>
-
-        <label class="field">
-          <span>Result label</span>
-          <input id="vocal2bgmLabelInput" type="text" placeholder="Song title or mix name" />
-        </label>
-
-        <label class="field">
-          <span>Music prompt</span>
-          <input id="vocal2bgmPromptInput" type="text" placeholder="heavy trap with dark synth bass" />
-        </label>
-
-        <div class="source-choice-group">
-          <label class="choice-option">
-            <input id="vocal2bgmSourceUploadMode" type="radio" name="vocal2bgmSourceInputMode" value="upload" checked />
-            <span>Upload</span>
-          </label>
-          <label class="choice-option">
-            <input id="vocal2bgmSourceAssetMode" type="radio" name="vocal2bgmSourceInputMode" value="asset" />
-            <span>Existing creation</span>
-          </label>
-        </div>
-
-        <div id="vocal2bgmSourceUploadBlock" class="picker-block">
-          <label class="field">
-            <span>Source vocals file</span>
-            <input id="vocal2bgmSourceFile" type="file" accept="audio/*" />
-          </label>
-          <div id="vocal2bgmSourceFileName" class="summary">No file selected.</div>
-        </div>
-
-        <div id="vocal2bgmSourceAssetBlock" class="picker-block is-hidden">
-          <label class="field">
-            <span>Existing creation</span>
-            <select id="vocal2bgmSourceAssetSelect"></select>
-          </label>
-          <div id="vocal2bgmSourceAssetName" class="summary">No creation selected.</div>
-        </div>
-
-        <div id="vocal2bgmSourceReadout" class="summary">No source audio loaded.</div>
-
-        <div class="control-grid">
-          <label class="field">
-            <span>Output format</span>
-            <select id="vocal2bgmOutputFormat">
-              <option value="flac">FLAC</option>
-              <option value="wav">WAV</option>
-              <option value="wav32">WAV 32-bit</option>
-              <option value="mp3">MP3</option>
-              <option value="opus">Opus</option>
-              <option value="aac">AAC</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Inference steps</span>
-            <input id="vocal2bgmInferenceSteps" type="number" min="1" max="200" step="1" value="80" />
-          </label>
-          <label class="field">
-            <span>Guidance scale</span>
-            <input id="vocal2bgmGuidanceScale" type="number" min="0" step="0.1" value="0.6" />
-          </label>
-          <label class="field">
-            <span>Shift</span>
-            <input id="vocal2bgmShift" type="number" min="0" step="0.1" value="1" />
-          </label>
-          <label class="field">
-            <span>Source strength</span>
-            <input id="vocal2bgmSourceStrength" type="number" min="0" max="1" step="0.05" value="1" />
-          </label>
-          <label class="field">
-            <span>Infer method</span>
-            <select id="vocal2bgmInferMethod">
-              <option value="sde" selected>SDE</option>
-              <option value="ode">ODE</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>Seed</span>
-            <input id="vocal2bgmSeed" type="number" step="1" placeholder="optional" />
-          </label>
-        </div>
-
-        <div class="toggle-row">
-          <label><input id="vocal2bgmUseTiledDecode" type="checkbox" checked /> Tiled decode</label>
-          <label><input id="vocal2bgmDcwEnabled" type="checkbox" /> DCW</label>
-        </div>
-
-        <div class="button-row">
-          <button id="runVocal2BgmButton" class="primary-button" type="button">Generate Vocal2BGM</button>
-          <button id="refreshVocal2BgmButton" class="secondary-button" type="button">Refresh Results</button>
-        </div>
-
-        <div class="output-block">
-          <h3>Vocal2BGM Output</h3>
-          <div id="vocal2bgmActivity" class="activity-readout">No Vocal2BGM generation running.</div>
-          <div id="vocal2bgmList" class="generated-list">
-            <div class="empty-result">No Vocal2BGM generations yet.</div>
-          </div>
-        </div>
-      </section>
-
-      <aside class="side-stack">
+      <aside class="side-stack music-center-stack">
         <section class="panel">
           <div class="panel-heading">
             <h2>Generation Settings</h2>
@@ -477,6 +370,72 @@
             <span class="mini-state">Local</span>
           </div>
           <ol id="musicLogList" class="log-list"></ol>
+        </section>
+      </aside>
+
+      <aside class="side-stack music-sound-stack">
+        <section class="panel workflow-panel sound-effect-panel">
+          <div class="panel-heading">
+            <h2>Sound Effects</h2>
+            <span id="soundEffectActionState" class="mini-state">Ready</span>
+          </div>
+
+          <div class="summary">Generate short effect cues from text with TangoFlux.</div>
+
+          <div class="panel-divider"></div>
+          <div class="panel-heading compact-heading">
+            <h3>Runtime Setup</h3>
+            <span id="soundEffectRuntimeState" class="mini-state">Checking</span>
+          </div>
+          <div id="soundEffectRuntimeDetails" class="summary">Checking TangoFlux runtime state.</div>
+          <div class="button-row">
+            <button id="installSoundEffectRuntimeButton" class="secondary-button full-width" type="button">Install Runtime</button>
+          </div>
+
+          <label class="field">
+            <span>Result label</span>
+            <input id="soundEffectLabelInput" type="text" placeholder="Effect name" />
+          </label>
+
+          <label class="field">
+            <span>Prompt</span>
+            <input id="soundEffectPromptInput" type="text" placeholder="metallic impact with a long echo" />
+          </label>
+
+          <div class="control-grid">
+            <label class="field">
+              <span>Duration seconds</span>
+              <input id="soundEffectDurationInput" type="number" min="1" max="30" step="1" value="10" />
+            </label>
+            <label class="field">
+              <span>Steps</span>
+              <input id="soundEffectStepsInput" type="number" min="1" max="200" step="1" value="50" />
+            </label>
+            <label class="field">
+              <span>Output format</span>
+              <select id="soundEffectOutputFormat">
+                <option value="wav" selected>WAV</option>
+                <option value="wav32">WAV 32-bit</option>
+                <option value="flac">FLAC</option>
+                <option value="mp3">MP3</option>
+                <option value="opus">Opus</option>
+                <option value="aac">AAC</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="button-row">
+            <button id="runSoundEffectButton" class="primary-button" type="button">Generate Sound Effect</button>
+            <button id="refreshSoundEffectButton" class="secondary-button" type="button">Refresh Results</button>
+          </div>
+
+          <div class="output-block">
+            <h3>Sound Effects Output</h3>
+            <div id="soundEffectActivity" class="activity-readout">No sound effect generation running.</div>
+            <div id="soundEffectList" class="generated-list">
+              <div class="empty-result">No sound effects yet.</div>
+            </div>
+          </div>
         </section>
       </aside>
     </main>
@@ -1233,6 +1192,7 @@
               <option value="extraction">Extractions</option>
               <option value="merge">Merges</option>
               <option value="edit">Edits</option>
+              <option value="sound_effect">Sound Effects</option>
             </select>
           </label>
           <div class="field button-field">
@@ -1271,17 +1231,12 @@
           <span id="editSaveState" class="mini-state">Ready</span>
         </div>
         <label class="field">
-          <span>Edit name</span>
-          <input id="editSaveLabelInput" type="text" placeholder="Edited transition, cleaned vocal, final mix" />
+          <span>Asset Name</span>
+          <input id="editSaveLabelInput" type="text" placeholder="Asset Name" />
         </label>
-        <div class="file-picker">
-          <label class="file-button" for="editSaveFile">Fallback File</label>
-          <input id="editSaveFile" type="file" accept=".mp3,.wav,.flac,.ogg,.m4a,audio/*" />
-          <span id="editSaveFileName">No file selected</span>
-        </div>
         <div id="editSourceAssetReadout" class="summary">No Dance Station source asset selected.</div>
         <div class="button-row">
-          <button id="saveEditButton" class="primary-button" type="button">Save Edit</button>
+          <button id="saveEditButton" class="primary-button" type="button">Save Edit as Asset</button>
         </div>
       </section>
     </main>
@@ -1591,6 +1546,7 @@
               <option value="rhythm_game">Rhythm Beats</option>
               <option value="voice">Voice Assets</option>
               <option value="speech">Speech</option>
+              <option value="sound_effect">Sound Effects</option>
             </select>
           </label>
           <div class="field button-field">

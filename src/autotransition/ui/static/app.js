@@ -13,6 +13,9 @@ const state = {
   advancedDirty: false,
   generatedResults: [],
   musicResults: [],
+  soundEffectResults: [],
+  soundEffectRuntime: null,
+  soundEffectGenerating: false,
   vocal2bgmResults: [],
   voiceWorkStatus: null,
   voiceVoices: [],
@@ -229,6 +232,19 @@ const el = {
   musicActivity: document.querySelector("#musicActivity"),
   musicList: document.querySelector("#musicList"),
   musicLogList: document.querySelector("#musicLogList"),
+  soundEffectActionState: document.querySelector("#soundEffectActionState"),
+  soundEffectRuntimeState: document.querySelector("#soundEffectRuntimeState"),
+  soundEffectRuntimeDetails: document.querySelector("#soundEffectRuntimeDetails"),
+  installSoundEffectRuntimeButton: document.querySelector("#installSoundEffectRuntimeButton"),
+  soundEffectLabelInput: document.querySelector("#soundEffectLabelInput"),
+  soundEffectPromptInput: document.querySelector("#soundEffectPromptInput"),
+  soundEffectDurationInput: document.querySelector("#soundEffectDurationInput"),
+  soundEffectStepsInput: document.querySelector("#soundEffectStepsInput"),
+  soundEffectOutputFormat: document.querySelector("#soundEffectOutputFormat"),
+  runSoundEffectButton: document.querySelector("#runSoundEffectButton"),
+  refreshSoundEffectButton: document.querySelector("#refreshSoundEffectButton"),
+  soundEffectActivity: document.querySelector("#soundEffectActivity"),
+  soundEffectList: document.querySelector("#soundEffectList"),
   vocal2bgmActionState: document.querySelector("#vocal2bgmActionState"),
   vocal2bgmLabelInput: document.querySelector("#vocal2bgmLabelInput"),
   vocal2bgmPromptInput: document.querySelector("#vocal2bgmPromptInput"),
@@ -421,8 +437,6 @@ const el = {
   reloadAudioEditorButton: document.querySelector("#reloadAudioEditorButton"),
   openAudioEditorButton: document.querySelector("#openAudioEditorButton"),
   editSaveLabelInput: document.querySelector("#editSaveLabelInput"),
-  editSaveFile: document.querySelector("#editSaveFile"),
-  editSaveFileName: document.querySelector("#editSaveFileName"),
   editSourceAssetReadout: document.querySelector("#editSourceAssetReadout"),
   editSaveState: document.querySelector("#editSaveState"),
   saveEditButton: document.querySelector("#saveEditButton"),
@@ -3941,7 +3955,7 @@ async function openAssetInEditor(asset) {
     `Category: ${escapeHtml(asset.category)}`,
     `Path: ${escapeHtml(asset.audio_path)}`,
   ].join("<br>");
-  if (!el.editSaveLabelInput.value.trim()) {
+  if (el.editSaveLabelInput && !el.editSaveLabelInput.value.trim()) {
     el.editSaveLabelInput.value = `${asset.label} edit`;
   }
   try {
@@ -4190,6 +4204,7 @@ function renderDatasetEditorDonor() {
 function renameEndpointForAsset(asset) {
   if (asset.category === "transition") return `/api/transitions/${encodeURIComponent(asset.asset_id)}/rename`;
   if (asset.category === "generation") return `/api/music-generations/${encodeURIComponent(asset.asset_id)}/rename`;
+  if (asset.category === "sound_effect") return `/api/sound-effects/${encodeURIComponent(asset.asset_id)}/rename`;
   if (asset.category === "edit") return `/api/edits/${encodeURIComponent(asset.asset_id)}/rename`;
   if (asset.category === "instrument" || asset.category === "instrumenttrack") return `/api/instrument-lab/clips/${encodeURIComponent(asset.asset_id)}/rename`;
   if (asset.category === "extraction" || asset.category === "merge") {
@@ -4550,8 +4565,9 @@ async function uploadEditedAudioFile(file, label) {
       throw new Error(body && body.detail ? body.detail : `Save failed: ${response.status}`);
     }
     setPill(el.editSaveState, "Saved", "ok");
-    el.editSaveFile.value = "";
-    el.editSaveFileName.textContent = "No file selected";
+    if (el.editSourceAssetReadout) {
+      el.editSourceAssetReadout.textContent = `Saved as asset: ${label}`;
+    }
     await refreshEditorAssets();
     showToast("Edit saved");
   } catch (error) {
@@ -4564,23 +4580,29 @@ async function uploadEditedAudioFile(file, label) {
 }
 
 async function saveEditedAudio() {
-  const fallbackFile = el.editSaveFile.files && el.editSaveFile.files[0];
-  const label = el.editSaveLabelInput.value.trim();
+  const label = (el.editSaveLabelInput && el.editSaveLabelInput.value ? el.editSaveLabelInput.value : "").trim();
   if (!label) {
     showToast("Enter an edit name");
     return;
   }
 
   setPill(el.editSaveState, "Exporting", "warn");
+  if (el.editSourceAssetReadout) {
+    el.editSourceAssetReadout.textContent = "Exporting current edit from AudioMass...";
+  }
   el.saveEditButton.disabled = true;
   try {
-    const file = await requestEditorAudio(label).catch((error) => {
-      if (fallbackFile) return fallbackFile;
-      throw error;
-    });
+    showToast("Exporting edit from AudioMass");
+    const file = await requestEditorAudio(label);
     await uploadEditedAudioFile(file, label);
+    if (el.editSourceAssetReadout) {
+      el.editSourceAssetReadout.textContent = `Saved as asset: ${label}`;
+    }
   } catch (error) {
     setPill(el.editSaveState, "Error", "error");
+    if (el.editSourceAssetReadout) {
+      el.editSourceAssetReadout.textContent = `Save failed: ${error.message}`;
+    }
     showToast(error.message);
     el.saveEditButton.disabled = false;
   }
@@ -4851,6 +4873,181 @@ function renderMusicList() {
     `;
     el.musicList.appendChild(row);
   });
+}
+
+function renderSoundEffectGenerations() {
+  if (!el.soundEffectList) return;
+  el.soundEffectList.replaceChildren();
+  if (!state.soundEffectResults.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-result";
+    empty.textContent = "No sound effects yet.";
+    el.soundEffectList.appendChild(empty);
+    return;
+  }
+
+  state.soundEffectResults.forEach((item, index) => {
+    const row = document.createElement("article");
+    row.className = "generated-item";
+    const outputPath = item.generated_audio_path || "";
+    const audio = outputPath
+      ? `<audio controls preload="metadata" src="/api/sound-effects/audio?path=${encodeURIComponent(outputPath)}"></audio>`
+      : `<div class="empty-result">No playable audio for this generation.</div>`;
+    row.innerHTML = `
+      <div class="generated-title">
+        <strong>${index === 0 ? "Latest" : "Sound Effect"} - ${escapeHtml(item.status)}</strong>
+        <span>${escapeHtml(item.label || item.model || "sound effect")}</span>
+      </div>
+      ${audio}
+      <dl class="path-list">
+        <dt>Message</dt><dd>${escapeHtml(item.message || "")}</dd>
+        <dt>Prompt</dt><dd>${escapeHtml(item.prompt || "")}</dd>
+        <dt>Duration</dt><dd>${escapeHtml(String(item.duration_seconds || ""))}</dd>
+        <dt>Steps</dt><dd>${escapeHtml(String(item.steps || ""))}</dd>
+        <dt>Output</dt><dd>${escapeHtml(outputPath || "None")}</dd>
+        <dt>Metadata</dt><dd>${escapeHtml(item.metadata_path || "")}</dd>
+      </dl>
+    `;
+    el.soundEffectList.appendChild(row);
+  });
+}
+
+function soundEffectRuntimeReady() {
+  return Boolean(state.soundEffectRuntime && state.soundEffectRuntime.ready);
+}
+
+function applySoundEffectAvailability() {
+  if (el.runSoundEffectButton) {
+    el.runSoundEffectButton.disabled = state.soundEffectGenerating || !soundEffectRuntimeReady();
+  }
+}
+
+function renderSoundEffectRuntime() {
+  const runtime = state.soundEffectRuntime || null;
+  if (!runtime) {
+    setPill(el.soundEffectRuntimeState, "Unknown", "neutral");
+    if (el.soundEffectRuntimeDetails) {
+      el.soundEffectRuntimeDetails.textContent = "TangoFlux runtime status not loaded.";
+    }
+    if (el.installSoundEffectRuntimeButton) {
+      el.installSoundEffectRuntimeButton.disabled = state.soundEffectGenerating;
+      el.installSoundEffectRuntimeButton.textContent = "Install Runtime";
+    }
+    applySoundEffectAvailability();
+    return;
+  }
+  const tone = runtime.ready ? "ok" : runtime.installed ? "warn" : "error";
+  const label = runtime.ready ? "Ready" : runtime.installed ? "Installed" : "Missing";
+  setPill(el.soundEffectRuntimeState, label, tone);
+  if (el.soundEffectRuntimeDetails) {
+    el.soundEffectRuntimeDetails.innerHTML = [
+      `<strong>${escapeHtml(runtime.message || "")}</strong>`,
+      `Install dir: ${escapeHtml(runtime.install_dir || "")}`,
+      `Python: ${escapeHtml(runtime.python_executable || "")}`,
+      `Install: ${escapeHtml(runtime.install_command || "")}`,
+      `Setup: ${escapeHtml(runtime.simple_setup_command || "")}`,
+    ].join("<br>");
+  }
+  if (el.installSoundEffectRuntimeButton) {
+    el.installSoundEffectRuntimeButton.disabled = state.soundEffectGenerating;
+    el.installSoundEffectRuntimeButton.textContent = runtime.ready ? "Reinstall Runtime" : "Install Runtime";
+  }
+  applySoundEffectAvailability();
+}
+
+async function refreshSoundEffectGenerations() {
+  state.soundEffectResults = await api("/api/sound-effects");
+  renderSoundEffectGenerations();
+}
+
+async function refreshSoundEffectRuntime() {
+  state.soundEffectRuntime = await api("/api/sound-effects/runtime/status");
+  renderSoundEffectRuntime();
+}
+
+async function installSoundEffectRuntime() {
+  if (el.installSoundEffectRuntimeButton) {
+    el.installSoundEffectRuntimeButton.disabled = true;
+  }
+  setPill(el.soundEffectRuntimeState, "Setting up", "warn");
+  if (el.soundEffectRuntimeDetails) {
+    el.soundEffectRuntimeDetails.textContent = "Installing TangoFlux runtime and model dependencies.";
+  }
+  try {
+    const response = await api("/api/sound-effects/runtime/install", { method: "POST" });
+    state.soundEffectRuntime = response.status || null;
+    renderSoundEffectRuntime();
+    showToast(response.message || "TangoFlux runtime setup complete");
+  } catch (error) {
+    if (el.soundEffectRuntimeDetails) {
+      el.soundEffectRuntimeDetails.innerHTML = `<strong>Install failed</strong><br>${escapeHtml(error.message)}`;
+    }
+    setPill(el.soundEffectRuntimeState, "Failed", "error");
+    showToast(error.message);
+  } finally {
+    applySoundEffectAvailability();
+  }
+}
+
+async function runSoundEffectGeneration() {
+  const label = el.soundEffectLabelInput ? el.soundEffectLabelInput.value.trim() : "";
+  const prompt = el.soundEffectPromptInput ? el.soundEffectPromptInput.value.trim() : "";
+  if (!label) {
+    showToast("Enter a result label");
+    return;
+  }
+  if (!prompt) {
+    showToast("Enter a prompt");
+    return;
+  }
+  if (!soundEffectRuntimeReady()) {
+    showToast("Install the TangoFlux runtime first");
+    return;
+  }
+  state.soundEffectGenerating = true;
+  applySoundEffectAvailability();
+  setPill(el.soundEffectActionState, "Generating", "warn");
+  if (el.soundEffectActivity) {
+    el.soundEffectActivity.innerHTML = "<strong>Starting</strong><br>Preparing TangoFlux sound effect request.";
+  }
+  try {
+    const response = await api("/api/sound-effects/run", {
+      method: "POST",
+      body: JSON.stringify({
+        label,
+        prompt,
+        duration_seconds: numericValue(el.soundEffectDurationInput) ?? 10,
+        steps: numericValue(el.soundEffectStepsInput) ?? 50,
+        output_format: el.soundEffectOutputFormat ? el.soundEffectOutputFormat.value : "wav",
+      }),
+    });
+    state.soundEffectResults.unshift(response.generation);
+    state.soundEffectResults = state.soundEffectResults.slice(0, 24);
+    renderSoundEffectGenerations();
+    await refreshLocalLibrary();
+    if (response.generation.status === "complete") {
+      setPill(el.soundEffectActionState, "Complete", "ok");
+      if (el.soundEffectActivity) {
+        el.soundEffectActivity.innerHTML = "<strong>Complete</strong><br>Sound effect generation finished.";
+      }
+    } else {
+      setPill(el.soundEffectActionState, "Failed", "error");
+      if (el.soundEffectActivity) {
+        el.soundEffectActivity.innerHTML = `<strong>Failed</strong><br>${escapeHtml(response.generation.message)}`;
+      }
+    }
+    showToast(response.generation.message);
+    await refreshLogs();
+  } catch (error) {
+    setPill(el.soundEffectActionState, "Error", "error");
+    if (el.soundEffectActivity) {
+      el.soundEffectActivity.innerHTML = `<strong>Error</strong><br>${escapeHtml(error.message)}`;
+    }
+    showToast(error.message);
+  } finally {
+    state.soundEffectGenerating = false;
+    applySoundEffectAvailability();
+  }
 }
 
 function renderVocal2BgmAssetOptions() {
@@ -5488,14 +5685,13 @@ async function refreshExtractions() {
 
 async function refreshMusicGenerations() {
   const generations = await api("/api/music-generations");
-  state.musicResults = generations.filter((item) => item.type !== "vocal2bgm");
+  state.musicResults = generations.filter((item) => item.type !== "vocal2bgm" && item.type !== "sound_effect");
   renderMusicList();
 }
 
 async function refreshVocal2BgmGenerations() {
-  const generations = await api("/api/music-generations");
-  state.vocal2bgmResults = generations.filter((item) => item.type === "vocal2bgm");
-  renderVocal2BgmGenerations();
+  state.soundEffectResults = await api("/api/sound-effects");
+  renderSoundEffectGenerations();
 }
 
 async function refreshVoiceWorkStatus() {
@@ -7042,15 +7238,17 @@ function addGeneratedResult(result, plan) {
 
 async function loadAll() {
   await loadInstrumentBank();
-  const [status, runtime, voiceRuntime, presets, models, tracks, extractions, musicGenerations, voiceGenerations, voiceVoices, lokrDatasets, datasetSources, lokrRuns, lokrAdapters, instrumentClips, rhythmProjects, rhythmVolumes, editorAssets, localLibrary, libraryConnection, logs] = await Promise.all([
+  const [status, runtime, voiceRuntime, soundEffectRuntime, presets, models, tracks, extractions, musicGenerations, soundEffects, voiceGenerations, voiceVoices, lokrDatasets, datasetSources, lokrRuns, lokrAdapters, instrumentClips, rhythmProjects, rhythmVolumes, editorAssets, localLibrary, libraryConnection, logs] = await Promise.all([
     api("/api/status"),
     api("/api/runtime/status"),
     api("/api/voice-work/status"),
+    api("/api/sound-effects/runtime/status"),
     api("/api/presets"),
     api("/api/models"),
     api("/api/extractions/tracks"),
     api("/api/extractions"),
     api("/api/music-generations"),
+    api("/api/sound-effects"),
     api("/api/voice-work/generations"),
     api("/api/voice-work/voices"),
     api("/api/lokr/datasets"),
@@ -7069,8 +7267,9 @@ async function loadAll() {
   state.models = models;
   state.extractionTracks = tracks;
   state.extractionResults = extractions;
-  state.musicResults = musicGenerations.filter((item) => item.type !== "vocal2bgm");
-  state.vocal2bgmResults = musicGenerations.filter((item) => item.type === "vocal2bgm");
+  state.musicResults = musicGenerations.filter((item) => item.type !== "vocal2bgm" && item.type !== "sound_effect");
+  state.soundEffectResults = soundEffects;
+  state.soundEffectRuntime = soundEffectRuntime;
   state.voiceGenerations = voiceGenerations;
   state.voiceWorkStatus = voiceRuntime;
   state.voiceVoices = voiceVoices;
@@ -7099,7 +7298,8 @@ async function loadAll() {
   syncMusicVocalControls();
   renderMusicLokrAdapters();
   renderMusicList();
-  renderVocal2BgmGenerations();
+  renderSoundEffectRuntime();
+  renderSoundEffectGenerations();
   renderVoiceWorkRuntime();
   renderVoiceWorkVoices();
   renderVoiceWorkTrainingRecords();
@@ -7120,8 +7320,6 @@ async function loadAll() {
   renderLocalLibrary();
   renderVoiceWorkAssetOptions();
   renderVoiceWorkInputModes();
-  renderVocal2BgmAssetOptions();
-  renderVocal2BgmInputModes();
   renderPublicLibrary();
   if (runtime.recovery && runtime.recovery.active) {
     startRuntimeRecoveryPolling();
@@ -7419,6 +7617,7 @@ async function runMusicGeneration() {
     state.musicResults = state.musicResults.slice(0, 24);
     renderMusicList();
     await refreshEditorAssets();
+    await refreshLocalLibrary();
     if (response.generation.status === "complete") {
       setPill(el.musicActionState, "Complete", "ok");
       el.musicActivity.innerHTML = "<strong>Complete</strong><br>Music generation finished.";
@@ -7529,6 +7728,8 @@ async function refreshStatus() {
   await refreshModels();
   await refreshEditorAssets();
   await refreshMusicGenerations();
+  await refreshSoundEffectGenerations();
+  await refreshSoundEffectRuntime();
   await refreshVocal2BgmGenerations();
   await refreshRhythmProjects();
   await refreshLokrRuns();
@@ -7738,10 +7939,6 @@ el.editorAssetSearch.addEventListener("input", renderEditorAssets);
 el.editorCategoryFilter.addEventListener("change", renderEditorAssets);
 el.librarySearch.addEventListener("input", renderLocalLibrary);
 el.libraryKindFilter.addEventListener("change", renderLocalLibrary);
-el.editSaveFile.addEventListener("change", () => {
-  const file = el.editSaveFile.files && el.editSaveFile.files[0];
-  el.editSaveFileName.textContent = file ? file.name : "No file selected";
-});
 el.rhythmSourceFile.addEventListener("change", () => {
   const file = el.rhythmSourceFile.files && el.rhythmSourceFile.files[0];
   el.rhythmSourceFileName.textContent = file ? file.name : "No file selected";
@@ -7908,6 +8105,21 @@ el.mergeExtractionsButton.addEventListener("click", mergeSelectedExtractions);
 el.runMusicButton.addEventListener("click", runMusicGeneration);
 el.musicModelSelect.addEventListener("change", applyMusicModelDefaults);
 el.musicInstrumental.addEventListener("change", syncMusicVocalControls);
+if (el.runSoundEffectButton) {
+  el.runSoundEffectButton.addEventListener("click", () => {
+    runSoundEffectGeneration().catch((error) => showToast(error.message));
+  });
+}
+if (el.refreshSoundEffectButton) {
+  el.refreshSoundEffectButton.addEventListener("click", () => {
+    refreshSoundEffectGenerations().catch((error) => showToast(error.message));
+  });
+}
+if (el.installSoundEffectRuntimeButton) {
+  el.installSoundEffectRuntimeButton.addEventListener("click", () => {
+    installSoundEffectRuntime().catch((error) => showToast(error.message));
+  });
+}
 if (el.vocal2bgmSourceUploadMode) {
   el.vocal2bgmSourceUploadMode.addEventListener("change", renderVocal2BgmInputModes);
 }

@@ -8,7 +8,7 @@ The app currently includes eight main work areas:
 
 - **Autotransition**: continue a source song from a selected point and create a natural transition into newly generated music.
 - **Extraction**: separate useful musical parts from a song using ACE-Step extraction.
-- **Generation**: create new music directly from a prompt.
+- **Sound Generation**: create new music directly from a prompt and generate short sound effects from text.
 - **Voice Work**: manage reusable voice assets, train clones, and convert speech with an embedded RVC runtime.
 - **LoKr Training**: build captioned music datasets, preprocess them with Side-Step, train LoKr style adapters, and use completed adapters during generation.
 - **Instrument Lab**: create and edit instrument performances with tracks, piano-roll editing, computer-key input, sampled instruments, and SFZ imports.
@@ -80,15 +80,17 @@ Supported extraction targets include vocals, drums, bass, guitar, synth, strings
 
 Completed extractions are saved as reusable results. You can label individual extracted parts, select multiple parts, merge them into a new labeled result, and play those merged outputs in the UI.
 
-## Generation
+## Sound Generation
 
-The Music Generation section creates new music directly from a text prompt.
+The Sound Generation section creates new music directly from a text prompt and also exposes a dedicated sound effects panel powered by TangoFlux.
 
-It supports instrumental generation by default, plus optional vocal generation with a lyrics field and vocal language hint. Voice character is controlled through the prompt, such as "female vocal", "male baritone", "choir", or "rap verse"; ACE-Step does not expose a fixed singer selector through the local runtime path used here.
+Music generation supports instrumental generation by default, plus optional vocal generation with a lyrics field and vocal language hint. Voice character is controlled through the prompt, such as "female vocal", "male baritone", "choir", or "rap verse"; ACE-Step does not expose a fixed singer selector through the local runtime path used here.
 
-It exposes the generation controls that are useful for the active ACE-Step model path, including duration, seed, steps, guidance, shift, sampler mode, tiled decoding, DCW, and velocity settings. Turbo and Base generation use different defaults based on the working settings found during testing.
+The music controls expose the settings that are useful for the active ACE-Step model path, including duration, seed, steps, guidance, shift, sampler mode, tiled decoding, DCW, and velocity settings. Turbo and Base generation use different defaults based on the working settings found during testing.
 
-Completed generations are listed in the UI with playable audio and saved metadata. If you have trained LoKr adapters, the Generation tab can select one, set its strength, and apply it to a compatible ACE-Step model while generating.
+The sound effects panel uses TangoFlux text-to-audio generation for short cues and effect beds. It accepts a text prompt, duration, step count, and output format. TangoFlux is installed through the normal project setup path and its outputs are saved alongside the other local assets.
+
+Completed generations are listed in the UI with playable audio and saved metadata. If you have trained LoKr adapters, the Sound Generation tab can select one, set its strength, and apply it to a compatible ACE-Step model while generating.
 
 ## Voice Work
 
@@ -229,5 +231,6 @@ src/autotransition/
 - Track extraction uses ACE-Step Base and may require more startup/download time than transition generation.
 - LoKr training requires the Side-Step runtime and can take substantial GPU time depending on dataset size and training settings.
 - Voice Work depends on a reachable local RVC runtime.
+- TangoFlux sound effects follow the upstream TangoFlux license and are intended for non-commercial research-style use unless you have the right to use and redistribute that model separately.
 - Audio loading, merging, and scaffold generation depend on `pydub` and `ffmpeg`.
 - SFZ import supports a practical subset of SFZ regions and sample mapping. Native binary `.sf2` import is not implemented yet.
