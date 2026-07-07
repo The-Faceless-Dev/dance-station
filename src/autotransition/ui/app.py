@@ -93,6 +93,11 @@ from autotransition.runtime.seed_vc import (
     runtime_status as rvc_runtime_status,
 )
 from autotransition.runtime.side_step import build_side_step_command, side_step_status
+from autotransition.runtime.tango_flux import (
+    generate_wav as generate_sound_effect_wav,
+    run_install as run_sound_effect_runtime_install,
+    runtime_status as sound_effect_runtime_status,
+)
 from autotransition.models.download import local_model_path
 from autotransition.models.status import InstallState
 from autotransition.pipeline import (
@@ -570,28 +575,6 @@ def _sound_effect_root() -> Path:
     return Path("data/sound-effects")
 
 
-_SOUND_EFFECT_MODEL: Any | None = None
-_SOUND_EFFECT_MODEL_LOCK = threading.Lock()
-
-
-def _sound_effect_model() -> Any:
-    global _SOUND_EFFECT_MODEL
-    if _SOUND_EFFECT_MODEL is not None:
-        return _SOUND_EFFECT_MODEL
-    with _SOUND_EFFECT_MODEL_LOCK:
-        if _SOUND_EFFECT_MODEL is not None:
-            return _SOUND_EFFECT_MODEL
-        os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
-        try:
-            from tangoflux import TangoFluxInference
-        except Exception as exc:  # pragma: no cover - import depends on optional install
-            raise RuntimeError(
-                "TangoFlux is not installed. Run 'autotransition setup' again to install sound effects support."
-            ) from exc
-        _SOUND_EFFECT_MODEL = TangoFluxInference(name="declare-lab/TangoFlux")
-        return _SOUND_EFFECT_MODEL
-
-
 def _sound_effect_output_extension(output_format: str) -> str:
     format_name = (output_format or "wav").strip().lower()
     if format_name == "wav32":
@@ -599,57 +582,8 @@ def _sound_effect_output_extension(output_format: str) -> str:
     return f".{format_name}" if format_name else ".wav"
 
 
-def _sound_effect_audio_to_wav(
-    audio: Any,
-    wav_path: Path,
-    *,
-    sample_rate: int = 44100,
-) -> None:
-    try:
-        import torch
-    except Exception as exc:  # pragma: no cover - torch is expected when TangoFlux is installed
-        raise RuntimeError("Torch is required to save TangoFlux output.") from exc
-
-    tensor = audio.detach().cpu() if isinstance(audio, torch.Tensor) else torch.tensor(audio)
-    if tensor.ndim == 1:
-        tensor = tensor.unsqueeze(0)
-    if tensor.ndim >= 3:
-        tensor = tensor.squeeze(0)
-    if tensor.ndim != 2:
-        raise RuntimeError(f"Unexpected TangoFlux output shape: {tuple(tensor.shape)}")
-    if tensor.shape[0] not in {1, 2} and tensor.shape[1] in {1, 2}:
-        tensor = tensor.transpose(0, 1)
-
-    if tensor.shape[0] not in {1, 2}:
-        raise RuntimeError(f"Unexpected TangoFlux channel layout: {tuple(tensor.shape)}")
-
-    wav_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        import torchaudio
-
-        torchaudio.save(str(wav_path), tensor.float(), sample_rate)
-        return
-    except Exception:
-        pass
-
-    import numpy as np
-    from pydub import AudioSegment
-
-    audio_array = tensor.float().clamp(-1.0, 1.0).numpy()
-    pcm = (audio_array.transpose(1, 0) * 32767.0).astype(np.int16)
-    AudioSegment(
-        pcm.tobytes(),
-        frame_rate=sample_rate,
-        sample_width=2,
-        channels=tensor.shape[0],
-    ).export(wav_path, format="wav")
-
-
-def _sound_effect_write_output(audio: Any, output_path: Path, output_format: str) -> Path:
+def _sound_effect_transcode_output(wav_path: Path, output_path: Path, output_format: str) -> Path:
     output_format = (output_format or "wav").strip().lower()
-    wav_path = output_path.with_suffix(".wav")
-    _sound_effect_audio_to_wav(audio, wav_path)
-
     if output_format == "wav":
         if wav_path != output_path:
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2741,6 +2675,34 @@ def _editor_assets() -> list[dict[str, Any]]:
                 "source_asset_id": item.source_lineage.get("remote_item_id") or "",
                 "imported": True,
                 "creator_name": creator_name,
+            }
+        )
+
+    for item in _local_library().list_items():
+        metadata = item.metadata or {}
+        if metadata.get("category") != "sound_effect":
+            continue
+        audio_file = next((file for file in item.files if file.role in {"audio", "preview", "stem"}), None)
+        if audio_file is None:
+            continue
+        audio_path = Path(audio_file.path)
+        if not audio_path.exists() or not audio_path.is_file():
+            continue
+        assets.append(
+            {
+                "asset_id": item.id,
+                "category": "sound_effect",
+                "label": item.title,
+                "audio_path": str(audio_path),
+                "audio_url": f"/api/editor/audio?path={quote(str(audio_path))}",
+                "duration_seconds": audio_file.metadata.get("duration_seconds") or 0,
+                "created_at": item.created_at,
+                "metadata_path": str(_local_library()._manifest_path(item.id)),
+                "message": "Sound effect generation",
+                "source_path": metadata.get("prompt") or "",
+                "source_asset_id": "",
+                "imported": False,
+                "creator_name": "",
             }
         )
 
@@ -5102,13 +5064,22 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
         if not root.exists():
             return []
         items: list[dict[str, Any]] = []
-        for metadata_path in root.glob("*/generation.json"):
+        for metadata_path in (root / "generations").glob("*/generation.json"):
             try:
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
             except Exception:
                 continue
             items.append(metadata)
         return sorted(items, key=lambda item: str(item.get("created_at") or ""), reverse=True)
+
+    @app.get("/api/sound-effects/runtime/status")
+    def get_sound_effect_runtime_status() -> dict[str, object]:
+        return sound_effect_runtime_status(runtime_config).to_dict()
+
+    @app.post("/api/sound-effects/runtime/install")
+    def install_sound_effect_runtime() -> dict[str, object]:
+        run_sound_effect_runtime_install(runtime_config)
+        return {"status": sound_effect_runtime_status(runtime_config).to_dict(), "message": "TangoFlux runtime setup complete."}
 
     @app.get("/api/sound-effects/audio")
     def get_sound_effect_audio(path: str = Query(..., min_length=1)) -> FileResponse:
@@ -5136,9 +5107,19 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             raise HTTPException(status_code=400, detail="Sound effect duration must be between 1 and 30 seconds.")
         ui_log.add("info", f"Running TangoFlux sound effect generation: {label}.")
         try:
-            audio = _sound_effect_model().generate(prompt, steps=steps, duration=int(duration_seconds))
-            output_path = save_dir / f"sound_effect{_sound_effect_output_extension(output_format)}"
-            written_path = _sound_effect_write_output(audio, output_path, output_format)
+            save_dir.mkdir(parents=True, exist_ok=True)
+            if not sound_effect_runtime_status(runtime_config).ready:
+                run_sound_effect_runtime_install(runtime_config)
+            wav_output = (save_dir / "sound_effect.wav").resolve()
+            output_path = (save_dir / f"sound_effect{_sound_effect_output_extension(output_format)}").resolve()
+            generated_wav = generate_sound_effect_wav(
+                prompt,
+                wav_output,
+                steps=steps,
+                duration_seconds=int(duration_seconds),
+                config=runtime_config,
+            )
+            written_path = _sound_effect_transcode_output(generated_wav, output_path, output_format)
         except Exception as exc:
             ui_log.add("error", str(exc))
             metadata = {

@@ -68,7 +68,7 @@ def library_item_from_generation(metadata: dict[str, Any]) -> LibraryItem | None
         id=generation_id,
         visibility="local",
         status="draft",
-        kind="generation",
+        kind="sound_effect",
         title=label,
         description=prompt[:600] or None,
         files=[

@@ -24,6 +24,7 @@ LibraryItemKind = Literal[
     "rhythm_game",
     "voice",
     "speech",
+    "sound_effect",
     "tool",
 ]
 LibraryFileRole = Literal[
@@ -142,6 +143,7 @@ def _category_to_kind(category: str) -> LibraryItemKind:
         "rhythm_game",
         "voice",
         "speech",
+        "sound_effect",
         "tool",
     }
     return category if category in allowed else "audio"  # type: ignore[return-value]

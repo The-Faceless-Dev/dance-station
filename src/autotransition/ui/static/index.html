@@ -382,6 +382,16 @@
 
           <div class="summary">Generate short effect cues from text with TangoFlux.</div>
 
+          <div class="panel-divider"></div>
+          <div class="panel-heading compact-heading">
+            <h3>Runtime Setup</h3>
+            <span id="soundEffectRuntimeState" class="mini-state">Checking</span>
+          </div>
+          <div id="soundEffectRuntimeDetails" class="summary">Checking TangoFlux runtime state.</div>
+          <div class="button-row">
+            <button id="installSoundEffectRuntimeButton" class="secondary-button full-width" type="button">Install Runtime</button>
+          </div>
+
           <label class="field">
             <span>Result label</span>
             <input id="soundEffectLabelInput" type="text" placeholder="Effect name" />
@@ -1182,6 +1192,7 @@
               <option value="extraction">Extractions</option>
               <option value="merge">Merges</option>
               <option value="edit">Edits</option>
+              <option value="sound_effect">Sound Effects</option>
             </select>
           </label>
           <div class="field button-field">
@@ -1220,17 +1231,12 @@
           <span id="editSaveState" class="mini-state">Ready</span>
         </div>
         <label class="field">
-          <span>Edit name</span>
-          <input id="editSaveLabelInput" type="text" placeholder="Edited transition, cleaned vocal, final mix" />
+          <span>Asset Name</span>
+          <input id="editSaveLabelInput" type="text" placeholder="Asset Name" />
         </label>
-        <div class="file-picker">
-          <label class="file-button" for="editSaveFile">Fallback File</label>
-          <input id="editSaveFile" type="file" accept=".mp3,.wav,.flac,.ogg,.m4a,audio/*" />
-          <span id="editSaveFileName">No file selected</span>
-        </div>
         <div id="editSourceAssetReadout" class="summary">No Dance Station source asset selected.</div>
         <div class="button-row">
-          <button id="saveEditButton" class="primary-button" type="button">Save Edit</button>
+          <button id="saveEditButton" class="primary-button" type="button">Save Edit as Asset</button>
         </div>
       </section>
     </main>
@@ -1540,6 +1546,7 @@
               <option value="rhythm_game">Rhythm Beats</option>
               <option value="voice">Voice Assets</option>
               <option value="speech">Speech</option>
+              <option value="sound_effect">Sound Effects</option>
             </select>
           </label>
           <div class="field button-field">
