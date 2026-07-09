@@ -21,6 +21,7 @@ dist/
 AGENTS.md
 docs/
 external/
+data/
 data/input/
 data/output/
 data/generated/
