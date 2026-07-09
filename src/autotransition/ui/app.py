@@ -88,11 +88,18 @@ from autotransition.runtime.seed_vc import (
     managed_runtime_alive as rvc_managed_runtime_alive,
     read_runtime_pid as read_rvc_runtime_pid,
     run_install as run_rvc_install,
+    run_voice_conversion as run_seed_vc_voice_conversion,
     startup_progress_snapshot as rvc_startup_progress_snapshot,
     stop_runtime as stop_rvc_runtime,
     runtime_status as rvc_runtime_status,
 )
 from autotransition.runtime.side_step import build_side_step_command, side_step_status
+from autotransition.runtime.source_separation import (
+    list_models as list_source_separation_models,
+    run_install as run_source_separation_runtime_install,
+    runtime_status as source_separation_runtime_status,
+    separate_audio as separate_source_audio,
+)
 from autotransition.runtime.tango_flux import (
     generate_wav as generate_sound_effect_wav,
     run_install as run_sound_effect_runtime_install,
@@ -143,6 +150,11 @@ from autotransition.voice_work import (
     update_voice,
     voice_runtime_index_path,
     voice_runtime_model_name,
+)
+from autotransition.source_separation import (
+    library_items_from_generation as library_items_from_source_separation_generation,
+    list_generations as list_source_separation_generations,
+    write_generation as write_source_separation_generation,
 )
 
 
@@ -332,13 +344,16 @@ class VoiceWorkTrainRequest(BaseModel):
 
 class VoiceWorkConvertRequest(BaseModel):
     request_id: str | None = Field(None, max_length=80)
-    voice_id: str = Field(..., min_length=1)
+    voice_id: str | None = Field(None, min_length=1)
     source_audio_path: str = Field(..., min_length=1)
     label: str | None = Field(None, max_length=160)
     mode: Literal["speaking", "singing"] = "singing"
     diffusion_steps: int = Field(25, ge=1, le=200)
     length_adjust: float = Field(1.0, ge=0.5, le=2.0)
     inference_cfg_rate: float = Field(0.7, ge=0.0, le=1.0)
+    f0_condition: bool = True
+    auto_f0_adjust: bool = False
+    pitch_shift: int = 0
 
 
 class VoiceWorkTtsRequest(BaseModel):
@@ -407,6 +422,20 @@ class SoundEffectRequest(BaseModel):
     duration_seconds: float = Field(10.0, ge=1.0, le=30.0)
     steps: int = Field(50, ge=1, le=200)
     output_format: Literal["wav", "wav32", "flac", "mp3", "opus", "aac"] = "wav"
+
+
+class SourceSeparationRequest(BaseModel):
+    source_path: str = Field(..., min_length=1)
+    label: str = Field(..., min_length=1, max_length=120)
+    model_filename: str = Field("UVR-MDX-NET-Inst_HQ_3.onnx", min_length=1)
+    output_format: Literal["wav", "wav32", "flac", "mp3", "opus", "aac"] = "wav"
+    chunk_duration: int | None = Field(600, ge=1)
+    mdx_segment_size: int = Field(256, ge=1, le=4096)
+    mdx_overlap: float = Field(0.25, ge=0.0, le=1.0)
+    mdx_enable_denoise: bool = False
+    source_asset_id: str | None = None
+    source_asset_label: str | None = None
+    source_asset_category: str | None = None
 
 
 class LokrDatasetCreateRequest(BaseModel):
@@ -575,6 +604,10 @@ def _sound_effect_root() -> Path:
     return Path("data/sound-effects")
 
 
+def _source_separation_root() -> Path:
+    return Path("data/source-separation")
+
+
 def _sound_effect_output_extension(output_format: str) -> str:
     format_name = (output_format or "wav").strip().lower()
     if format_name == "wav32":
@@ -619,6 +652,32 @@ def _sound_effect_transcode_output(wav_path: Path, output_path: Path, output_for
     segment.export(output_path, format=output_format)
     wav_path.unlink(missing_ok=True)
     return output_path
+
+
+def _prepare_source_separation_input(source_path: Path, save_dir: Path) -> Path:
+    source_path = source_path.expanduser().resolve()
+    save_dir.mkdir(parents=True, exist_ok=True)
+    prepared_path = save_dir / "source.wav"
+    if source_path.suffix.lower() == ".wav":
+        if source_path != prepared_path:
+            shutil.copy2(source_path, prepared_path)
+        return prepared_path
+    ffmpeg = resolve_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required to prepare source audio for separation.")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-y",
+            "-i",
+            str(source_path),
+            str(prepared_path),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return prepared_path
 
 
 def _transition_root() -> Path:
@@ -2019,115 +2078,28 @@ def _run_seed_vc_voice_conversion(
     diffusion_steps: int,
     length_adjust: float,
     inference_cfg_rate: float,
+    f0_condition: bool = True,
+    auto_f0_adjust: bool = False,
+    pitch_shift: int = 0,
     runtime_config: RuntimeConfig,
 ) -> dict[str, Any]:
     if not rvc_api_health(runtime_config):
         raise RuntimeError("Seed-VC runtime is not running.")
     if mode not in {"speaking", "singing"}:
         mode = "singing"
-    payload = {
-        "source_path": str(source_path),
-        "reference_path": str(reference_path),
-        "mode": mode,
-        "diffusion_steps": int(diffusion_steps),
-        "length_adjust": float(length_adjust),
-        "inference_cfg_rate": float(inference_cfg_rate),
-    }
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
-        json.dump(payload, handle)
-        temp_path = Path(handle.name)
-    try:
-        script = """
-import json
-import sys
-from pathlib import Path
-
-import torch
-
-payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-module_name = "app_svc" if payload["mode"] == "singing" else "app_vc"
-seed_vc = __import__(module_name)
-seed_vc.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-class Args:
-    checkpoint = None
-    config = None
-    fp16 = True
-    gpu = 0
-    share = False
-    port = 7860
-
-
-args = Args()
-loaded = seed_vc.load_models(args)
-loaded_values = list(loaded) if isinstance(loaded, (list, tuple)) else [loaded]
-if len(loaded_values) < 6:
-    raise RuntimeError(f"Seed-VC load_models returned an unexpected result shape: {len(loaded_values)}")
-if payload["mode"] == "singing":
-    seed_vc.model_f0 = loaded_values[0]
-    seed_vc.semantic_fn = loaded_values[1]
-    seed_vc.vocoder_fn = loaded_values[2]
-    seed_vc.campplus_model = loaded_values[3]
-    seed_vc.to_mel_f0 = loaded_values[4]
-    seed_vc.mel_fn_args = loaded_values[5]
-    seed_vc.f0_fn = loaded_values[6] if len(loaded_values) > 6 else None
-    seed_vc.max_context_window = seed_vc.sr // seed_vc.hop_length * 30
-    seed_vc.overlap_wave_len = seed_vc.overlap_frame_len * seed_vc.hop_length
-    result = seed_vc.voice_conversion(
-        payload["source_path"],
-        payload["reference_path"],
-        payload["diffusion_steps"],
-        payload["length_adjust"],
-        payload["inference_cfg_rate"],
+    singing = mode == "singing"
+    return run_seed_vc_voice_conversion(
+        source_path=source_path,
+        reference_path=reference_path,
+        mode=mode,
+        diffusion_steps=diffusion_steps,
+        length_adjust=length_adjust,
+        inference_cfg_rate=inference_cfg_rate,
+        f0_condition=f0_condition if singing else False,
+        auto_f0_adjust=auto_f0_adjust if singing else False,
+        pitch_shift=pitch_shift if singing else 0,
+        config=runtime_config,
     )
-else:
-    seed_vc.model = loaded_values[0]
-    seed_vc.semantic_fn = loaded_values[1]
-    seed_vc.vocoder_fn = loaded_values[2]
-    seed_vc.campplus_model = loaded_values[3]
-    seed_vc.to_mel = loaded_values[4]
-    seed_vc.mel_fn_args = loaded_values[5]
-    seed_vc.f0_fn = loaded_values[6] if len(loaded_values) > 6 else None
-    seed_vc.max_context_window = seed_vc.sr // seed_vc.hop_length * 30
-    seed_vc.overlap_wave_len = seed_vc.overlap_frame_len * seed_vc.hop_length
-    result = seed_vc.voice_conversion(
-        payload["source_path"],
-        payload["reference_path"],
-        payload["diffusion_steps"],
-        payload["length_adjust"],
-        payload["inference_cfg_rate"],
-    )
-
-print(json.dumps({"result": result}, default=str))
-"""
-        completed = subprocess.run(
-            [str(_voice_work_runtime_python(runtime_config)), "-c", script, str(temp_path)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            cwd=str(runtime_config.rvc_dir.expanduser()),
-            env={
-                **os.environ.copy(),
-                "PYTHONUTF8": "1",
-                "PYTHONIOENCODING": "utf-8",
-                "LC_ALL": "C.UTF-8",
-                "LANG": "C.UTF-8",
-            },
-        )
-        if completed.returncode != 0:
-            stderr = completed.stderr.strip() or completed.stdout.strip() or "Seed-VC runtime conversion failed."
-            raise RuntimeError(stderr)
-        output_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-        output = output_lines[-1] if output_lines else ""
-        if not output:
-            raise RuntimeError("Seed-VC runtime returned no output.")
-        payload_result = json.loads(output)
-        return {"result": payload_result.get("result")}
-    finally:
-        temp_path.unlink(missing_ok=True)
 
 
 def _voice_work_convert_audio(
@@ -2139,6 +2111,9 @@ def _voice_work_convert_audio(
     diffusion_steps: int,
     length_adjust: float,
     inference_cfg_rate: float,
+    f0_condition: bool,
+    auto_f0_adjust: bool,
+    pitch_shift: int,
     runtime_config: RuntimeConfig,
     request_id: str | None = None,
     render_type: str = "conversion",
@@ -2161,6 +2136,9 @@ def _voice_work_convert_audio(
         length_adjust=length_adjust,
         inference_cfg_rate=inference_cfg_rate,
         mode=mode,
+        f0_condition=f0_condition,
+        auto_f0_adjust=auto_f0_adjust,
+        pitch_shift=pitch_shift,
         runtime_config=runtime_config,
     )
     return _voice_work_normalize_render_output(
@@ -3304,6 +3282,7 @@ def _local_library_scanned_items() -> list[LibraryItem]:
     items.extend(_library_items_from_lokr_datasets())
     items.extend(_library_items_from_lokr_adapters())
     items.extend(_library_items_from_sound_effects())
+    items.extend(_library_items_from_source_separations())
     items.extend(_library_items_from_voice_work())
     items.extend(_library_items_from_rhythm_projects())
     return items
@@ -3316,6 +3295,38 @@ def _library_items_from_sound_effects() -> list[LibraryItem]:
         if item is not None:
             items.append(item)
     return items
+
+
+def _library_items_from_source_separations() -> list[LibraryItem]:
+    items: list[LibraryItem] = []
+    for generation in list_source_separation_generations():
+        items.extend(library_items_from_source_separation_generation(generation))
+    return items
+
+
+def _source_separation_output_extension(output_format: str) -> str:
+    format_name = (output_format or "wav").strip().lower()
+    if format_name == "wav32":
+        return ".wav"
+    return f".{format_name}" if format_name else ".wav"
+
+
+def _classify_source_separation_outputs(audio_files: list[Path]) -> tuple[Path | None, Path | None]:
+    instrumental: Path | None = None
+    vocals: Path | None = None
+    for audio_path in audio_files:
+        name = audio_path.name.lower()
+        if "instrument" in name or "accompaniment" in name or "backing" in name:
+            if instrumental is None:
+                instrumental = audio_path
+        elif "vocal" in name:
+            if vocals is None:
+                vocals = audio_path
+    if instrumental is None and audio_files:
+        instrumental = audio_files[0]
+    if vocals is None and len(audio_files) > 1:
+        vocals = next((path for path in audio_files if path != instrumental), None)
+    return instrumental, vocals
 
 
 def _library_items_from_music_generations() -> list[LibraryItem]:
@@ -3780,10 +3791,13 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
     @app.post("/api/voice-work/voices/{voice_id}/convert")
     def convert_voice_work_sample(voice_id: str, request: VoiceWorkConvertRequest) -> dict[str, Any]:
         request_id = (request.request_id or uuid4().hex[:12]).strip()
+        request_voice_id = (request.voice_id or voice_id).strip()
+        if request.voice_id and request.voice_id.strip() and request.voice_id.strip() != voice_id:
+            raise HTTPException(status_code=400, detail="Voice id mismatch in request body.")
         ui_log.add(
             "info",
             "Voice Work convert request "
-            f"{request_id}: voice={voice_id}, mode={request.mode}, source={request.source_audio_path}, label={request.label or ''}",
+            f"{request_id}: voice={request_voice_id}, mode={request.mode}, source={request.source_audio_path}, label={request.label or ''}",
         )
 
         def _runner() -> str:
@@ -3791,13 +3805,16 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             if not request.label.strip():
                 raise RuntimeError("Enter an output label before converting.")
             result = _voice_work_convert_audio(
-                voice_id=voice_id,
+                voice_id=request_voice_id,
                 source_audio_path=request.source_audio_path,
                 label=request.label or "",
                 mode=request.mode,
                 diffusion_steps=request.diffusion_steps,
                 length_adjust=request.length_adjust,
                 inference_cfg_rate=request.inference_cfg_rate,
+                f0_condition=request.f0_condition,
+                auto_f0_adjust=request.auto_f0_adjust,
+                pitch_shift=request.pitch_shift,
                 runtime_config=_current_voice_runtime_config(),
                 request_id=request_id,
                 render_type="conversion",
@@ -3813,14 +3830,14 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
             ui_log=ui_log,
             details={
                 "request_id": request_id,
-                "voice_id": voice_id,
+                "voice_id": request_voice_id,
                 "source_audio_path": request.source_audio_path,
                 "label": request.label or "",
                 "mode": request.mode,
             },
         ):
             raise HTTPException(status_code=409, detail="Another Voice Work job is already in progress.")
-        return {"started": True, "action": "convert", "voice_id": voice_id, "request_id": request_id}
+        return {"started": True, "action": "convert", "voice_id": request_voice_id, "request_id": request_id}
 
     @app.post("/api/voice-work/voices/{voice_id}/tts")
     def generate_voice_work_tts(voice_id: str, request: VoiceWorkTtsRequest) -> dict[str, Any]:
@@ -5159,6 +5176,143 @@ def create_app(models_dir: Path = Path("models"), runtime_config: RuntimeConfig 
         write_sound_effect_generation(metadata)
         _sync_local_library_index()
         ui_log.add("info", f"Generated sound effect audio: {written_path}")
+        return {"generation": metadata}
+
+    @app.get("/api/source-separation/runtime/status")
+    def get_source_separation_runtime_status() -> dict[str, object]:
+        return source_separation_runtime_status(runtime_config).to_dict()
+
+    @app.post("/api/source-separation/runtime/install")
+    def install_source_separation_runtime() -> dict[str, object]:
+        run_source_separation_runtime_install(runtime_config)
+        return {
+            "status": source_separation_runtime_status(runtime_config).to_dict(),
+            "message": "Source separation runtime setup complete.",
+        }
+
+    @app.get("/api/source-separation/models")
+    def get_source_separation_models() -> list[dict[str, object]]:
+        return list_source_separation_models(runtime_config)
+
+    @app.get("/api/source-separation/generations")
+    def list_source_separation_generation_items() -> list[dict[str, Any]]:
+        return list_source_separation_generations()
+
+    @app.get("/api/source-separation/audio")
+    def get_source_separation_audio(path: str = Query(..., min_length=1)) -> FileResponse:
+        return get_audio_file(path)
+
+    @app.post("/api/source-separation/run")
+    def run_source_separation(request: SourceSeparationRequest) -> dict[str, object]:
+        import datetime as _datetime
+
+        generation_id = f"stem-separation-{uuid4().hex[:12]}"
+        save_dir = _source_separation_root() / "generations" / generation_id
+        metadata_path = save_dir / "generation.json"
+        created_at = _datetime.datetime.now(_datetime.UTC).isoformat()
+        source_path = Path(request.source_path).expanduser()
+        label = request.label.strip()
+        model_filename = request.model_filename.strip() or source_separation_runtime_status(runtime_config).default_model_filename
+
+        try:
+            probe = probe_audio(source_path)
+        except Exception as exc:
+            ui_log.add("error", str(exc))
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        ui_log.add("info", f"Running source separation for {label} using {model_filename}.")
+        try:
+            if not source_separation_runtime_status(runtime_config).ready:
+                run_source_separation_runtime_install(runtime_config)
+            prepared_source = _prepare_source_separation_input(source_path, save_dir)
+            outputs_dir = save_dir / "outputs"
+            outputs_dir.mkdir(parents=True, exist_ok=True)
+            result = separate_source_audio(
+                source_path=prepared_source,
+                output_dir=outputs_dir,
+                model_filename=model_filename,
+                output_format="wav",
+                chunk_duration=request.chunk_duration,
+                mdx_segment_size=request.mdx_segment_size,
+                mdx_overlap=request.mdx_overlap,
+                mdx_enable_denoise=request.mdx_enable_denoise,
+                config=runtime_config,
+            )
+            audio_files = [Path(path) for path in result.get("audio_files") or []]
+            instrumental_wav, vocals_wav = _classify_source_separation_outputs(audio_files)
+            if instrumental_wav is None:
+                raise RuntimeError("Source separation runtime did not return an instrumental stem.")
+            if vocals_wav is None:
+                raise RuntimeError("Source separation runtime did not return a vocals stem.")
+            output_format = (request.output_format or "wav").strip().lower()
+            instrumental_path = instrumental_wav
+            vocals_path = vocals_wav
+            if output_format != "wav":
+                instrumental_output = instrumental_wav.with_name(f"{instrumental_wav.stem}{_source_separation_output_extension(output_format)}")
+                vocals_output = vocals_wav.with_name(f"{vocals_wav.stem}{_source_separation_output_extension(output_format)}")
+                instrumental_path = _sound_effect_transcode_output(instrumental_wav, instrumental_output, output_format)
+                vocals_path = _sound_effect_transcode_output(vocals_wav, vocals_output, output_format)
+            metadata = {
+                "generation_id": generation_id,
+                "type": "stem_separation",
+                "status": "complete",
+                "message": "Vocal and instrumental separation complete.",
+                "created_at": created_at,
+                "label": label,
+                "source_path": str(source_path),
+                "source_format": probe.source_format,
+                "source_duration_seconds": probe.duration_seconds,
+                "source_asset_id": request.source_asset_id or "",
+                "source_asset_label": request.source_asset_label or "",
+                "source_asset_category": request.source_asset_category or "",
+                "model_filename": model_filename,
+                "output_format": output_format,
+                "primary_stem": "instrumental",
+                "instrumental_audio_path": str(instrumental_path),
+                "vocals_audio_path": str(vocals_path),
+                "generated_audio_path": str(instrumental_path),
+                "generated_metadata_path": str(metadata_path),
+                "metadata_path": str(metadata_path),
+                "settings": request.model_dump(),
+                "runtime_result": {
+                    "audio_files": result.get("audio_files") or [],
+                },
+            }
+        except Exception as exc:
+            ui_log.add("error", str(exc))
+            metadata = {
+                "generation_id": generation_id,
+                "type": "stem_separation",
+                "status": "failed",
+                "message": str(exc),
+                "created_at": created_at,
+                "label": label,
+                "source_path": str(source_path),
+                "source_format": probe.source_format,
+                "source_duration_seconds": probe.duration_seconds,
+                "source_asset_id": request.source_asset_id or "",
+                "source_asset_label": request.source_asset_label or "",
+                "source_asset_category": request.source_asset_category or "",
+                "model_filename": model_filename,
+                "output_format": request.output_format,
+                "primary_stem": "instrumental",
+                "instrumental_audio_path": "",
+                "vocals_audio_path": "",
+                "generated_audio_path": "",
+                "generated_metadata_path": str(metadata_path),
+                "metadata_path": str(metadata_path),
+                "settings": request.model_dump(),
+            }
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+            write_source_separation_generation(metadata)
+            return {"generation": metadata}
+
+        metadata_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        write_source_separation_generation(metadata)
+        _sync_local_library_index()
+        ui_log.add("info", f"Separated stems: {instrumental_path}")
         return {"generation": metadata}
 
     @app.post("/api/music-generations/vocal2bgm")

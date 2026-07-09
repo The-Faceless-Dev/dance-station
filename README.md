@@ -80,6 +80,8 @@ Supported extraction targets include vocals, drums, bass, guitar, synth, strings
 
 Completed extractions are saved as reusable results. You can label individual extracted parts, select multiple parts, merge them into a new labeled result, and play those merged outputs in the UI.
 
+The Extraction tab also includes a vocal separation workflow powered by a managed UVR-style MDX runtime. It can separate a source song into instrumental and vocals stems, save the instrumental stem as the primary result, and add both outputs to the local library for reuse in other tabs. Advanced cleanup controls are available for model selection, segment size, overlap, and denoise tuning when you want to push bleed-through lower.
+
 ## Sound Generation
 
 The Sound Generation section creates new music directly from a text prompt and also exposes a dedicated sound effects panel powered by TangoFlux.

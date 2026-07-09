@@ -554,6 +554,20 @@
             <option value="speaking">Speaking</option>
           </select>
         </label>
+        <div id="voiceWorkSingF0Controls" class="control-grid">
+          <label class="toggle-row">
+            <input id="voiceWorkF0Condition" type="checkbox" checked />
+            <span>Use F0 conditioning</span>
+          </label>
+          <label class="toggle-row">
+            <input id="voiceWorkAutoF0Adjust" type="checkbox" />
+            <span>Auto F0 adjust</span>
+          </label>
+          <label class="field">
+            <span>Pitch shift</span>
+            <input id="voiceWorkPitchShift" type="number" min="-24" max="24" step="1" value="0" />
+          </label>
+        </div>
         <div id="voiceWorkSourceAssetBlock" class="picker-block is-hidden">
           <div class="existing-source-picker single-column">
             <label class="field">
@@ -600,7 +614,124 @@
     <main id="extractionPage" class="workspace app-page">
       <section class="panel workflow-panel">
         <div class="panel-heading">
-          <h2>Extraction Source</h2>
+          <h2>Vocal Separation</h2>
+          <span id="sourceSeparationActionState" class="mini-state">Ready</span>
+        </div>
+
+        <div class="summary">
+          Separate vocals and instrumental stems with UVR MDX models. The instrumental stem is saved as the primary output and both stems are added to the local library.
+        </div>
+
+        <div class="control-grid">
+          <label class="field">
+            <span>Model</span>
+            <select id="sourceSeparationModelSelect"></select>
+          </label>
+          <label class="field">
+            <span>Output format</span>
+            <select id="sourceSeparationOutputFormat">
+              <option value="wav" selected>WAV</option>
+              <option value="wav32">WAV 32-bit</option>
+              <option value="flac">FLAC</option>
+              <option value="mp3">MP3</option>
+              <option value="opus">Opus</option>
+              <option value="aac">AAC</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Chunk duration</span>
+            <input id="sourceSeparationChunkDuration" type="number" min="1" step="1" value="600" />
+          </label>
+          <label class="field">
+            <span>Label</span>
+            <input id="sourceSeparationLabelInput" type="text" placeholder="separation name" />
+          </label>
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <div class="panel-heading compact-heading">
+          <h3>Advanced Cleanup</h3>
+        </div>
+
+        <div class="control-grid">
+          <label class="field">
+            <span>Segment size</span>
+            <input id="sourceSeparationSegmentSize" type="number" min="1" step="1" value="256" />
+          </label>
+          <label class="field">
+            <span>Overlap</span>
+            <input id="sourceSeparationOverlap" type="number" min="0" max="1" step="0.01" value="0.25" />
+          </label>
+          <label class="field checkbox-field">
+            <span>Denoise</span>
+            <div class="check-field">
+              <input id="sourceSeparationDenoise" type="checkbox" />
+              <span>Enable denoise pass</span>
+            </div>
+          </label>
+        </div>
+
+        <div class="file-picker">
+          <label class="file-button" for="sourceSeparationFile">Choose Audio File</label>
+          <input id="sourceSeparationFile" type="file" accept=".mp3,.wav,.flac,.ogg,.m4a,audio/*" />
+          <span id="sourceSeparationSelectedFileName">No file selected</span>
+        </div>
+
+        <div class="existing-source-picker">
+          <label class="field">
+            <span>Existing creation</span>
+            <select id="sourceSeparationAssetSelect">
+              <option value="">Choose an existing creation</option>
+            </select>
+          </label>
+          <button id="loadSourceSeparationAssetButton" class="secondary-button" type="button">Load Creation</button>
+        </div>
+
+        <label class="field">
+          <span>Audio path</span>
+          <input id="sourceSeparationPath" type="text" placeholder="D:\\music\\song.mp3 or clip.wav" />
+        </label>
+
+        <div class="button-row source-actions">
+          <button id="loadSourceSeparationButton" class="secondary-button" type="button">Load Song</button>
+          <span id="sourceSeparationDuration" class="inline-readout">No source loaded</span>
+        </div>
+
+        <audio id="sourceSeparationAudio" class="audio-player" controls preload="metadata"></audio>
+        <div class="selection-readout">
+          <span id="sourceSeparationFormatReadout">Formats: MP3, WAV, FLAC, OGG, M4A</span>
+          <span>Both stems will be exported</span>
+        </div>
+
+        <div class="button-row">
+          <button id="runSourceSeparationButton" class="primary-button" type="button">Separate Vocals / Instrumental</button>
+          <button id="refreshSourceSeparationButton" class="secondary-button" type="button">Refresh Separations</button>
+        </div>
+
+        <div class="output-block">
+          <h3>Separation Output</h3>
+          <div id="sourceSeparationActivity" class="activity-readout">No separation running.</div>
+          <div id="sourceSeparationList" class="generated-list">
+            <div class="empty-result">No separations yet.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel settings-panel">
+        <div class="panel-heading">
+          <h2>Track Extraction</h2>
+          <span id="extractActionState" class="mini-state">Ready</span>
+        </div>
+
+        <div class="summary">
+          Use ACE-Step to pull out individual track layers from a source song. Load a song or existing creation first, then extract the layers you want to save back into the library.
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <div class="panel-heading compact-heading">
+          <h3>Extraction Source</h3>
           <span id="extractSourceState" class="mini-state">Idle</span>
         </div>
 
@@ -635,12 +766,11 @@
           <span id="extractSourceFormatReadout">Formats: MP3, WAV, FLAC, OGG, M4A</span>
           <span>Full song will be used for extraction</span>
         </div>
-      </section>
 
-      <section class="panel settings-panel">
-        <div class="panel-heading">
-          <h2>Extract</h2>
-          <span id="extractActionState" class="mini-state">Ready</span>
+        <div class="panel-divider"></div>
+
+        <div class="panel-heading compact-heading">
+          <h3>Track Controls</h3>
         </div>
 
         <div class="control-grid">
@@ -719,6 +849,15 @@
       </section>
 
       <aside class="side-stack">
+        <section class="panel">
+          <div class="panel-heading">
+            <h2>Source Separation Runtime</h2>
+            <span id="sourceSeparationRuntimeState" class="mini-state">Ready</span>
+          </div>
+          <div id="sourceSeparationRuntimeDetails" class="summary"></div>
+          <button id="installSourceSeparationRuntimeButton" class="secondary-button full-width" type="button">Install Runtime</button>
+        </section>
+
         <section class="panel">
           <div class="panel-heading">
             <h2>ACE Runtime</h2>

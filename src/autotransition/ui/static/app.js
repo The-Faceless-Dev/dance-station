@@ -16,6 +16,11 @@ const state = {
   soundEffectResults: [],
   soundEffectRuntime: null,
   soundEffectGenerating: false,
+  sourceSeparationModels: [],
+  sourceSeparationResults: [],
+  sourceSeparationRuntime: null,
+  sourceSeparationGenerating: false,
+  sourceSeparationSourceProbe: null,
   vocal2bgmResults: [],
   voiceWorkStatus: null,
   voiceVoices: [],
@@ -179,6 +184,30 @@ const el = {
   copyRuntimeCommandButton: document.querySelector("#copyRuntimeCommandButton"),
   logList: document.querySelector("#logList"),
   extractSourceState: document.querySelector("#extractSourceState"),
+  sourceSeparationActionState: document.querySelector("#sourceSeparationActionState"),
+  sourceSeparationRuntimeState: document.querySelector("#sourceSeparationRuntimeState"),
+  sourceSeparationRuntimeDetails: document.querySelector("#sourceSeparationRuntimeDetails"),
+  installSourceSeparationRuntimeButton: document.querySelector("#installSourceSeparationRuntimeButton"),
+  sourceSeparationFile: document.querySelector("#sourceSeparationFile"),
+  sourceSeparationSelectedFileName: document.querySelector("#sourceSeparationSelectedFileName"),
+  sourceSeparationAssetSelect: document.querySelector("#sourceSeparationAssetSelect"),
+  loadSourceSeparationAssetButton: document.querySelector("#loadSourceSeparationAssetButton"),
+  sourceSeparationPath: document.querySelector("#sourceSeparationPath"),
+  loadSourceSeparationButton: document.querySelector("#loadSourceSeparationButton"),
+  sourceSeparationDuration: document.querySelector("#sourceSeparationDuration"),
+  sourceSeparationAudio: document.querySelector("#sourceSeparationAudio"),
+  sourceSeparationFormatReadout: document.querySelector("#sourceSeparationFormatReadout"),
+  sourceSeparationModelSelect: document.querySelector("#sourceSeparationModelSelect"),
+  sourceSeparationOutputFormat: document.querySelector("#sourceSeparationOutputFormat"),
+  sourceSeparationChunkDuration: document.querySelector("#sourceSeparationChunkDuration"),
+  sourceSeparationLabelInput: document.querySelector("#sourceSeparationLabelInput"),
+  sourceSeparationSegmentSize: document.querySelector("#sourceSeparationSegmentSize"),
+  sourceSeparationOverlap: document.querySelector("#sourceSeparationOverlap"),
+  sourceSeparationDenoise: document.querySelector("#sourceSeparationDenoise"),
+  runSourceSeparationButton: document.querySelector("#runSourceSeparationButton"),
+  refreshSourceSeparationButton: document.querySelector("#refreshSourceSeparationButton"),
+  sourceSeparationActivity: document.querySelector("#sourceSeparationActivity"),
+  sourceSeparationList: document.querySelector("#sourceSeparationList"),
   extractSourceFile: document.querySelector("#extractSourceFile"),
   extractSelectedFileName: document.querySelector("#extractSelectedFileName"),
   extractSourceAssetSelect: document.querySelector("#extractSourceAssetSelect"),
@@ -300,6 +329,10 @@ const el = {
   voiceWorkSampleFile: document.querySelector("#voiceWorkSampleFile"),
   voiceWorkSampleFileName: document.querySelector("#voiceWorkSampleFileName"),
   voiceWorkSampleMode: document.querySelector("#voiceWorkSampleMode"),
+  voiceWorkSingF0Controls: document.querySelector("#voiceWorkSingF0Controls"),
+  voiceWorkF0Condition: document.querySelector("#voiceWorkF0Condition"),
+  voiceWorkAutoF0Adjust: document.querySelector("#voiceWorkAutoF0Adjust"),
+  voiceWorkPitchShift: document.querySelector("#voiceWorkPitchShift"),
   voiceWorkSourceUploadMode: document.querySelector("#voiceWorkSourceUploadMode"),
   voiceWorkSourceAssetMode: document.querySelector("#voiceWorkSourceAssetMode"),
   voiceWorkSourceUploadBlock: document.querySelector("#voiceWorkSourceUploadBlock"),
@@ -2996,7 +3029,12 @@ function renderEditorAssets() {
 }
 
 function renderSourceAssetOptions() {
-  const selects = [el.sourceAssetSelect, el.extractSourceAssetSelect, el.instrumentAssetSelect, el.lokrAssetSelect].filter(Boolean);
+  const selects = [
+    el.sourceAssetSelect,
+    el.extractSourceAssetSelect,
+    el.instrumentAssetSelect,
+    el.lokrAssetSelect,
+  ].filter(Boolean);
   const audioAssets = state.editorAssets.filter((asset) => looksLikePlayableAudio(asset.audio_path));
   selects.forEach((select) => {
     const current = select.value;
@@ -3022,7 +3060,30 @@ function renderSourceAssetOptions() {
   });
 }
 
+function renderSourceSeparationAssetOptions() {
+  if (!el.sourceSeparationAssetSelect) return;
+  const current = el.sourceSeparationAssetSelect.value;
+  const assets = voiceWorkAssetEntries();
+  el.sourceSeparationAssetSelect.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = assets.length ? "Choose an existing creation" : "No audio assets available";
+  el.sourceSeparationAssetSelect.appendChild(placeholder);
+  assets.forEach((asset) => {
+    const option = document.createElement("option");
+    option.value = asset.asset_id || asset.id || "";
+    const imported = asset.kind === "stem" ? "" : (asset.imported ? " • imported" : "");
+    const creator = asset.creator_name ? ` • ${asset.creator_name}` : "";
+    option.textContent = `${asset.category || asset.kind || "audio"}: ${asset.label || asset.title || asset.asset_id || "asset"}${imported}${creator}`;
+    el.sourceSeparationAssetSelect.appendChild(option);
+  });
+  if (current && [...el.sourceSeparationAssetSelect.options].some((option) => option.value === current)) {
+    el.sourceSeparationAssetSelect.value = current;
+  }
+}
+
 function selectedSourceAsset(select) {
+  if (!select) return null;
   const assetId = select.value;
   return voiceWorkAssetEntries().find((asset) => asset.asset_id === assetId) || null;
 }
@@ -4239,6 +4300,7 @@ async function renameEditorAsset(asset, row) {
 async function refreshEditorAssets() {
   state.editorAssets = await api("/api/editor/assets");
   renderSourceAssetOptions();
+  renderSourceSeparationAssetOptions();
   renderEditorAssets();
   renderRhythmAssetSelectors();
   renderVoiceWorkAssetOptions();
@@ -4259,6 +4321,7 @@ async function refreshLocalLibrary() {
   renderLocalLibrary();
   renderRhythmAssetList();
   renderVoiceWorkAssetOptions();
+  renderSourceSeparationAssetOptions();
   renderVoiceWorkInputModes();
   await refreshDatasetSources();
 }
@@ -5050,6 +5113,358 @@ async function runSoundEffectGeneration() {
   }
 }
 
+function sourceSeparationRuntimeReady() {
+  return Boolean(state.sourceSeparationRuntime && state.sourceSeparationRuntime.ready);
+}
+
+function applySourceSeparationAvailability() {
+  const sourceLoaded = Boolean(state.sourceSeparationSourceProbe || (el.sourceSeparationPath && el.sourceSeparationPath.value.trim()));
+  if (el.runSourceSeparationButton) {
+    el.runSourceSeparationButton.disabled = state.sourceSeparationGenerating || !sourceLoaded || !sourceSeparationRuntimeReady();
+  }
+  if (el.loadSourceSeparationButton) {
+    el.loadSourceSeparationButton.disabled = state.sourceSeparationGenerating;
+  }
+  if (el.loadSourceSeparationAssetButton) {
+    el.loadSourceSeparationAssetButton.disabled = state.sourceSeparationGenerating;
+  }
+  if (el.sourceSeparationFile) {
+    el.sourceSeparationFile.disabled = state.sourceSeparationGenerating;
+  }
+  if (el.sourceSeparationSegmentSize) {
+    el.sourceSeparationSegmentSize.disabled = state.sourceSeparationGenerating;
+  }
+  if (el.sourceSeparationOverlap) {
+    el.sourceSeparationOverlap.disabled = state.sourceSeparationGenerating;
+  }
+  if (el.sourceSeparationDenoise) {
+    el.sourceSeparationDenoise.disabled = state.sourceSeparationGenerating;
+  }
+  if (el.installSourceSeparationRuntimeButton) {
+    el.installSourceSeparationRuntimeButton.disabled = state.sourceSeparationGenerating;
+  }
+}
+
+function renderSourceSeparationModels() {
+  if (!el.sourceSeparationModelSelect) return;
+  const models = Array.isArray(state.sourceSeparationModels) ? state.sourceSeparationModels : [];
+  const current = el.sourceSeparationModelSelect.value;
+  el.sourceSeparationModelSelect.replaceChildren();
+  models.forEach((model, index) => {
+    const optionNode = document.createElement("option");
+    optionNode.value = model.model_filename || "";
+    optionNode.textContent = model.friendly_name
+      ? `${model.friendly_name} (${model.model_filename || "model"})`
+      : model.model_filename || "model";
+    if (index === 0 && !current) {
+      optionNode.selected = true;
+    }
+    el.sourceSeparationModelSelect.appendChild(optionNode);
+  });
+  if (current && models.some((model) => model.model_filename === current)) {
+    el.sourceSeparationModelSelect.value = current;
+  } else if (!el.sourceSeparationModelSelect.value && models.length) {
+    el.sourceSeparationModelSelect.value = models[0].model_filename || "";
+  }
+}
+
+function renderSourceSeparationGenerations() {
+  if (!el.sourceSeparationList) return;
+  el.sourceSeparationList.replaceChildren();
+  if (!state.sourceSeparationResults.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-result";
+    empty.textContent = "No separations yet.";
+    el.sourceSeparationList.appendChild(empty);
+    return;
+  }
+
+  state.sourceSeparationResults.forEach((item, index) => {
+    const row = document.createElement("article");
+    row.className = "generated-item";
+    const instrumentalPath = item.instrumental_audio_path || item.generated_audio_path || "";
+    const vocalsPath = item.vocals_audio_path || "";
+    const instrumentalAudio = instrumentalPath
+      ? `<audio controls preload="metadata" src="/api/source-separation/audio?path=${encodeURIComponent(instrumentalPath)}"></audio>`
+      : `<div class="empty-result">No instrumental output.</div>`;
+    const vocalsAudio = vocalsPath
+      ? `<audio controls preload="metadata" src="/api/source-separation/audio?path=${encodeURIComponent(vocalsPath)}"></audio>`
+      : `<div class="empty-result">No vocals output.</div>`;
+    row.innerHTML = `
+      <div class="generated-title">
+        <strong>${index === 0 ? "Latest" : "Separation"} - ${escapeHtml(item.status)}</strong>
+        <span>${escapeHtml(item.label || item.model_filename || "stem separation")}</span>
+      </div>
+      <div class="button-row generated-actions">
+        <button class="secondary-button use-source-button" type="button" ${instrumentalPath ? "" : "disabled"}>Use Instrumental</button>
+        <button class="secondary-button use-vocals-button" type="button" ${vocalsPath ? "" : "disabled"}>Use Vocals</button>
+      </div>
+      <div class="summary">
+        ${escapeHtml(item.source_label || item.source_path || "No source")}
+        ${item.model_filename ? `<br>Model: ${escapeHtml(item.model_filename)}` : ""}
+      </div>
+      <div class="summary">Instrumental</div>
+      ${instrumentalAudio}
+      <div class="summary">Vocals</div>
+      ${vocalsAudio}
+      <dl class="path-list">
+        <dt>Message</dt><dd>${escapeHtml(item.message || "")}</dd>
+        <dt>Source</dt><dd>${escapeHtml(item.source_path || "")}</dd>
+        <dt>Source asset</dt><dd>${escapeHtml(item.source_asset_label || "")}</dd>
+        <dt>Output</dt><dd>${escapeHtml(instrumentalPath || "None")}</dd>
+        <dt>Vocals</dt><dd>${escapeHtml(vocalsPath || "None")}</dd>
+        <dt>Metadata</dt><dd>${escapeHtml(item.metadata_path || "")}</dd>
+      </dl>
+    `;
+    const useSourceButton = row.querySelector(".use-source-button");
+    const useVocalsButton = row.querySelector(".use-vocals-button");
+    if (useSourceButton && instrumentalPath) {
+      useSourceButton.addEventListener("click", () => useGeneratedAsSource(instrumentalPath));
+    }
+    if (useVocalsButton && vocalsPath) {
+      useVocalsButton.addEventListener("click", () => useGeneratedAsSource(vocalsPath));
+    }
+    el.sourceSeparationList.appendChild(row);
+  });
+}
+
+function renderSourceSeparationRuntime() {
+  const runtime = state.sourceSeparationRuntime || null;
+  if (!runtime) {
+    setPill(el.sourceSeparationRuntimeState, "Unknown", "neutral");
+    if (el.sourceSeparationRuntimeDetails) {
+      el.sourceSeparationRuntimeDetails.textContent = "Source separation runtime status not loaded.";
+    }
+    if (el.installSourceSeparationRuntimeButton) {
+      el.installSourceSeparationRuntimeButton.disabled = state.sourceSeparationGenerating;
+      el.installSourceSeparationRuntimeButton.textContent = "Install Runtime";
+    }
+    applySourceSeparationAvailability();
+    return;
+  }
+  const tone = runtime.ready ? "ok" : runtime.installed ? "warn" : "error";
+  const label = runtime.ready ? "Ready" : runtime.installed ? "Installed" : "Missing";
+  setPill(el.sourceSeparationRuntimeState, label, tone);
+  if (el.sourceSeparationRuntimeDetails) {
+    el.sourceSeparationRuntimeDetails.innerHTML = [
+      `<strong>${escapeHtml(runtime.message || "")}</strong>`,
+      `Install dir: ${escapeHtml(runtime.install_dir || "")}`,
+      `Python: ${escapeHtml(runtime.python_executable || "")}`,
+      `CLI: ${escapeHtml(runtime.cli_executable || "")}`,
+      `Install: ${escapeHtml(runtime.install_command || "")}`,
+      `Setup: ${escapeHtml(runtime.simple_setup_command || "")}`,
+    ].join("<br>");
+  }
+  if (el.installSourceSeparationRuntimeButton) {
+    el.installSourceSeparationRuntimeButton.disabled = state.sourceSeparationGenerating;
+    el.installSourceSeparationRuntimeButton.textContent = runtime.ready ? "Reinstall Runtime" : "Install Runtime";
+  }
+  applySourceSeparationAvailability();
+}
+
+async function refreshSourceSeparationModels() {
+  state.sourceSeparationModels = await api("/api/source-separation/models");
+  renderSourceSeparationModels();
+}
+
+async function refreshSourceSeparationGenerations() {
+  state.sourceSeparationResults = await api("/api/source-separation/generations");
+  renderSourceSeparationGenerations();
+}
+
+async function refreshSourceSeparationRuntime() {
+  state.sourceSeparationRuntime = await api("/api/source-separation/runtime/status");
+  renderSourceSeparationRuntime();
+}
+
+async function installSourceSeparationRuntime() {
+  if (el.installSourceSeparationRuntimeButton) {
+    el.installSourceSeparationRuntimeButton.disabled = true;
+  }
+  setPill(el.sourceSeparationRuntimeState, "Setting up", "warn");
+  if (el.sourceSeparationRuntimeDetails) {
+    el.sourceSeparationRuntimeDetails.textContent = "Installing source separation runtime dependencies.";
+  }
+  try {
+    const response = await api("/api/source-separation/runtime/install", { method: "POST" });
+    state.sourceSeparationRuntime = response.status || null;
+    renderSourceSeparationRuntime();
+    showToast(response.message || "Source separation runtime setup complete");
+  } catch (error) {
+    if (el.sourceSeparationRuntimeDetails) {
+      el.sourceSeparationRuntimeDetails.innerHTML = `<strong>Install failed</strong><br>${escapeHtml(error.message)}`;
+    }
+    setPill(el.sourceSeparationRuntimeState, "Failed", "error");
+    showToast(error.message);
+  } finally {
+    applySourceSeparationAvailability();
+  }
+}
+
+async function loadSourceSeparationProbeIntoPlayer(sourcePath, probe) {
+  state.sourceSeparationSourceProbe = probe;
+  el.sourceSeparationPath.value = sourcePath;
+  el.sourceSeparationAudio.src = `/api/source/audio?path=${encodeURIComponent(sourcePath)}`;
+  el.sourceSeparationDuration.textContent = `Duration ${formatTime(probe.duration_seconds)}`;
+  el.sourceSeparationFormatReadout.textContent = `Source format: ${probe.source_format}; vocals and instrumental will be separated`;
+  setPill(el.sourceSeparationActionState, "Source loaded", "ok");
+  applySourceSeparationAvailability();
+}
+
+async function loadSourceSeparationSource() {
+  setPill(el.sourceSeparationActionState, "Loading", "warn");
+  el.loadSourceSeparationButton.disabled = true;
+  try {
+    const sourcePath = el.sourceSeparationPath.value.trim();
+    const probe = await api("/api/source/probe", {
+      method: "POST",
+      body: JSON.stringify({ source_path: sourcePath }),
+    });
+    await loadSourceSeparationProbeIntoPlayer(sourcePath, probe);
+    if (el.sourceSeparationLabelInput && !el.sourceSeparationLabelInput.value.trim()) {
+      const name = sourcePath.split(/[\\/]/).pop() || "separation";
+      el.sourceSeparationLabelInput.value = name.replace(/\.[^.]+$/, "");
+    }
+    showToast("Source loaded");
+  } catch (error) {
+    state.sourceSeparationSourceProbe = null;
+    setPill(el.sourceSeparationActionState, "Error", "error");
+    showToast(error.message);
+  } finally {
+    el.loadSourceSeparationButton.disabled = false;
+    refreshLogs();
+  }
+}
+
+async function uploadSourceSeparationFile() {
+  const file = el.sourceSeparationFile.files && el.sourceSeparationFile.files[0];
+  if (!file) return;
+
+  setPill(el.sourceSeparationActionState, "Uploading", "warn");
+  el.sourceSeparationSelectedFileName.textContent = file.name;
+  el.loadSourceSeparationButton.disabled = true;
+
+  const formData = new FormData();
+  formData.append("file", file);
+
+  try {
+    const response = await fetch("/api/source/upload", {
+      method: "POST",
+      body: formData,
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(body && body.detail ? body.detail : `Upload failed: ${response.status}`);
+    }
+
+    await loadSourceSeparationProbeIntoPlayer(body.stored_path, body.probe);
+    if (el.sourceSeparationLabelInput && !el.sourceSeparationLabelInput.value.trim()) {
+      el.sourceSeparationLabelInput.value = file.name.replace(/\.[^.]+$/, "");
+    }
+    showToast("Audio file loaded");
+  } catch (error) {
+    state.sourceSeparationSourceProbe = null;
+    setPill(el.sourceSeparationActionState, "Error", "error");
+    showToast(error.message);
+  } finally {
+    el.loadSourceSeparationButton.disabled = false;
+    refreshLogs();
+  }
+}
+
+async function loadSourceSeparationAsset() {
+  const asset = selectedSourceAsset(el.sourceSeparationAssetSelect);
+  if (!asset) {
+    showToast("Choose an existing creation");
+    return;
+  }
+  setPill(el.sourceSeparationActionState, "Loading", "warn");
+  el.loadSourceSeparationAssetButton.disabled = true;
+  try {
+    const probe = await api("/api/source/probe", {
+      method: "POST",
+      body: JSON.stringify({ source_path: asset.audio_path }),
+    });
+    await loadSourceSeparationProbeIntoPlayer(asset.audio_path, probe);
+    if (el.sourceSeparationLabelInput && !el.sourceSeparationLabelInput.value.trim()) {
+      el.sourceSeparationLabelInput.value = `${asset.label || asset.category || "separation"}`;
+    }
+    showToast("Creation loaded");
+  } catch (error) {
+    state.sourceSeparationSourceProbe = null;
+    setPill(el.sourceSeparationActionState, "Error", "error");
+    showToast(error.message);
+  } finally {
+    el.loadSourceSeparationAssetButton.disabled = false;
+    refreshLogs();
+  }
+}
+
+async function runSourceSeparation() {
+  const label = el.sourceSeparationLabelInput ? el.sourceSeparationLabelInput.value.trim() : "";
+  const sourcePath = el.sourceSeparationPath ? el.sourceSeparationPath.value.trim() : "";
+  if (!label) {
+    showToast("Enter a label for the separation");
+    return;
+  }
+  if (!sourcePath) {
+    showToast("Load a source audio file");
+    return;
+  }
+  state.sourceSeparationGenerating = true;
+  applySourceSeparationAvailability();
+  setPill(el.sourceSeparationActionState, "Separating", "warn");
+  if (el.sourceSeparationActivity) {
+    el.sourceSeparationActivity.innerHTML = "<strong>Starting</strong><br>Preparing source separation request.";
+  }
+  try {
+    const response = await api("/api/source-separation/run", {
+      method: "POST",
+      body: JSON.stringify({
+        source_path: sourcePath,
+        label,
+        model_filename: el.sourceSeparationModelSelect ? el.sourceSeparationModelSelect.value : "",
+        output_format: el.sourceSeparationOutputFormat ? el.sourceSeparationOutputFormat.value : "wav",
+        chunk_duration: numericValue(el.sourceSeparationChunkDuration) ?? 600,
+        mdx_segment_size: numericValue(el.sourceSeparationSegmentSize) ?? 256,
+        mdx_overlap: numericValue(el.sourceSeparationOverlap) ?? 0.25,
+        mdx_enable_denoise: Boolean(el.sourceSeparationDenoise && el.sourceSeparationDenoise.checked),
+        source_asset_id: selectedSourceAsset(el.sourceSeparationAssetSelect)?.asset_id || null,
+        source_asset_label: selectedSourceAsset(el.sourceSeparationAssetSelect)?.label || null,
+        source_asset_category: selectedSourceAsset(el.sourceSeparationAssetSelect)?.category || null,
+      }),
+    });
+    state.sourceSeparationResults.unshift(response.generation);
+    state.sourceSeparationResults = state.sourceSeparationResults.slice(0, 24);
+    renderSourceSeparationGenerations();
+    await refreshEditorAssets();
+    await refreshLocalLibrary();
+    if (response.generation.status === "complete") {
+      setPill(el.sourceSeparationActionState, "Complete", "ok");
+      if (el.sourceSeparationActivity) {
+        el.sourceSeparationActivity.innerHTML = "<strong>Complete</strong><br>Vocals and instrumental separation finished.";
+      }
+    } else {
+      setPill(el.sourceSeparationActionState, "Failed", "error");
+      if (el.sourceSeparationActivity) {
+        el.sourceSeparationActivity.innerHTML = `<strong>Failed</strong><br>${escapeHtml(response.generation.message)}`;
+      }
+    }
+    showToast(response.generation.message);
+  } catch (error) {
+    setPill(el.sourceSeparationActionState, "Error", "error");
+    if (el.sourceSeparationActivity) {
+      el.sourceSeparationActivity.innerHTML = `<strong>Error</strong><br>${escapeHtml(error.message)}`;
+    }
+    showToast(error.message);
+  } finally {
+    state.sourceSeparationGenerating = false;
+    applySourceSeparationAvailability();
+    await refreshSourceSeparationRuntime().catch(() => {});
+    refreshLogs();
+  }
+}
+
 function renderVocal2BgmAssetOptions() {
   const current = el.vocal2bgmSourceAssetSelect ? el.vocal2bgmSourceAssetSelect.value : "";
   const assets = voiceWorkAssetEntries();
@@ -5433,12 +5848,18 @@ function renderVoiceWorkInputModes() {
   if (el.voiceWorkTargetAssetBlock) el.voiceWorkTargetAssetBlock.classList.toggle("is-hidden", targetUpload);
   if (el.voiceWorkSourceUploadBlock) el.voiceWorkSourceUploadBlock.classList.toggle("is-hidden", !sourceUpload);
   if (el.voiceWorkSourceAssetBlock) el.voiceWorkSourceAssetBlock.classList.toggle("is-hidden", sourceUpload);
+  const singing = !el.voiceWorkSampleMode || el.voiceWorkSampleMode.value !== "speaking";
+  if (el.voiceWorkSingF0Controls) el.voiceWorkSingF0Controls.classList.toggle("is-hidden", !singing);
+  if (el.voiceWorkF0Condition) el.voiceWorkF0Condition.disabled = !singing;
+  if (el.voiceWorkAutoF0Adjust) el.voiceWorkAutoF0Adjust.disabled = !singing;
+  if (el.voiceWorkPitchShift) el.voiceWorkPitchShift.disabled = !singing;
   state.voiceWorkTargetInputMode = targetUpload ? "upload" : "asset";
   state.voiceWorkSourceInputMode = sourceUpload ? "upload" : "asset";
   applyVoiceWorkAvailability();
 }
 
 function selectedVoiceWorkAsset(select) {
+  if (!select) return null;
   const assetId = select.value;
   return voiceWorkAssetEntries().find((asset) => asset.asset_id === assetId) || null;
 }
@@ -5990,6 +6411,9 @@ async function convertVoiceWorkSample() {
       diffusion_steps: Number(el.voiceWorkSampleDiffusionSteps.value || 25),
       length_adjust: Number(el.voiceWorkSampleLengthAdjust.value || 1),
       inference_cfg_rate: Number(el.voiceWorkSampleCfgRate.value || 0.7),
+      f0_condition: el.voiceWorkF0Condition ? el.voiceWorkF0Condition.checked : true,
+      auto_f0_adjust: el.voiceWorkAutoF0Adjust ? el.voiceWorkAutoF0Adjust.checked : false,
+      pitch_shift: Number(el.voiceWorkPitchShift ? el.voiceWorkPitchShift.value || 0 : 0),
     };
     const result = await api(`/api/voice-work/voices/${encodeURIComponent(voiceId)}/convert`, {
       method: "POST",
@@ -7238,11 +7662,14 @@ function addGeneratedResult(result, plan) {
 
 async function loadAll() {
   await loadInstrumentBank();
-  const [status, runtime, voiceRuntime, soundEffectRuntime, presets, models, tracks, extractions, musicGenerations, soundEffects, voiceGenerations, voiceVoices, lokrDatasets, datasetSources, lokrRuns, lokrAdapters, instrumentClips, rhythmProjects, rhythmVolumes, editorAssets, localLibrary, libraryConnection, logs] = await Promise.all([
+  const [status, runtime, voiceRuntime, soundEffectRuntime, sourceSeparationRuntime, sourceSeparationModels, sourceSeparationResults, presets, models, tracks, extractions, musicGenerations, soundEffects, voiceGenerations, voiceVoices, lokrDatasets, datasetSources, lokrRuns, lokrAdapters, instrumentClips, rhythmProjects, rhythmVolumes, editorAssets, localLibrary, libraryConnection, logs] = await Promise.all([
     api("/api/status"),
     api("/api/runtime/status"),
     api("/api/voice-work/status"),
     api("/api/sound-effects/runtime/status"),
+    api("/api/source-separation/runtime/status"),
+    api("/api/source-separation/models"),
+    api("/api/source-separation/generations"),
     api("/api/presets"),
     api("/api/models"),
     api("/api/extractions/tracks"),
@@ -7270,6 +7697,9 @@ async function loadAll() {
   state.musicResults = musicGenerations.filter((item) => item.type !== "vocal2bgm" && item.type !== "sound_effect");
   state.soundEffectResults = soundEffects;
   state.soundEffectRuntime = soundEffectRuntime;
+  state.sourceSeparationRuntime = sourceSeparationRuntime;
+  state.sourceSeparationModels = sourceSeparationModels;
+  state.sourceSeparationResults = sourceSeparationResults;
   state.voiceGenerations = voiceGenerations;
   state.voiceWorkStatus = voiceRuntime;
   state.voiceVoices = voiceVoices;
@@ -7316,6 +7746,10 @@ async function loadAll() {
   drawInstrumentPianoRoll();
   renderInstrumentClipList();
   renderSourceAssetOptions();
+  renderSourceSeparationAssetOptions();
+  renderSourceSeparationModels();
+  renderSourceSeparationGenerations();
+  renderSourceSeparationRuntime();
   renderEditorAssets();
   renderLocalLibrary();
   renderVoiceWorkAssetOptions();
@@ -7730,6 +8164,9 @@ async function refreshStatus() {
   await refreshMusicGenerations();
   await refreshSoundEffectGenerations();
   await refreshSoundEffectRuntime();
+  await refreshSourceSeparationRuntime();
+  await refreshSourceSeparationModels();
+  await refreshSourceSeparationGenerations();
   await refreshVocal2BgmGenerations();
   await refreshRhythmProjects();
   await refreshLokrRuns();
@@ -7799,6 +8236,64 @@ el.publicLibraryKind.addEventListener("change", () => {
   if (state.publicLibraryItems.length) refreshPublicLibrary().catch((error) => showToast(error.message));
 });
 el.publicLibrarySearch.addEventListener("input", renderPublicLibrary);
+if (el.sourceSeparationFile) {
+  el.sourceSeparationFile.addEventListener("change", () => {
+    const file = el.sourceSeparationFile.files && el.sourceSeparationFile.files[0];
+    el.sourceSeparationSelectedFileName.textContent = file ? file.name : "No file selected";
+    if (file) {
+      uploadSourceSeparationFile().catch((error) => showToast(error.message));
+    }
+  });
+}
+if (el.sourceSeparationAssetSelect) {
+  el.sourceSeparationAssetSelect.addEventListener("change", () => {
+    const selected = selectedSourceAsset(el.sourceSeparationAssetSelect);
+    if (selected && el.sourceSeparationLabelInput && !el.sourceSeparationLabelInput.value.trim()) {
+      el.sourceSeparationLabelInput.value = selected.label || "";
+    }
+    applySourceSeparationAvailability();
+  });
+}
+if (el.sourceSeparationLabelInput) {
+  el.sourceSeparationLabelInput.addEventListener("input", applySourceSeparationAvailability);
+}
+if (el.sourceSeparationPath) {
+  el.sourceSeparationPath.addEventListener("input", applySourceSeparationAvailability);
+}
+if (el.sourceSeparationModelSelect) {
+  el.sourceSeparationModelSelect.addEventListener("change", applySourceSeparationAvailability);
+}
+if (el.installSourceSeparationRuntimeButton) {
+  el.installSourceSeparationRuntimeButton.addEventListener("click", () => {
+    installSourceSeparationRuntime().catch((error) => showToast(error.message));
+  });
+}
+if (el.loadSourceSeparationAssetButton) {
+  el.loadSourceSeparationAssetButton.addEventListener("click", () => {
+    loadSourceSeparationAsset().catch((error) => showToast(error.message));
+  });
+}
+if (el.loadSourceSeparationButton) {
+  el.loadSourceSeparationButton.addEventListener("click", () => {
+    loadSourceSeparationSource().catch((error) => showToast(error.message));
+  });
+}
+if (el.runSourceSeparationButton) {
+  el.runSourceSeparationButton.addEventListener("click", () => {
+    runWithButtonBusyState(
+      el.runSourceSeparationButton,
+      "Separating...",
+      () => runSourceSeparation(),
+    ).catch((error) => showToast(error.message));
+  });
+}
+if (el.refreshSourceSeparationButton) {
+  el.refreshSourceSeparationButton.addEventListener("click", () => {
+    Promise.all([refreshSourceSeparationRuntime(), refreshSourceSeparationModels(), refreshSourceSeparationGenerations()])
+      .then(() => showToast("Source separations refreshed"))
+      .catch((error) => showToast(error.message));
+  });
+}
 if (el.voiceWorkReferenceFiles) {
   el.voiceWorkReferenceFiles.addEventListener("change", () => {
     const count = (el.voiceWorkReferenceFiles.files || []).length;
@@ -7821,7 +8316,18 @@ if (el.voiceWorkSampleFile) {
 }
 if (el.voiceWorkSampleMode) {
   el.voiceWorkSampleMode.addEventListener("change", () => {
+    renderVoiceWorkInputModes();
     showToast(`Conversion mode set to ${el.voiceWorkSampleMode.value === "speaking" ? "speaking" : "singing"}`);
+  });
+}
+if (el.voiceWorkF0Condition) {
+  el.voiceWorkF0Condition.addEventListener("change", () => {
+    showToast(`F0 conditioning ${el.voiceWorkF0Condition.checked ? "enabled" : "disabled"}`);
+  });
+}
+if (el.voiceWorkAutoF0Adjust) {
+  el.voiceWorkAutoF0Adjust.addEventListener("change", () => {
+    showToast(`Auto F0 adjust ${el.voiceWorkAutoF0Adjust.checked ? "enabled" : "disabled"}`);
   });
 }
 if (el.voiceWorkSampleVoiceSelect) {

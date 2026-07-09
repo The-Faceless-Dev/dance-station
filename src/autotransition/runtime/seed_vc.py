@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import os
+import json
 import shutil
 import signal
 import subprocess
 import sys
 import time
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -379,6 +382,9 @@ def runtime_status(config: RuntimeConfig = RuntimeConfig()) -> SeedVcRuntimeStat
     running = api_health(config)
     managed_alive = managed_runtime_alive(config) if install_dir.exists() else False
     progress = startup_progress_snapshot()
+    contract_ok, contract_message = (True, "Seed-VC runtime contract looks correct.")
+    if installed and (running or managed_alive):
+        contract_ok, contract_message = runtime_contract_ready(config, mode="singing")
     if running:
         message = "Seed-VC runtime is reachable."
     elif managed_alive and progress["phase"] != "idle":
@@ -391,6 +397,8 @@ def runtime_status(config: RuntimeConfig = RuntimeConfig()) -> SeedVcRuntimeStat
         message = "Seed-VC runtime dependencies are incomplete. Run Install Runtime again."
     else:
         message = "Seed-VC runtime is installed but not running."
+    if installed and not contract_ok:
+        message = f"{message} Contract mismatch: {contract_message}"
     if _has_nvidia_tooling():
         if deps_ready:
             message = f"{message} CUDA ready."
@@ -417,6 +425,156 @@ def api_health(config: RuntimeConfig = RuntimeConfig()) -> bool:
         return response.status_code < 500
     except Exception:
         return False
+
+
+def runtime_contract_ready(
+    config: RuntimeConfig = RuntimeConfig(),
+    *,
+    mode: str = "singing",
+) -> tuple[bool, str]:
+    python_exe = _runtime_python_executable(config)
+    if not python_exe.exists():
+        return False, "Seed-VC runtime Python is missing."
+    probe_script = """
+import inspect
+import json
+import sys
+
+from seed_vc_wrapper import SeedVCWrapper
+
+signature = inspect.signature(SeedVCWrapper.convert_voice)
+print(json.dumps({"parameters": list(signature.parameters.keys())}))
+"""
+    completed = subprocess.run(
+        [str(python_exe), "-c", probe_script],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        cwd=runtime_install_dir(config),
+        env=_runtime_env(),
+        timeout=120,
+    )
+    if completed.returncode != 0:
+        stderr = completed.stderr.strip() or completed.stdout.strip() or "Seed-VC contract probe failed."
+        return False, stderr
+    try:
+        payload = json.loads((completed.stdout.strip().splitlines() or ["{}"])[-1])
+    except Exception:
+        return False, completed.stdout.strip() or "Seed-VC contract probe returned invalid output."
+    parameters = [str(item) for item in payload.get("parameters") or []]
+    if mode == "singing":
+        required = ["source", "target", "diffusion_steps", "length_adjust", "inference_cfg_rate", "f0_condition", "auto_f0_adjust", "pitch_shift"]
+    else:
+        required = ["source", "target", "diffusion_steps", "length_adjust", "inference_cfg_rate"]
+    missing = [name for name in required if name not in parameters]
+    if missing:
+        return False, f"Seed-VC voice_conversion signature is missing expected parameters: {', '.join(missing)}"
+    return True, "Seed-VC runtime contract looks correct."
+
+
+def run_voice_conversion(
+    *,
+    source_path: Path,
+    reference_path: Path,
+    mode: str,
+    diffusion_steps: int,
+    length_adjust: float,
+    inference_cfg_rate: float,
+    f0_condition: bool = True,
+    auto_f0_adjust: bool = True,
+    pitch_shift: int = 0,
+    config: RuntimeConfig = RuntimeConfig(),
+) -> dict[str, Any]:
+    if mode not in {"speaking", "singing"}:
+        mode = "singing"
+    python_exe = _runtime_python_executable(config)
+    if not python_exe.exists():
+        raise RuntimeError("Seed-VC runtime dependencies are not installed.")
+    runtime_dir = runtime_install_dir(config)
+    payload = {
+        "runtime_dir": str(runtime_dir),
+        "source_path": str(source_path),
+        "reference_path": str(reference_path),
+        "mode": mode,
+        "diffusion_steps": int(diffusion_steps),
+        "length_adjust": float(length_adjust),
+        "inference_cfg_rate": float(inference_cfg_rate),
+        "f0_condition": bool(f0_condition),
+        "auto_f0_adjust": bool(auto_f0_adjust),
+        "pitch_shift": int(pitch_shift),
+    }
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+        json.dump(payload, handle)
+        temp_path = Path(handle.name)
+    try:
+        script = """
+import json
+import sys
+import tempfile
+from pathlib import Path
+
+import torch
+from pydub import AudioSegment
+
+from seed_vc_wrapper import SeedVCWrapper
+
+payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+wrapper = SeedVCWrapper()
+gen = wrapper.convert_voice(
+    source=payload["source_path"],
+    target=payload["reference_path"],
+    diffusion_steps=payload["diffusion_steps"],
+    length_adjust=payload["length_adjust"],
+    inference_cfg_rate=payload["inference_cfg_rate"],
+    f0_condition=payload["f0_condition"],
+    auto_f0_adjust=payload["auto_f0_adjust"],
+    pitch_shift=payload["pitch_shift"],
+    stream_output=False,
+)
+try:
+    while True:
+        next(gen)
+except StopIteration as stop:
+    full_audio = stop.value
+
+if full_audio is None:
+    raise RuntimeError("Seed-VC runtime returned no audio.")
+
+output_dir = Path(tempfile.mkdtemp(prefix="seed-vc-output-"))
+output_path = output_dir / "voice_conversion.wav"
+audio = (full_audio * 32768.0).astype("int16")
+sr = wrapper.sr_f0 if payload["f0_condition"] else wrapper.sr
+AudioSegment(
+    audio.tobytes(),
+    frame_rate=sr,
+    sample_width=audio.dtype.itemsize,
+    channels=1,
+).export(output_path, format="wav")
+print(json.dumps({"result": str(output_path)}, default=str))
+"""
+        completed = subprocess.run(
+            [str(python_exe), "-c", script, str(temp_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            cwd=runtime_dir,
+            env={**_runtime_env(), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+        if completed.returncode != 0:
+            stderr = completed.stderr.strip() or completed.stdout.strip() or "Seed-VC runtime conversion failed."
+            raise RuntimeError(stderr)
+        output_lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        output = output_lines[-1] if output_lines else ""
+        if not output:
+            raise RuntimeError("Seed-VC runtime returned no output.")
+        payload_result = json.loads(output)
+        return {"result": payload_result.get("result")}
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def managed_runtime_alive(config: RuntimeConfig = RuntimeConfig()) -> bool:
@@ -545,12 +703,13 @@ def stop_runtime(config: RuntimeConfig = RuntimeConfig(), *, timeout_seconds: fl
 
 def ensure_runtime_api(config: RuntimeConfig = RuntimeConfig()) -> SeedVcRuntimeStartResult:
     if api_health(config):
+        contract_ok, contract_message = runtime_contract_ready(config, mode="singing")
         return SeedVcRuntimeStartResult(
             started=False,
             already_running=True,
             api_url=api_base_url(config),
             pid=read_runtime_pid(),
-            message="Seed-VC runtime is already running.",
+            message="Seed-VC runtime is already running." if contract_ok else f"Seed-VC runtime contract mismatch: {contract_message}",
         )
     status = runtime_status(config)
     if not status.installed:
