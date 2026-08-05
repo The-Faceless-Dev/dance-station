@@ -22,14 +22,14 @@ image includes the pinned FLUX.2 checkout and uses these paths:
 AVATAR_IMAGE_COMMAND=python /app/tools/avatar/flux2_klein_generate.py --prompt-file {prompt_file} --negative-prompt-file {negative_prompt_file} --output {output} --seed {seed} --reference-image {reference_image}
 KLEIN_4B_MODEL_PATH=/models/flux2/flux-2-klein-4b.safetensors
 AE_MODEL_PATH=/models/flux2/ae.safetensors
-FLUX2_TEXT_ENCODER_PATH=/models/flux2/Qwen3-4B-FP8
+FLUX2_TEXT_ENCODER_PATH=/models/flux2/Qwen3-4B
 ```
 
 The wrapper reads the worker prompt files and writes exactly the requested
 image output. The negative prompt is retained in the attempt metadata even
 though the distilled Klein sampler does not expose a separate negative-prompt
 condition. `FLUX2_TEXT_ENCODER_PATH` is optional; when set, it points at a
-local Qwen3-4B-FP8 directory so the worker does not resolve the text encoder
+local Qwen3-4B directory so the worker does not resolve the text encoder
 from the network. The worker does not download weights inside a paid job.
 
 If using the public Diffusers-formatted VAE from the Klein model repository,
@@ -83,6 +83,12 @@ The upstream project currently documents Linux and at least 24 GB of NVIDIA
 VRAM as requirements. That matches the production RTX 3090 target; the local
 10 GB RTX 3080 can test the surrounding worker and pipeline contracts but
 cannot honestly run TRELLIS.2-4B inference.
+
+When creating the Salad container group, provide the existing read-only GHCR
+credential through the group's registry authentication settings. Salad pulls
+GHCR images into its own registry and requires those credentials even when a
+package is intended to be public. Do not put the credential in this image,
+the repository, or a paid-job payload.
 
 TokenRig can use the repository runner shipped with this project:
 
