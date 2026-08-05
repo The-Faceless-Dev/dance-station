@@ -226,6 +226,40 @@ src/autotransition/
   config.py     Central configuration defaults.
 ```
 
+## Avatar Worker
+
+The repository also contains a paid-job-safe avatar worker boundary:
+
+```powershell
+$env:AVATAR_IMAGE_COMMAND = 'python tools/avatar/flux2_klein_generate.py --prompt-file {prompt_file} --negative-prompt-file {negative_prompt_file} --output {output} --seed {seed} --reference-image {reference_image}'
+$env:AVATAR_MESH_COMMAND = 'python C:\models\stable-fast-3d\run.py {image} --pretrained-model C:\models\stable-fast-3d-checkpoint --output-dir {output_dir} --texture-resolution 2048 --remesh_option triangle --target_vertex_count 100000'
+$env:AVATAR_RIG_COMMAND = 'python tools/tokenrig/adaptive_runner.py --skintokens-repo C:\models\SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --profile auto --use-transfer'
+autotransition avatar-worker --host 0.0.0.0 --port 8090
+```
+
+For the TRELLIS.2 production worker, use the model-bearing image
+`ghcr.io/the-faceless-dev/faceless-avatar-worker:trellis2-provisioned-20260804-r8`.
+It includes the pinned FLUX.2 Klein image stage, Qwen text encoder, TRELLIS.2
+checkpoints, DINOv3/BiRefNet preprocessing models, and SkinTokens rigging
+checkpoints. The worker is configured to fail rather than download weights at
+runtime. Salad still requires GHCR registry authentication when creating the
+container group, even for a public GHCR image; provide a read-only GitHub
+Packages credential to the group configuration and never put it in the image
+or repository.
+
+The image emits structured per-job JSONL logs for model loading, inference,
+rigging, validation, retries, cleanup, and failures. The local RTX 3080 can
+load the full pipeline and complete FLUX.2 plus TRELLIS sparse/shape sampling,
+but full mesh export requires the production RTX 3090 memory target.
+
+The image command is deliberately an adapter boundary because FLUX.2 Klein
+inference entry points vary by pinned checkout. The worker adds the humanoid
+full-body/A-pose policy, persists job state under `AVATAR_ARTIFACT_ROOT`,
+validates the source image, skin, semantic `humanoid-v1` manifest, weights, and
+an actual deterministic glTF skinning deformation report, and retries a broken output up to three total
+attempts. A terminal failure is returned with `refundRequired=true`; payment
+keys remain in the launch server, which owns the idempotent refund.
+
 ## Current Limitations
 
 - Candidate scoring is only an interface placeholder.

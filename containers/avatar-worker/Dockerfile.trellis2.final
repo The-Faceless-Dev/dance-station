@@ -1,0 +1,8 @@
+# Final model-bearing image metadata layer. The large model files are
+# provisioned into the parent image separately so normal source builds never
+# copy multi-gigabyte checkpoints into a build context.
+FROM ghcr.io/the-faceless-dev/faceless-avatar-worker:trellis2-provisioned-20260804-r8
+
+USER avatar
+
+CMD ["autotransition", "avatar-worker", "--host", "0.0.0.0", "--port", "8090"]

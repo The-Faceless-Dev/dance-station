@@ -9,7 +9,7 @@ import typer
 
 from autotransition.audio import build_repaint_scaffold
 from autotransition.audio.ffmpeg import require_pydub, resolve_ffmpeg
-from autotransition.config import OutputConfig, RuntimeConfig, TransitionConfig
+from autotransition.config import AvatarConfig, OutputConfig, RuntimeConfig, TransitionConfig
 from autotransition.models import (
     ACE_STEP_MODELS,
     ModelInstallError,
@@ -33,12 +33,32 @@ from autotransition.runtime.ace_step import (
 )
 from autotransition.runtime.side_step import build_side_step_install_commands, run_side_step_install, side_step_status
 from autotransition.ui import create_app
+from autotransition.avatar.worker import create_avatar_worker_app
 
 app = typer.Typer(help="Build and manage AI music transition pipeline artifacts.")
 models_app = typer.Typer(help="List, inspect, and install ACE-Step models.")
 runtime_app = typer.Typer(help="Set up and inspect the ACE-Step runtime.")
 app.add_typer(models_app, name="models")
 app.add_typer(runtime_app, name="runtime")
+
+
+@app.command("avatar-worker")
+def avatar_worker(
+    host: str = typer.Option("0.0.0.0", help="Avatar worker bind host."),
+    port: int = typer.Option(8090, help="Avatar worker bind port."),
+    artifact_root: Path | None = typer.Option(None, help="Override the durable avatar job directory."),
+) -> None:
+    """Run the image-to-rig avatar worker API."""
+
+    config = AvatarConfig.from_env()
+    if artifact_root is not None:
+        config = AvatarConfig(**{**config.__dict__, "artifact_root": artifact_root})
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise typer.BadParameter("uvicorn is required to run the avatar worker.") from exc
+    typer.echo(f"Avatar worker: http://{host}:{port}")
+    uvicorn.run(create_avatar_worker_app(config), host=host, port=port)
 
 
 @app.command()
