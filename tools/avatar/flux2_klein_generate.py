@@ -32,6 +32,7 @@ def emit(event: str, **fields: object) -> None:
             },
             ensure_ascii=True,
             separators=(",", ":"),
+            default=str,
         ),
         flush=True,
     )

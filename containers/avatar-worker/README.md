@@ -1,9 +1,9 @@
 # Avatar Worker Container
 
 This image runs the image-to-mesh-to-rig worker on a CUDA GPU. It contains the
-pinned inference adapters and the provisioned model weights required by the
-production profile. Model files are kept out of git and added during private
-image provisioning.
+pinned inference adapters and the model weights required by the production
+profile. Model files are kept out of git and added through a named Docker build
+context during the release build.
 
 ## Adapter commands
 
@@ -53,11 +53,13 @@ rollback profile. TRELLIS.2 is pinned to the upstream commit recorded in its
 Dockerfile and its CUDA extensions are compiled into that image, not during a
 paid job.
 
-The official TRELLIS.2-4B checkpoint is provisioned into the image. The worker
-expects:
+The official TRELLIS.2-4B checkpoint and its conditioning models are copied
+into separate image layers during the release build. The worker expects:
 
 ```text
 /models/trellis2/pipeline.json
+/models/dinov3/config.json and model.safetensors
+/models/birefnet/config.json and model.safetensors
 /models/flux2/...
 /models/SkinTokens/...
 ```
@@ -78,6 +80,57 @@ Override `TRELLIS2_PIPELINE_TYPE`, `TRELLIS2_MAX_NUM_TOKENS`,
 profile. The generated mesh then goes through the same mesh validation,
 TokenRig rigging, deformation validation, retries, and refund signaling as the
 Stable Fast 3D path.
+
+Build the production image in two normal layered steps. The first step builds
+the runtime and compiled CUDA extensions; the second adds the five model
+families as separate layers. The named context should contain `flux2`,
+`trellis2`, `dinov3`, `birefnet`, and `SkinTokens` directories and should not
+include unused model families:
+
+```powershell
+docker buildx build --platform linux/amd64 `
+  --file containers/avatar-worker/Dockerfile.trellis2 `
+  --tag faceless-avatar-worker:trellis2-runtime `
+  --load .
+
+docker buildx build --platform linux/amd64 `
+  --build-context models='D:\path\to\avatar-models' `
+  --build-arg TRELLIS2_RUNTIME_IMAGE=faceless-avatar-worker:trellis2-runtime `
+  --file containers/avatar-worker/Dockerfile.trellis2.salad `
+  --tag ghcr.io/ORG/faceless-avatar-worker:TAG `
+  --push .
+```
+
+The release Dockerfile deliberately does not use a locally imported or
+flattened base image. Keep the runtime image and model context on the same
+build host until the registry push finishes.
+
+If the existing model-bearing r2 image is already present on the build host,
+and rebuilding the CUDA runtime would exceed available disk space, use the
+additive overlay only after verifying that the base contains Flux, TRELLIS.2,
+SkinTokens, and the Salad queue binary:
+
+```powershell
+docker buildx build --platform linux/amd64 `
+  --build-context models='D:\path\to\avatar-models' `
+  --file containers/avatar-worker/Dockerfile.trellis2.salad.overlay `
+  --tag ghcr.io/ORG/faceless-avatar-worker:TAG `
+  --push .
+```
+
+The overlay adds only DINOv3, BiRefNet, and the current worker source. It is
+not a replacement for the normal two-stage build when sufficient disk space
+is available.
+
+The release image includes the verified Salad HTTP job-queue worker and starts
+both processes under `faceless-avatar-entrypoint.sh`. The queue transport calls
+the avatar adapter at `POST /process` on port `8080`; the existing direct avatar
+API remains available under `/v1/avatar/jobs` for local development. Queue jobs
+download their reference image, run the durable image-to-mesh-to-rig pipeline,
+send schema-valid progress callbacks, upload the generated preview/metadata
+artifacts, and only then send the completion callback. Set
+`SALAD_QUEUE_WORKER_ENABLED=false` only when running the image for direct local
+HTTP testing without Salad transport.
 
 The upstream project currently documents Linux and at least 24 GB of NVIDIA
 VRAM as requirements. That matches the production RTX 3090 target; the local

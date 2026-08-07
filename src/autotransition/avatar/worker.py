@@ -16,7 +16,7 @@ from fastapi.responses import FileResponse
 
 from autotransition.avatar.adapters import CommandImageGenerator, CommandMeshGenerator, CommandRigGenerator
 from autotransition.avatar.artifacts import AvatarArtifactStore
-from autotransition.avatar.contracts import AvatarJob, AvatarRequest
+from autotransition.avatar.contracts import AvatarFailure, AvatarJob, AvatarRequest
 from autotransition.avatar.pipeline import AvatarPipeline
 from autotransition.avatar.observability import emit_worker_event
 from autotransition.avatar.resources import gpu_status
@@ -105,6 +105,14 @@ class AvatarWorker:
             self.pipeline.run(request, job_id=job_id, cancel_event=cancel_event)
         except Exception as exc:
             emit_worker_event("worker_job_thread_crashed", jobId=job_id, errorType=type(exc).__name__, error=str(exc), traceback=traceback.format_exc())
+            failure = self._mark_unhandled_failure(job_id, exc)
+            if failure is not None:
+                emit_worker_event(
+                    "worker_job_terminal_failure_recorded",
+                    jobId=job_id,
+                    failure=failure.to_dict(),
+                    refundRequired=True,
+                )
             raise
         finally:
             if temporary is not None:
@@ -113,6 +121,31 @@ class AvatarWorker:
                 self._cancel_events.pop(job_id, None)
                 self._futures.pop(job_id, None)
             emit_worker_event("worker_job_thread_finished", jobId=job_id, temporaryUploadCleaned=temporary is not None)
+
+    def _mark_unhandled_failure(self, job_id: str, exc: BaseException) -> AvatarFailure | None:
+        """Persist an unexpected model/runtime crash as a terminal paid-job failure."""
+
+        try:
+            job = self.pipeline.load_job(job_id)
+        except FileNotFoundError:
+            return None
+        if job.status in {"succeeded", "failed", "cancelled"}:
+            return job.failure
+        failure = AvatarFailure(
+            code="avatar_worker_crashed",
+            message=str(exc) or type(exc).__name__,
+            stage=job.stage or "validate_request",
+            retryable=False,
+            attempt=job.attempt,
+            details={"errorType": type(exc).__name__, "traceback": traceback.format_exc()},
+        )
+        job.status = "failed"
+        job.progress = 1.0
+        job.failure = failure
+        job.refund_required = True
+        job.refund_reason = "avatar_generation_failed"
+        self.store.write_job(job)
+        return failure
 
     @staticmethod
     async def _receive_upload(upload: UploadFile, *, max_bytes: int) -> Path:
@@ -194,6 +227,7 @@ def create_avatar_worker_app(config: AvatarConfig | None = None) -> FastAPI:
         return {"status": "ok"}
 
     @app.get("/health/ready")
+    @app.get("/ready")
     def ready() -> dict[str, Any]:
         missing = []
         if not config.image_command:

@@ -1,0 +1,86 @@
+# syntax=docker/dockerfile:1.7
+# Model-bearing release image for Salad. The runtime base must be built from
+# Dockerfile.trellis2 with the normal Docker builder; model directories are
+# supplied as a named build context so each family gets a stable layer.
+ARG TRELLIS2_RUNTIME_IMAGE=faceless-avatar-worker:trellis2-runtime
+ARG SALAD_WORKER_VERSION=v0.7.0
+ARG SALAD_WORKER_SHA256=074a329cf6462e77fc7b72100f59d8a690831456d9420186a834a8f30634c9e4
+FROM ${TRELLIS2_RUNTIME_IMAGE}
+
+ARG SALAD_WORKER_VERSION
+ARG SALAD_WORKER_SHA256
+
+LABEL org.opencontainers.image.source="https://github.com/The-Faceless-Dev/dance-station" \
+      org.opencontainers.image.title="Faceless Dancer Avatar Worker" \
+      org.opencontainers.image.description="Model-bearing Flux, TRELLIS.2, and SkinTokens avatar worker"
+
+USER root
+
+# Salad invokes the queue transport binary, which then delivers the shared
+# launch-server payload to /process. Keep its verified install identical to
+# the existing production workers.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://github.com/SaladTechnologies/salad-cloud-job-queue-worker/releases/download/${SALAD_WORKER_VERSION}/salad-http-job-queue-worker_x86_64.tar.gz" -o /tmp/salad-worker.tar.gz \
+    && echo "${SALAD_WORKER_SHA256}  /tmp/salad-worker.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/salad-worker.tar.gz -C /usr/local/bin \
+    && test -x /usr/local/bin/salad-http-job-queue-worker \
+    && rm -f /tmp/salad-worker.tar.gz
+
+# The source context is the contents of /models. Keep each model family in its
+# own layer so code/diagnostic changes do not invalidate all model payloads.
+# TRELLIS.2's pipeline.json references all five directories below; omitting
+# either conditioning model makes the image appear healthy until the first job
+# reaches TRELLIS model loading.
+COPY --from=models --chown=avatar:avatar /flux2 /models/flux2
+COPY --from=models --chown=avatar:avatar /trellis2 /models/trellis2
+COPY --from=models --chown=avatar:avatar /dinov3 /models/dinov3
+COPY --from=models --chown=avatar:avatar /birefnet /models/birefnet
+COPY --from=models --chown=avatar:avatar /SkinTokens /models/SkinTokens
+COPY containers/avatar-worker/faceless-avatar-entrypoint.sh /app/faceless-avatar-entrypoint.sh
+RUN chmod 0755 /app/faceless-avatar-entrypoint.sh \
+    && test -f /models/trellis2/pipeline.json \
+    && test -f /models/dinov3/config.json \
+    && test -f /models/dinov3/model.safetensors \
+    && test -f /models/birefnet/config.json \
+    && test -f /models/birefnet/model.safetensors \
+    && for checkpoint in \
+      ss_dec_conv3d_16l8_fp16 \
+      ss_flow_img_dit_1_3B_64_bf16 \
+      shape_dec_next_dc_f16c32_fp16 \
+      slat_flow_img2shape_dit_1_3B_1024_bf16 \
+      tex_dec_next_dc_f16c32_fp16 \
+      slat_flow_imgshape2tex_dit_1_3B_1024_bf16; do \
+        test -f "/models/trellis2/ckpts/$checkpoint.json" \
+        && test -f "/models/trellis2/ckpts/$checkpoint.safetensors"; \
+      done
+
+ENV PYTHONPATH=/app/src:/opt/TRELLIS.2:/opt/flux2 \
+    AVATAR_GPU_REQUIRED=1 \
+    AVATAR_ARTIFACT_ROOT=/var/lib/faceless/avatar-jobs \
+    AVATAR_MAX_ATTEMPTS=3 \
+    AVATAR_REQUIRE_DEFORMATION_VALIDATOR=1 \
+    AVATAR_MESH_MODEL_REVISION=trellis.2-4b \
+    AVATAR_IMAGE_COMMAND="python /app/tools/avatar/flux2_klein_generate.py --prompt-file {prompt_file} --negative-prompt-file {negative_prompt_file} --output {output} --seed {seed} --reference-image {reference_image}" \
+    AVATAR_MESH_COMMAND="python /app/tools/avatar/trellis2_generate.py --image {image} --output-dir {output_dir} --output {output} --quality {quality}" \
+    AVATAR_RIG_COMMAND="python /app/tools/tokenrig/adaptive_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --profile auto --use-transfer" \
+    KLEIN_4B_MODEL_PATH=/models/flux2/flux-2-klein-4b.safetensors \
+    AE_MODEL_PATH=/models/flux2/ae.safetensors \
+    FLUX2_TEXT_ENCODER_PATH=/models/flux2/Qwen3-4B \
+    TRELLIS2_MODEL_PATH=/models/trellis2 \
+    TRELLIS2_ALLOW_MODEL_DOWNLOAD=0 \
+    TRELLIS2_PIPELINE_TYPE=1024 \
+    TORCH_CUDA_ARCH_LIST=8.6 \
+    OPENCV_IO_ENABLE_OPENEXR=1 \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    WORKER_HOST=0.0.0.0 \
+    WORKER_PORT=8080 \
+    SALAD_LOG_LEVEL=info \
+    SALAD_QUEUE_WORKER_LOG_LEVEL=info
+
+USER avatar
+WORKDIR /app
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=10s --start-period=120s --retries=3 CMD curl -fsS http://127.0.0.1:8080/health/ready >/dev/null || exit 1
+ENTRYPOINT ["/app/faceless-avatar-entrypoint.sh"]

@@ -237,15 +237,14 @@ $env:AVATAR_RIG_COMMAND = 'python tools/tokenrig/adaptive_runner.py --skintokens
 autotransition avatar-worker --host 0.0.0.0 --port 8090
 ```
 
-For the TRELLIS.2 production worker, use the model-bearing image
-`ghcr.io/the-faceless-dev/faceless-avatar-worker:trellis2-provisioned-20260804-r8`.
-It includes the pinned FLUX.2 Klein image stage, Qwen text encoder, TRELLIS.2
-checkpoints, DINOv3/BiRefNet preprocessing models, and SkinTokens rigging
-checkpoints. The worker is configured to fail rather than download weights at
-runtime. Salad still requires GHCR registry authentication when creating the
-container group, even for a public GHCR image; provide a read-only GitHub
-Packages credential to the group configuration and never put it in the image
-or repository.
+For the TRELLIS.2 production worker, use the standard layered image published
+from `containers/avatar-worker/Dockerfile.trellis2.salad`. The image includes
+the pinned FLUX.2 Klein image stage, Qwen text encoder, TRELLIS.2 checkpoints,
+and SkinTokens rigging checkpoints. The worker is configured to fail rather
+than download weights at runtime. Salad still requires GHCR registry
+authentication when creating the container group, even for a public GHCR
+image; provide a read-only GitHub Packages credential to the group
+configuration and never put it in the image or repository.
 
 The image emits structured per-job JSONL logs for model loading, inference,
 rigging, validation, retries, cleanup, and failures. The local RTX 3080 can

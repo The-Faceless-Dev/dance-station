@@ -15,7 +15,8 @@ from autotransition.avatar.contracts import AvatarArtifact, AvatarJob
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    # Use the RFC 3339 UTC form accepted by the launch-server callback schema.
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 class AvatarArtifactStore:
@@ -179,5 +180,7 @@ class AvatarArtifactStore:
     def _atomic_json(path: Path, value: Any) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
-        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        # External model diagnostics may contain Path/device-like values. They
+        # must never prevent a failed paid job from reaching a terminal state.
+        temporary.write_text(json.dumps(value, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
         os.replace(temporary, path)

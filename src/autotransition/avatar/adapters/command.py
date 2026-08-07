@@ -76,8 +76,8 @@ def run_adapter_command(
             details={
                 "stderr": exc.stderr[-4000:],
                 "stdout": exc.stdout[-4000:],
-                "stdoutLog": stdout_path,
-                "stderrLog": stderr_path,
+                "stdoutLog": str(stdout_path) if stdout_path is not None else None,
+                "stderrLog": str(stderr_path) if stderr_path is not None else None,
                 "command": command,
                 "returnCode": exc.returncode,
             },

@@ -376,7 +376,7 @@ class AvatarPipeline:
             "manifest": manifest_report.details,
             "deformation": deformation_report,
         }
-        (attempt_dir / "attempt.json").write_text(json.dumps(diagnostics, indent=2) + "\n", encoding="utf-8")
+        (attempt_dir / "attempt.json").write_text(json.dumps(diagnostics, indent=2, default=str) + "\n", encoding="utf-8")
         return {"image": source_image, "mesh": mesh, "rig": rig, "manifest": manifest}, diagnostics
 
     def _finalize(
@@ -581,7 +581,7 @@ def _parse_validator_command(command: str | None) -> tuple[str, ...] | None:
 def file_details(path: Path) -> dict[str, Any]:
     """Describe an artifact without loading large model files into memory twice."""
 
-    details: dict[str, Any] = {"path": path}
+    details: dict[str, Any] = {"path": str(path)}
     try:
         stat = path.stat()
         details.update({"exists": True, "sizeBytes": stat.st_size})

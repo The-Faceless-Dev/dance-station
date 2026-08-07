@@ -1,0 +1,62 @@
+# Disk-safe additive release for an existing model-bearing TRELLIS.2 image.
+# The base already contains the compiled runtime, Flux, TRELLIS.2, SkinTokens,
+# and Salad queue binary. This layer adds the conditioning models and current
+# worker source without rebuilding or duplicating the 75+ GB runtime layer.
+# syntax=docker/dockerfile:1.7
+
+ARG TRELLIS2_BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-avatar-worker:trellis2-salad-20260807-r2
+FROM ${TRELLIS2_BASE_IMAGE}
+
+USER root
+WORKDIR /app
+
+COPY src ./src
+COPY tools ./tools
+COPY containers/avatar-worker/faceless-avatar-entrypoint.sh /app/faceless-avatar-entrypoint.sh
+COPY containers/avatar-worker/faceless-avatar-startup-diagnostic.sh /app/faceless-avatar-startup-diagnostic.sh
+
+# r2 already contains Flux, TRELLIS.2, and SkinTokens. These two directories
+# were the missing pipeline dependencies identified by the live smoke run.
+COPY --from=models --chown=avatar:avatar /dinov3 /models/dinov3
+COPY --from=models --chown=avatar:avatar /birefnet /models/birefnet
+
+RUN chmod 0755 /app/faceless-avatar-entrypoint.sh /app/faceless-avatar-startup-diagnostic.sh \
+    && test -x /usr/local/bin/salad-http-job-queue-worker \
+    && test -f /models/flux2/flux-2-klein-4b.safetensors \
+    && test -f /models/flux2/ae.safetensors \
+    && test -d /models/flux2/Qwen3-4B \
+    && test -f /models/trellis2/pipeline.json \
+    && test -d /models/trellis2/ckpts \
+    && test -d /models/SkinTokens \
+    && test -f /models/dinov3/config.json \
+    && test -f /models/dinov3/model.safetensors \
+    && test -f /models/birefnet/config.json \
+    && test -f /models/birefnet/model.safetensors
+
+ENV PYTHONPATH=/app/src:/opt/TRELLIS.2:/opt/flux2 \
+    AVATAR_GPU_REQUIRED=1 \
+    AVATAR_ARTIFACT_ROOT=/var/lib/faceless/avatar-jobs \
+    AVATAR_MAX_ATTEMPTS=3 \
+    AVATAR_REQUIRE_DEFORMATION_VALIDATOR=1 \
+    AVATAR_MESH_MODEL_REVISION=trellis.2-4b \
+    AVATAR_IMAGE_COMMAND="python /app/tools/avatar/flux2_klein_generate.py --prompt-file {prompt_file} --negative-prompt-file {negative_prompt_file} --output {output} --seed {seed} --reference-image {reference_image}" \
+    AVATAR_MESH_COMMAND="python /app/tools/avatar/trellis2_generate.py --image {image} --output-dir {output_dir} --output {output} --quality {quality}" \
+    AVATAR_RIG_COMMAND="python /app/tools/tokenrig/adaptive_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --profile auto --use-transfer" \
+    KLEIN_4B_MODEL_PATH=/models/flux2/flux-2-klein-4b.safetensors \
+    AE_MODEL_PATH=/models/flux2/ae.safetensors \
+    FLUX2_TEXT_ENCODER_PATH=/models/flux2/Qwen3-4B \
+    TRELLIS2_MODEL_PATH=/models/trellis2 \
+    TRELLIS2_ALLOW_MODEL_DOWNLOAD=0 \
+    TRELLIS2_PIPELINE_TYPE=1024 \
+    TORCH_CUDA_ARCH_LIST=8.6 \
+    OPENCV_IO_ENABLE_OPENEXR=1 \
+    PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+    WORKER_HOST=0.0.0.0 \
+    WORKER_PORT=8080 \
+    SALAD_LOG_LEVEL=info \
+    SALAD_QUEUE_WORKER_LOG_LEVEL=info
+
+USER avatar
+EXPOSE 8080
+HEALTHCHECK --interval=15s --timeout=10s --start-period=120s --retries=3 CMD curl -fsS http://127.0.0.1:8080/health/ready >/dev/null || exit 1
+ENTRYPOINT ["/app/faceless-avatar-entrypoint.sh"]

@@ -5,11 +5,25 @@ import sys
 from pathlib import Path
 
 from autotransition.avatar.observability import AvatarEventLogger, use_event_logger
+from autotransition.avatar.artifacts import AvatarArtifactStore
 from autotransition.avatar.resources import run_command
 
 
 def read_events(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_diagnostics_serialize_runtime_values_without_masking_the_result(tmp_path: Path) -> None:
+    store = AvatarArtifactStore(tmp_path / "jobs")
+    output = store.finalize_json(
+        "job-serialization",
+        "diagnostics.json",
+        {"logPath": tmp_path / "adapter.stderr.log", "device": object()},
+    )
+
+    persisted = json.loads(output.read_text(encoding="utf-8"))
+    assert persisted["logPath"].endswith("adapter.stderr.log")
+    assert persisted["device"].startswith("<object object at")
 
 
 def test_adapter_output_is_streamed_to_events_and_complete_logs(tmp_path: Path) -> None:

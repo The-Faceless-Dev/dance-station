@@ -146,11 +146,57 @@ def resolve_setting(args: argparse.Namespace) -> tuple[str, int, int]:
     return pipeline_type, decimation_target, texture_size
 
 
+def _pipeline_model_references(pipeline_path: Path) -> list[str]:
+    payload = json.loads(pipeline_path.read_text(encoding="utf-8"))
+    references: list[str] = []
+
+    def visit(value: object, key: str = "") -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                visit(child_value, str(child_key))
+        elif isinstance(value, list):
+            for child_value in value:
+                visit(child_value, key)
+        elif isinstance(value, str) and (key in {"model_name", "models"} or value.startswith("ckpts/")):
+            references.append(value)
+
+    visit(payload)
+    return references
+
+
+def _model_reference_exists(path: Path) -> bool:
+    if path.is_dir() and path.name in {"dinov3", "birefnet"}:
+        return (path / "config.json").is_file() and (path / "model.safetensors").is_file()
+    if path.exists():
+        return True
+    # TRELLIS.2 stores its checkpoint prefixes as paired JSON metadata and
+    # safetensors files rather than one directory per checkpoint.
+    return path.with_suffix(".json").is_file() and path.with_suffix(".safetensors").is_file()
+
+
 def require_local_model(model_path: str, *, allow_download: bool) -> None:
     path = Path(model_path)
     if path.is_dir():
-        if not (path / "pipeline.json").is_file():
+        pipeline_file = path / "pipeline.json"
+        if not pipeline_file.is_file():
             raise RuntimeError(f"TRELLIS.2 model directory is missing pipeline.json: {path}")
+        missing: list[str] = []
+        for reference in _pipeline_model_references(pipeline_file):
+            reference_path = Path(reference)
+            if reference_path.parts[:2] == (reference_path.anchor, "models"):
+                # The official config uses /models/<family>. Map that shared
+                # container root to the parent of a local model-family path
+                # so the same preflight can run before building the image.
+                dependency = path.parent.joinpath(*reference_path.parts[2:])
+            else:
+                dependency = reference_path if reference_path.is_absolute() else path / reference
+            if not _model_reference_exists(dependency):
+                missing.append(str(dependency))
+        if missing:
+            raise RuntimeError(
+                "TRELLIS.2 model bundle is missing pipeline dependencies: "
+                + ", ".join(missing)
+            )
         return
     if not allow_download:
         raise RuntimeError(

@@ -3,13 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import struct
+import threading
 import zlib
 from pathlib import Path
+
+import pytest
 
 from autotransition.avatar.artifacts import AvatarArtifactStore
 from autotransition.avatar.contracts import AvatarRequest
 from autotransition.avatar.pipeline import AvatarPipeline
-from autotransition.avatar.worker import AvatarWorker
+from autotransition.avatar.worker import AvatarWorker, create_avatar_worker_app
 from autotransition.config import AvatarConfig
 
 
@@ -221,3 +224,40 @@ def test_avatar_worker_queues_and_persists_completion(tmp_path: Path) -> None:
         assert {item["name"] for item in persisted["artifacts"]} >= {"avatar.glb", "manifest.json", "diagnostics.json"}
     finally:
         worker.shutdown()
+
+
+def test_avatar_worker_marks_unhandled_crash_terminal_for_paid_job(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    write_png(source)
+    pipeline, _ = make_pipeline(tmp_path, rig_failures=0)
+    job = pipeline.create_job(AvatarRequest(description="a crash-safe humanoid", reference_image=source))
+
+    def crash(*_args, **_kwargs):
+        raise TypeError("Object of type PosixPath is not JSON serializable")
+
+    pipeline.run = crash  # type: ignore[method-assign]
+    worker = AvatarWorker(pipeline)
+    try:
+        with pytest.raises(TypeError, match="PosixPath"):
+            worker._run(AvatarRequest(description="a crash-safe humanoid", reference_image=source), job.id, threading.Event(), None)
+        persisted = pipeline.store.read_job(job.id)
+        assert persisted["status"] == "failed"
+        assert persisted["refundRequired"] is True
+        assert persisted["failureCode"] == "avatar_worker_crashed"
+    finally:
+        worker.shutdown()
+
+
+def test_avatar_worker_exposes_the_salad_readiness_probe_alias(tmp_path: Path) -> None:
+    config = AvatarConfig(
+        artifact_root=tmp_path / "jobs",
+        image_command="image",
+        mesh_command="mesh",
+        rig_command="rig",
+        gpu_required=False,
+    )
+    app = create_avatar_worker_app(config)
+
+    assert "/health/ready" in {route.path for route in app.routes}
+    assert "/ready" in {route.path for route in app.routes}
+    app.state.avatar_worker.shutdown()

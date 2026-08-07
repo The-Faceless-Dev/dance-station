@@ -41,3 +41,27 @@ def test_local_checkpoint_requires_pipeline_config(tmp_path: Path):
 
     (tmp_path / "pipeline.json").write_text("{}", encoding="utf-8")
     require_local_model(str(tmp_path), allow_download=False)
+
+
+def test_local_checkpoint_requires_conditioning_models(tmp_path: Path):
+    model_path = tmp_path / "trellis2"
+    model_path.mkdir()
+    (model_path / "pipeline.json").write_text(
+        '{"args":{"image_cond_model":{"args":{"model_name":"/models/dinov3"}},'
+        '"rembg_model":{"args":{"model_name":"/models/birefnet"}},'
+        '"models":{"decoder":"ckpts/decoder"}}}',
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="pipeline dependencies"):
+        require_local_model(str(model_path), allow_download=False)
+
+    (model_path / "ckpts").mkdir()
+    (tmp_path / "dinov3").mkdir()
+    (tmp_path / "dinov3" / "config.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "dinov3" / "model.safetensors").write_bytes(b"weights")
+    (tmp_path / "birefnet").mkdir()
+    (tmp_path / "birefnet" / "config.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "birefnet" / "model.safetensors").write_bytes(b"weights")
+    (model_path / "ckpts" / "decoder.json").write_text("{}", encoding="utf-8")
+    (model_path / "ckpts" / "decoder.safetensors").write_bytes(b"weights")
+    require_local_model(str(model_path), allow_download=False)
