@@ -209,16 +209,35 @@ def validate_manifest(path: Path, glb: dict[str, Any]) -> ValidationReport:
     checks.append(_check(isinstance(bones, dict), "manifest_bones_missing", "manifest contains semantic bone mappings"))
     missing: list[str] = []
     invalid: list[str] = []
+    duplicate_roles: list[dict[str, Any]] = []
     if isinstance(bones, dict):
+        roles_by_bone: dict[str, list[str]] = {}
         for role in REQUIRED_BONES:
             value = bones.get(role)
             if not value:
                 missing.append(role)
             elif value not in names:
                 invalid.append(role)
-    checks.append(_check(not missing, "manifest_roles_missing", "manifest contains all required roles", missing=missing))
+            else:
+                roles_by_bone.setdefault(str(value), []).append(role)
+        duplicate_roles = [
+            {"bone": value, "roles": roles}
+            for value, roles in sorted(roles_by_bone.items())
+            if len(roles) > 1
+        ]
+    checks.append(_check(not missing, "manifest_roles_missing", "manifest required roles are present", missing=missing))
     checks.append(_check(not invalid, "manifest_roles_invalid", "manifest roles refer to GLB nodes", invalid=invalid))
-    return ValidationReport(all(check["ok"] for check in checks), tuple(checks), {"missing": missing, "invalid": invalid})
+    checks.append(_check(not duplicate_roles, "manifest_role_duplicates", "manifest required roles use unique GLB nodes", duplicates=duplicate_roles))
+    return ValidationReport(
+        all(check["ok"] for check in checks),
+        tuple(checks),
+        {
+            "missing": missing,
+            "invalid": invalid,
+            "duplicates": duplicate_roles,
+            "mappingDiagnostics": manifest.get("mappingDiagnostics") if isinstance(manifest, dict) else None,
+        },
+    )
 
 
 # The runtime validator intentionally uses only the glTF 2.0 data already in

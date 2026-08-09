@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import mimetypes
 import os
 import shutil
 import tempfile
@@ -138,6 +139,76 @@ class AvatarArtifactStore:
         destination = self.attempt_dir(job_id, attempt) / "failure.json"
         self._atomic_json(destination, failure)
         return destination
+
+    def preserve_failure_bundle(
+        self,
+        job_id: str,
+        attempt: int,
+        failure: Any,
+        history: list[Any],
+    ) -> list[AvatarArtifact]:
+        """Copy the small, useful part of a failed attempt into ``final``.
+
+        Validation failures used to delete the mesh and rig before the Salad
+        adapter had a chance to upload them. Keep only known diagnostic files;
+        model caches and arbitrary intermediate directories are intentionally
+        excluded so a failed paid job cannot consume unbounded disk space.
+        """
+
+        attempt_dir = self.attempt_dir(job_id, attempt)
+        candidates: list[tuple[str, Path]] = []
+        for source in sorted(attempt_dir.glob("source-image.*")):
+            candidates.append(("source-image", source))
+        known_files = (
+            ("mesh", attempt_dir / "mesh" / "mesh.glb"),
+            ("rig", attempt_dir / "avatar.glb"),
+            ("manifest", attempt_dir / "manifest.json"),
+            ("deformation-report", attempt_dir / "deformation-report.json"),
+            ("attempt", attempt_dir / "attempt.json"),
+            ("failure", attempt_dir / "failure.json"),
+        )
+        candidates.extend(known_files)
+        candidates.extend((f"log-{path.stem}", path) for path in sorted(attempt_dir.glob("*.stdout.log")))
+        candidates.extend((f"log-{path.stem}", path) for path in sorted(attempt_dir.glob("*.stderr.log")))
+
+        artifacts: list[AvatarArtifact] = []
+        preserved: list[dict[str, Any]] = []
+        seen: set[Path] = set()
+        for label, source in candidates:
+            source = source.resolve()
+            if source in seen or not source.is_file():
+                continue
+            seen.add(source)
+            suffix = source.suffix.lower()
+            destination_name = f"debug-attempt-{attempt}-{label}{suffix}"
+            destination = self.finalize_file(job_id, source, destination_name)
+            media_type = mimetypes.guess_type(destination.name)[0] or "application/octet-stream"
+            artifact = self.artifact(job_id, destination.name, media_type)
+            artifacts.append(artifact)
+            preserved.append(
+                {
+                    "name": artifact.name,
+                    "source": str(source),
+                    "sizeBytes": artifact.size_bytes,
+                    "sha256": artifact.sha256,
+                }
+            )
+
+        report_name = f"debug-attempt-{attempt}-failure-report.json"
+        self.finalize_json(
+            job_id,
+            report_name,
+            {
+                "schemaVersion": 1,
+                "attempt": attempt,
+                "failure": failure,
+                "history": history,
+                "preservedFiles": preserved,
+                "createdAt": utc_now(),
+            },
+        )
+        artifacts.append(self.artifact(job_id, report_name, "application/json"))
+        return artifacts
 
     def remove_attempt_outputs(self, job_id: str, attempt: int) -> None:
         path = self.attempt_dir(job_id, attempt)

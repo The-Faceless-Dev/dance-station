@@ -20,7 +20,8 @@ ENV PYTHONUNBUFFERED=1 \
     AVATAR_MESH_MODEL_REVISION=trellis.2-4b \
     AVATAR_IMAGE_COMMAND="python /app/tools/avatar/flux2_klein_generate.py --prompt-file {prompt_file} --negative-prompt-file {negative_prompt_file} --output {output} --seed {seed} --reference-image {reference_image}" \
     AVATAR_MESH_COMMAND="python /app/tools/avatar/trellis2_generate.py --image {image} --output-dir {output_dir} --output {output} --quality {quality}" \
-    AVATAR_RIG_COMMAND="python /app/tools/tokenrig/adaptive_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --profile auto --use-transfer" \
+    AVATAR_RIG_COMMAND="python /app/tools/avatar/rig_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --front-yaw-degrees 0 --profile auto --use-transfer" \
+    AVATAR_RESKIN_COMMAND="python /app/tools/avatar/reskin_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --profile {profile} --manifest-output {manifest_output} --profile-mode auto --use-transfer" \
     TRELLIS2_MODEL_PATH=/models/trellis2 \
     KLEIN_4B_MODEL_PATH=/models/flux2/flux-2-klein-4b.safetensors \
     AE_MODEL_PATH=/models/flux2/ae.safetensors \
@@ -39,6 +40,10 @@ RUN apt-get update \
         ffmpeg \
         git \
         libjpeg-dev \
+        libgl1 \
+        libsm6 \
+        libxext6 \
+        libxrender1 \
         ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
@@ -66,6 +71,7 @@ RUN python -m pip install --no-cache-dir --no-deps . \
         "kornia>=0.8.0" \
         "timm>=1.0.0" \
         "transformers>=4.57.0" \
+        "diffusers>=0.35.0" \
         "python-box" \
         "omegaconf" \
         "lightning" \
@@ -103,6 +109,9 @@ RUN git clone https://github.com/black-forest-labs/flux2.git /opt/flux2 \
 ARG SKINTOKENS_COMMIT
 RUN git clone https://github.com/VAST-AI-Research/SkinTokens.git /opt/SkinTokens \
     && git -C /opt/SkinTokens checkout --detach "${SKINTOKENS_COMMIT}" \
+    && python -c "import diffusers; print('SkinTokens dependency check: diffusers=' + diffusers.__version__)" \
+    && python -m pip install --no-cache-dir --force-reinstall "numpy==1.26.4" \
+    && python -c "import numpy, bpy; print('TokenRig runtime check: numpy=' + numpy.__version__ + ' bpy=' + bpy.app.version_string)" \
     && rm -rf /opt/SkinTokens/.git
 
 RUN useradd --create-home --uid 10001 avatar \

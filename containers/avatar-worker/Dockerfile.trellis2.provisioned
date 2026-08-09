@@ -6,6 +6,13 @@ ARG SKINTOKENS_COMMIT=273b691d35989d71cd17ff2895fdc735097b92d1
 
 USER root
 
+WORKDIR /app
+COPY src ./src
+COPY tools ./tools
+COPY pyproject.toml README.md ./
+COPY containers/avatar-worker/faceless-avatar-entrypoint.sh /app/faceless-avatar-entrypoint.sh
+RUN chmod 0755 /app/faceless-avatar-entrypoint.sh
+
 # SkinTokens imports OpenCV during rigging; keep the runtime image headless
 # while providing the shared libraries required by cv2.
 RUN apt-get update \
@@ -20,7 +27,8 @@ RUN git clone https://github.com/VAST-AI-Research/SkinTokens.git /opt/SkinTokens
 ENV AVATAR_GPU_REQUIRED=1 \
     AVATAR_IMAGE_COMMAND="python /app/tools/avatar/flux2_klein_generate.py --prompt-file {prompt_file} --negative-prompt-file {negative_prompt_file} --output {output} --seed {seed} --reference-image {reference_image}" \
     AVATAR_MESH_COMMAND="python /app/tools/avatar/trellis2_generate.py --image {image} --output-dir {output_dir} --output {output} --quality {quality}" \
-    AVATAR_RIG_COMMAND="python /app/tools/tokenrig/adaptive_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --profile auto --use-transfer" \
+    AVATAR_RIG_COMMAND="python /app/tools/avatar/rig_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --front-yaw-degrees 0 --profile auto --use-transfer" \
+    AVATAR_RESKIN_COMMAND="python /app/tools/avatar/reskin_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --profile {profile} --manifest-output {manifest_output} --profile-mode auto --use-transfer" \
     KLEIN_4B_MODEL_PATH=/models/flux2/flux-2-klein-4b.safetensors \
     AE_MODEL_PATH=/models/flux2/ae.safetensors \
     FLUX2_TEXT_ENCODER_PATH=/models/flux2/Qwen3-4B \

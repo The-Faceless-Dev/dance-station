@@ -21,7 +21,10 @@ export PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True'
 
 export AVATAR_IMAGE_COMMAND='python /app/tools/avatar/flux2_klein_generate.py --prompt-file {prompt_file} --negative-prompt-file {negative_prompt_file} --output {output} --seed {seed} --reference-image {reference_image}'
 export AVATAR_MESH_COMMAND='python /app/tools/avatar/trellis2_generate.py --image {image} --output-dir {output_dir} --output {output} --quality {quality}'
-export AVATAR_RIG_COMMAND='python /app/tools/tokenrig/adaptive_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --profile auto --use-transfer'
+export AVATAR_RIG_COMMAND='python /app/tools/avatar/rig_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --front-yaw-degrees 0 --profile auto --use-transfer'
+export AVATAR_RESKIN_COMMAND='python /app/tools/avatar/reskin_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --profile {profile} --manifest-output {manifest_output} --profile-mode auto --use-transfer'
+
+python -c 'import bpy, numpy; print("TokenRig runtime check: numpy=" + numpy.__version__ + " bpy=" + bpy.app.version_string, flush=True)'
 
 SALAD_PID=""
 WORKER_PID=""

@@ -22,12 +22,21 @@ services:
         --output {output}
         --quality {quality}
       AVATAR_RIG_COMMAND: >-
-        python /app/tools/tokenrig/adaptive_runner.py
+        python /app/tools/avatar/rig_runner.py
         --skintokens-repo /models/SkinTokens
         --input {input}
         --output {output}
         --manifest-output {manifest_output}
         --profile auto
+        --use-transfer
+      AVATAR_RESKIN_COMMAND: >-
+        python /app/tools/avatar/reskin_runner.py
+        --skintokens-repo /models/SkinTokens
+        --input {input}
+        --output {output}
+        --profile {profile}
+        --manifest-output {manifest_output}
+        --profile-mode auto
         --use-transfer
       AVATAR_MESH_MODEL_REVISION: ${AVATAR_MESH_MODEL_REVISION:-trellis.2-4b}
       KLEIN_4B_MODEL_PATH: /models/flux2/flux-2-klein-4b.safetensors

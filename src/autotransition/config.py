@@ -98,6 +98,7 @@ class AvatarConfig:
     artifact_root: Path = Path("data/avatar-jobs")
     max_attempts: int = 3
     max_description_characters: int = 800
+    max_prompt_characters: int = 4000
     job_timeout_seconds: float = 1800.0
     image_timeout_seconds: float = 600.0
     mesh_timeout_seconds: float = 900.0
@@ -111,7 +112,7 @@ class AvatarConfig:
     # production profile. Unit tests can explicitly disable it when using
     # intentionally minimal fake GLBs.
     require_deformation_validator: bool = True
-    prompt_policy_version: str = "humanoid-source-v1"
+    prompt_policy_version: str = "bipedal-source-v1"
     image_model_revision: str = "flux.2-klein-4b"
     mesh_model_revision: str = "stable-fast-3d-configured"
     rig_model_revision: str = "skintokens-tokenrig-configured"
@@ -121,6 +122,7 @@ class AvatarConfig:
     image_command: str | None = None
     mesh_command: str | None = None
     rig_command: str | None = None
+    reskin_command: str | None = None
     deformation_validator_command: str | None = None
     keep_debug_artifacts: bool = False
 
@@ -140,6 +142,7 @@ class AvatarConfig:
             artifact_root=Path(os.getenv("AVATAR_ARTIFACT_ROOT", "data/avatar-jobs")),
             max_attempts=min(3, max(1, integer("AVATAR_MAX_ATTEMPTS", 3))),
             max_description_characters=integer("AVATAR_MAX_DESCRIPTION_CHARACTERS", 800),
+            max_prompt_characters=integer("AVATAR_MAX_PROMPT_CHARACTERS", 4000),
             job_timeout_seconds=number("AVATAR_JOB_TIMEOUT_SECONDS", 1800.0),
             image_timeout_seconds=number("AVATAR_IMAGE_TIMEOUT_SECONDS", 600.0),
             mesh_timeout_seconds=number("AVATAR_MESH_TIMEOUT_SECONDS", 900.0),
@@ -150,7 +153,7 @@ class AvatarConfig:
             min_image_height=integer("AVATAR_MIN_IMAGE_HEIGHT", 256),
             gpu_required=os.getenv("AVATAR_GPU_REQUIRED", "1").lower() not in {"0", "false", "no"},
             require_deformation_validator=os.getenv("AVATAR_REQUIRE_DEFORMATION_VALIDATOR", "1").lower() in {"1", "true", "yes"},
-            prompt_policy_version=os.getenv("AVATAR_PROMPT_POLICY_VERSION", "humanoid-source-v1"),
+            prompt_policy_version=os.getenv("AVATAR_PROMPT_POLICY_VERSION", "bipedal-source-v1"),
             image_model_revision=os.getenv("AVATAR_IMAGE_MODEL_REVISION", "flux.2-klein-4b"),
             mesh_model_revision=os.getenv("AVATAR_MESH_MODEL_REVISION", "stable-fast-3d-configured"),
             rig_model_revision=os.getenv("AVATAR_RIG_MODEL_REVISION", "skintokens-tokenrig-configured"),
@@ -160,6 +163,7 @@ class AvatarConfig:
             image_command=os.getenv("AVATAR_IMAGE_COMMAND") or os.getenv("FLUX2_KLEIN_COMMAND"),
             mesh_command=os.getenv("AVATAR_MESH_COMMAND"),
             rig_command=os.getenv("AVATAR_RIG_COMMAND"),
+            reskin_command=os.getenv("AVATAR_RESKIN_COMMAND"),
             deformation_validator_command=os.getenv("AVATAR_DEFORMATION_VALIDATOR_COMMAND"),
             keep_debug_artifacts=os.getenv("AVATAR_KEEP_DEBUG_ARTIFACTS", "0").lower() in {"1", "true", "yes"},
         )

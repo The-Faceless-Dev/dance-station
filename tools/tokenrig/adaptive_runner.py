@@ -111,6 +111,14 @@ def main() -> None:
 
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is unavailable. TokenRig requires an NVIDIA CUDA device.")
+    try:
+        import bpy
+        import numpy
+    except Exception as exc:
+        raise SystemExit(f"TokenRig runtime import check failed: {type(exc).__name__}: {exc}") from exc
+    numpy_major = int(numpy.__version__.split(".", 1)[0])
+    if numpy_major >= 2:
+        raise SystemExit(f"TokenRig requires NumPy 1.x for Blender/SkinTokens compatibility; found {numpy.__version__}")
     total_vram_gib = torch.cuda.get_device_properties(0).total_memory / (1024**3)
     profile = detect_profile(args.profile, total_vram_gib)
     beams = args.num_beams if args.num_beams is not None else profile.beams
@@ -134,7 +142,8 @@ def main() -> None:
 
     print(
         f"[tokenrig] profile={profile.name} vram_gib={total_vram_gib:.2f} "
-        f"beams={beams} attention={attention} max_length=2048 inference_mode=true"
+        f"beams={beams} attention={attention} max_length=2048 inference_mode=true "
+        f"numpy={numpy.__version__} bpy={bpy.app.version_string}"
     )
     server_proc = demo.start_bpy_server()
     try:

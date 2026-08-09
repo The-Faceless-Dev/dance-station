@@ -122,6 +122,12 @@ The overlay adds only DINOv3, BiRefNet, and the current worker source. It is
 not a replacement for the normal two-stage build when sufficient disk space
 is available.
 
+For source-only changes such as canonical skeleton, TokenRig, or reskin
+updates, use `Dockerfile.trellis2.salad.source-overlay` against the current
+model-bearing image. It copies the current `src` and `tools` without touching
+the large model layers and verifies that the canonical/reskin entry points are
+present in the resulting image.
+
 The release image includes the verified Salad HTTP job-queue worker and starts
 both processes under `faceless-avatar-entrypoint.sh`. The queue transport calls
 the avatar adapter at `POST /process` on port `8080`; the existing direct avatar
@@ -146,8 +152,14 @@ the repository, or a paid-job payload.
 TokenRig can use the repository runner shipped with this project:
 
 ```text
-AVATAR_RIG_COMMAND=python /app/tools/tokenrig/adaptive_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --profile auto --use-transfer
+AVATAR_RIG_COMMAND=python /app/tools/avatar/rig_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --profile auto --use-transfer
+AVATAR_RESKIN_COMMAND=python /app/tools/avatar/reskin_runner.py --skintokens-repo /models/SkinTokens --input {input} --output {output} --profile {profile} --manifest-output {manifest_output} --profile-mode auto --use-transfer
 ```
+
+The reskin endpoint accepts an existing mesh and editable canonical profile,
+fits the `humanoid-v1` skeleton, runs SkinTokens with that skeleton, restores
+stable joint names, and keeps the source mesh, profile, skeleton, output GLB,
+manifest, and validation diagnostics together in the job artifact directory.
 
 On Windows development machines, `tools/avatar/tokenrig_wsl_bridge.py` can
 wrap the same Linux runtime while translating local drive paths to WSL paths.
@@ -179,6 +191,9 @@ container stdout, including:
 Salad may truncate a very long deployment log, so the mounted artifact volume
 is the authoritative complete diagnostic record. Search the deployment log by
 `jobId`, then inspect that job's `events.jsonl` and `attempts/` directory.
+For the first-pass result, read `final/failure-summary.json` or request
+`GET /v1/avatar/jobs/<job-id>/failure-summary`; it contains the terminal code,
+stage, missing/invalid roles, retry history, and retained artifact names.
 
 An optional pinned Blender/headless runtime can add renderer-specific checks.
 It must write JSON to `{output}` and return a nonzero exit code or
@@ -190,6 +205,11 @@ built-in check still runs first when `AVATAR_REQUIRE_DEFORMATION_VALIDATOR=1`.
 * One GPU job is admitted at a time.
 * Every model subprocess has a stage timeout and is terminated as a process tree.
 * CUDA caches are released after every attempt.
-* Intermediate mesh/rig outputs are deleted after a failed attempt unless debug retention is enabled.
+* Failed attempts retain a bounded `final/debug-attempt-*` bundle containing
+  the source image, mesh, rig, manifest, validation report, and logs; model
+  caches and unrelated intermediate files are still deleted.
+* The Salad adapter uploads that failure bundle before sending the explicit
+  launch-server failure callback, so rejected rigs remain downloadable for
+  inspection and refund processing.
 * `AVATAR_MAX_ATTEMPTS` is capped by the application at three total attempts.
 * A terminal failed job includes `refundRequired=true`; the launch server owns the payment keys and consumes that signal through its existing idempotent refund flow.

@@ -178,6 +178,28 @@ def test_avatar_refunds_after_validation_retry_budget_is_exhausted(tmp_path: Pat
     assert persisted["failure"]["code"] == "avatar_validation_exhausted"
 
 
+def test_avatar_failure_retains_mesh_rig_and_mapping_artifacts(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    write_png(source)
+    pipeline, _ = make_pipeline(tmp_path, rig_failures=99)
+    request = AvatarRequest(description="an inspectable robot", reference_image=source, max_attempts=1)
+    job = pipeline.create_job(request)
+
+    result = pipeline.run(request, job_id=job.id)
+
+    names = {artifact.name for artifact in result.artifacts}
+    assert result.status == "failed"
+    assert "debug-attempt-1-source-image.png" in names
+    assert "debug-attempt-1-mesh.glb" in names
+    assert "debug-attempt-1-rig.glb" in names
+    assert "debug-attempt-1-failure-report.json" in names
+    assert "failure-summary.json" in names
+    persisted = pipeline.store.read_job(job.id)
+    assert {artifact["name"] for artifact in persisted["artifacts"]} == names
+    assert persisted["failureSummary"]["failureCode"] == "avatar_validation_exhausted"
+    assert (pipeline.store.job_dir(job.id) / "final" / "debug-attempt-1-rig.glb").is_file()
+
+
 def test_avatar_worker_reconciles_interrupted_paid_job(tmp_path: Path) -> None:
     source = tmp_path / "source.png"
     write_png(source)
@@ -254,10 +276,12 @@ def test_avatar_worker_exposes_the_salad_readiness_probe_alias(tmp_path: Path) -
         image_command="image",
         mesh_command="mesh",
         rig_command="rig",
+        reskin_command="reskin",
         gpu_required=False,
     )
     app = create_avatar_worker_app(config)
 
     assert "/health/ready" in {route.path for route in app.routes}
     assert "/ready" in {route.path for route in app.routes}
+    assert "/v1/avatar/jobs/{job_id}/failure-summary" in {route.path for route in app.routes}
     app.state.avatar_worker.shutdown()

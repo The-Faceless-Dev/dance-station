@@ -14,7 +14,6 @@ from autotransition.avatar.adapters.base import AvatarAdapterError, ImageGenerat
 from autotransition.avatar.artifacts import AvatarArtifactStore, utc_now
 from autotransition.avatar.contracts import AvatarArtifact, AvatarFailure, AvatarJob, AvatarRequest, AvatarResult
 from autotransition.avatar.observability import AvatarEventLogger, current_event_logger, use_event_logger
-from autotransition.avatar.prompts import HUMANOID_NEGATIVE_PROMPT, compose_avatar_prompt, compose_retry_prompt
 from autotransition.avatar.resources import GpuLease, gpu_status, release_cuda_memory
 from autotransition.avatar.validation import (
     AvatarValidationError,
@@ -54,6 +53,7 @@ class AvatarPipeline:
     def create_job(self, request: AvatarRequest, *, job_id: str | None = None) -> AvatarJob:
         request.validate(
             max_description_characters=self.config.max_description_characters,
+            max_prompt_characters=self.config.max_prompt_characters,
             max_attempts=self.config.max_attempts,
         )
         resolved_id = job_id or uuid4().hex
@@ -99,6 +99,7 @@ class AvatarPipeline:
         job = self.load_job(job_id)
         request.validate(
             max_description_characters=self.config.max_description_characters,
+            max_prompt_characters=self.config.max_prompt_characters,
             max_attempts=self.config.max_attempts,
         )
         job.status = "running"
@@ -130,9 +131,10 @@ class AvatarPipeline:
             for attempt in range(1, request.max_attempts + 1):
                 self._check_cancel(cancel_event, job, attempt)
                 job.attempt = attempt
-                prompt = compose_avatar_prompt(request.description)
-                if failure_history:
-                    prompt = compose_retry_prompt(request.description, [failure.code for failure in failure_history])
+                prompt = (request.prompt or request.description).strip()
+                if failure_history and request.retry_prompts:
+                    retry_index = min(len(failure_history) - 1, len(request.retry_prompts) - 1)
+                    prompt = request.retry_prompts[retry_index]
                 if active_logger:
                     active_logger.emit(
                         "attempt_started",
@@ -149,6 +151,7 @@ class AvatarPipeline:
                         job,
                         attempt=attempt,
                         prompt=prompt,
+                        negative_prompt=request.negative_prompt,
                         cancel_event=cancel_event,
                     )
                     self._update(job, stage="finalizing", progress=0.98)
@@ -194,6 +197,7 @@ class AvatarPipeline:
                     failure_history.append(failure)
                     self._record_attempt(job, failure)
                     self.store.write_attempt_failure(job.id, attempt, failure.to_dict())
+                    self._preserve_failed_attempt(job, attempt, failure, failure_history)
                     self.store.remove_attempt_outputs(job.id, attempt)
                     release_cuda_memory()
                     if failure.retryable and attempt < request.max_attempts:
@@ -219,6 +223,7 @@ class AvatarPipeline:
                     failure_history.append(failure)
                     self._record_attempt(job, failure)
                     self.store.write_attempt_failure(job.id, attempt, failure.to_dict())
+                    self._preserve_failed_attempt(job, attempt, failure, failure_history)
                     self.store.remove_attempt_outputs(job.id, attempt)
                     release_cuda_memory()
                     if attempt < request.max_attempts:
@@ -247,6 +252,7 @@ class AvatarPipeline:
         *,
         attempt: int,
         prompt: str,
+        negative_prompt: str,
         cancel_event: threading.Event | None,
     ) -> tuple[dict[str, Path], dict[str, Any]]:
         attempt_dir = self.store.attempt_dir(job.id, attempt)
@@ -277,7 +283,7 @@ class AvatarPipeline:
             self._update(job, stage="image_generation", progress=0.08)
             self.image_generator.generate(
                 prompt=prompt,
-                negative_prompt=HUMANOID_NEGATIVE_PROMPT,
+                negative_prompt=negative_prompt,
                 output=source_image,
                 seed=(request.seed + attempt - 1) if request.seed is not None else None,
                 reference_image=request.reference_image,
@@ -357,7 +363,7 @@ class AvatarPipeline:
             )
         diagnostics = {
             "attempt": attempt,
-            "promptPolicyVersion": self.config.prompt_policy_version,
+            "promptPolicyVersion": request.prompt_policy_version or "external",
             "prompt": prompt,
             "seed": (request.seed + attempt - 1) if request.seed is not None else None,
             "models": {
@@ -419,6 +425,12 @@ class AvatarPipeline:
         job.status = "failed"
         job.progress = 1.0
         job.failure = failure
+        summary = self._build_failure_summary(job, failure, history)
+        self.store.finalize_json(job.id, "failure-summary.json", summary)
+        summary_artifact = self.store.artifact(job.id, "failure-summary.json", "application/json")
+        if summary_artifact.name not in {artifact.name for artifact in job.artifacts}:
+            job.artifacts.append(summary_artifact)
+        job.failure_summary = summary
         job.refund_required = True
         job.refund_reason = (
             "avatar_output_validation_failed_after_retries"
@@ -428,6 +440,7 @@ class AvatarPipeline:
         self._save(job)
         event_logger = current_event_logger()
         if event_logger:
+            event_logger.emit("failure_summary", **summary)
             event_logger.emit(
                 "job_failed_refund_required",
                 failure=failure.to_dict(),
@@ -438,10 +451,11 @@ class AvatarPipeline:
         return AvatarResult(
             status="failed",
             job_id=job.id,
+            artifacts=tuple(job.artifacts),
             failure=failure,
             refund_required=True,
             refund_reason=job.refund_reason,
-            diagnostics={"attempts": [item.to_dict() for item in history]},
+            diagnostics={"attempts": [item.to_dict() for item in history], "failureSummary": summary},
         )
 
     def _finish_cancelled(self, job: AvatarJob, failure: AvatarFailure, history: list[AvatarFailure]) -> AvatarResult:
@@ -462,6 +476,92 @@ class AvatarPipeline:
             refund_reason=job.refund_reason,
             diagnostics={"attempts": [item.to_dict() for item in history]},
         )
+
+    def _preserve_failed_attempt(
+        self,
+        job: AvatarJob,
+        attempt: int,
+        failure: AvatarFailure,
+        history: list[AvatarFailure],
+    ) -> None:
+        """Retain the mesh, rig, manifest, and logs before attempt cleanup."""
+
+        preserved = self.store.preserve_failure_bundle(
+            job.id,
+            attempt,
+            failure.to_dict(),
+            [item.to_dict() for item in history],
+        )
+        existing = {artifact.name for artifact in job.artifacts}
+        job.artifacts.extend(artifact for artifact in preserved if artifact.name not in existing)
+        self._save(job)
+        event_logger = current_event_logger()
+        if event_logger:
+            event_logger.emit(
+                "failure_artifacts_preserved",
+                attempt=attempt,
+                artifacts=preserved,
+            )
+
+    @staticmethod
+    def _build_failure_summary(
+        job: AvatarJob,
+        failure: AvatarFailure,
+        history: list[AvatarFailure],
+    ) -> dict[str, Any]:
+        highlights: dict[str, Any] = {
+            "missingRoles": [],
+            "invalidRoles": [],
+            "mapperVersion": None,
+            "centralPath": None,
+            "chosenArmHub": None,
+        }
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                for key in ("missing", "missingRequiredRoles"):
+                    items = value.get(key)
+                    if isinstance(items, list):
+                        highlights["missingRoles"] = sorted({*highlights["missingRoles"], *(str(item) for item in items)})
+                invalid = value.get("invalid")
+                if isinstance(invalid, list):
+                    highlights["invalidRoles"] = sorted({*highlights["invalidRoles"], *(str(item) for item in invalid)})
+                mapping = value.get("mappingDiagnostics")
+                if isinstance(mapping, dict):
+                    highlights["mapperVersion"] = mapping.get("mapperVersion")
+                    highlights["centralPath"] = mapping.get("centralPath")
+                    chosen_hub = mapping.get("chosenArmHub")
+                    if isinstance(chosen_hub, dict):
+                        highlights["chosenArmHub"] = chosen_hub.get("hub")
+                for nested_key in ("details", "failures"):
+                    nested = value.get(nested_key)
+                    if isinstance(nested, list):
+                        for item in nested:
+                            collect(item)
+                    else:
+                        collect(nested)
+            elif isinstance(value, list):
+                for item in value:
+                    collect(item)
+
+        collect(failure.to_dict())
+        for item in history:
+            collect(item.to_dict())
+        return {
+            "schemaVersion": 1,
+            "jobId": job.id,
+            "status": "failed",
+            "failureCode": failure.code,
+            "message": failure.message,
+            "stage": failure.stage,
+            "attempt": failure.attempt,
+            "retryable": failure.retryable,
+            "refundRequired": True,
+            "highlights": highlights,
+            "attempts": [item.to_dict() for item in history],
+            "retainedArtifactNames": [artifact.name for artifact in job.artifacts] + ["failure-summary.json"],
+            "createdAt": utc_now(),
+        }
 
     def _record_attempt(self, job: AvatarJob, failure: AvatarFailure) -> None:
         job.attempts.append(failure.to_dict())
@@ -507,6 +607,7 @@ class AvatarPipeline:
             attempts=payload.get("attempts", []),
             artifacts=list(artifacts),
             failure=failure,
+            failure_summary=payload.get("failure_summary") or payload.get("failureSummary"),
             refund_required=payload.get("refund_required", False),
             refund_reason=payload.get("refund_reason"),
             created_at=payload.get("created_at", ""),

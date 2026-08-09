@@ -234,6 +234,7 @@ The repository also contains a paid-job-safe avatar worker boundary:
 $env:AVATAR_IMAGE_COMMAND = 'python tools/avatar/flux2_klein_generate.py --prompt-file {prompt_file} --negative-prompt-file {negative_prompt_file} --output {output} --seed {seed} --reference-image {reference_image}'
 $env:AVATAR_MESH_COMMAND = 'python C:\models\stable-fast-3d\run.py {image} --pretrained-model C:\models\stable-fast-3d-checkpoint --output-dir {output_dir} --texture-resolution 2048 --remesh_option triangle --target_vertex_count 100000'
 $env:AVATAR_RIG_COMMAND = 'python tools/tokenrig/adaptive_runner.py --skintokens-repo C:\models\SkinTokens --input {input} --output {output} --manifest-output {manifest_output} --profile auto --use-transfer'
+$env:AVATAR_RESKIN_COMMAND = 'python tools/avatar/reskin_runner.py --skintokens-repo C:\models\SkinTokens --input {input} --output {output} --profile {profile} --manifest-output {manifest_output} --profile-mode auto --use-transfer'
 autotransition avatar-worker --host 0.0.0.0 --port 8090
 ```
 

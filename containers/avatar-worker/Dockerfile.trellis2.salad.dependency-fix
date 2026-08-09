@@ -1,0 +1,16 @@
+# Disk-safe dependency repair for a model-bearing Salad release.
+# The base image already contains the compiled runtime and all model layers.
+# Keep this overlay small so a missing Python dependency does not require
+# rebuilding or retransferring the 70+ GB model payload.
+ARG TRELLIS2_BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-avatar-worker:trellis2-salad-20260807-r5
+FROM ${TRELLIS2_BASE_IMAGE}
+
+USER root
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgl1 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir "diffusers>=0.35.0" \
+    && python -c "import bpy, diffusers; print('SkinTokens dependency check: bpy and diffusers=' + diffusers.__version__)"
+
+USER avatar

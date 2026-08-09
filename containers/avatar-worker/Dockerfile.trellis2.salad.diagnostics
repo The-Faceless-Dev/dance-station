@@ -1,37 +1,24 @@
-# Disk-safe additive release for an existing model-bearing TRELLIS.2 image.
-# The base already contains the compiled runtime, Flux, TRELLIS.2, SkinTokens,
-# and Salad queue binary. This layer adds the conditioning models and current
-# worker source without rebuilding or duplicating the 75+ GB runtime layer.
 # syntax=docker/dockerfile:1.7
 
-ARG TRELLIS2_BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-avatar-worker:trellis2-salad-20260807-r2
+# Disk-safe source and dependency overlay for the existing model-bearing Salad
+# image. Keep the large Flux, TRELLIS.2, conditioning, and SkinTokens layers in
+# the verified base image; this release only replaces the worker code and the
+# TokenRig-compatible dependency set.
+ARG TRELLIS2_BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-avatar-worker:trellis2-salad-20260808-r7
 FROM ${TRELLIS2_BASE_IMAGE}
 
 USER root
 WORKDIR /app
 
-COPY src ./src
-COPY tools ./tools
-COPY containers/avatar-worker/faceless-avatar-entrypoint.sh /app/faceless-avatar-entrypoint.sh
-COPY containers/avatar-worker/faceless-avatar-startup-diagnostic.sh /app/faceless-avatar-startup-diagnostic.sh
+COPY --chown=avatar:avatar src ./src
+COPY --chown=avatar:avatar tools ./tools
+COPY --chown=avatar:avatar containers/avatar-worker/faceless-avatar-entrypoint.sh /app/faceless-avatar-entrypoint.sh
+COPY --chown=avatar:avatar containers/avatar-worker/faceless-avatar-startup-diagnostic.sh /app/faceless-avatar-startup-diagnostic.sh
 
-# r2 already contains Flux, TRELLIS.2, and SkinTokens. These two directories
-# were the missing pipeline dependencies identified by the live smoke run.
-COPY --from=models --chown=avatar:avatar /dinov3 /models/dinov3
-COPY --from=models --chown=avatar:avatar /birefnet /models/birefnet
-
-RUN chmod 0755 /app/faceless-avatar-entrypoint.sh /app/faceless-avatar-startup-diagnostic.sh \
-    && test -x /usr/local/bin/salad-http-job-queue-worker \
-    && test -f /models/flux2/flux-2-klein-4b.safetensors \
-    && test -f /models/flux2/ae.safetensors \
-    && test -d /models/flux2/Qwen3-4B \
-    && test -f /models/trellis2/pipeline.json \
-    && test -d /models/trellis2/ckpts \
-    && test -d /models/SkinTokens \
-    && test -f /models/dinov3/config.json \
-    && test -f /models/dinov3/model.safetensors \
-    && test -f /models/birefnet/config.json \
-    && test -f /models/birefnet/model.safetensors
+# SkinTokens' Blender bindings were compiled against NumPy 1.x. The previous
+# model-bearing base has NumPy 2.x, which makes TokenRig fail before mapping.
+RUN python -m pip install --no-cache-dir --force-reinstall "numpy==1.26.4" \
+    && python -c "import numpy, bpy; print('TokenRig runtime check: numpy=' + numpy.__version__ + ' bpy=' + bpy.app.version_string)"
 
 ENV PYTHONPATH=/app/src:/opt/TRELLIS.2:/opt/flux2 \
     AVATAR_GPU_REQUIRED=1 \

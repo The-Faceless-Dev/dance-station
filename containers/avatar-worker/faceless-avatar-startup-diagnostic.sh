@@ -48,7 +48,10 @@ check_path "/models/birefnet/model.safetensors" "trellis_birefnet_weights"
 check_path "/models/SkinTokens" "skintokens_model"
 check_path "/app/tools/avatar/flux2_klein_generate.py" "flux_command_script"
 check_path "/app/tools/avatar/trellis2_generate.py" "trellis_command_script"
-check_path "/app/tools/tokenrig/adaptive_runner.py" "rig_command_script"
+check_path "/app/tools/avatar/reskin_runner.py" "reskin_command_script"
+check_path "/app/tools/avatar/rig_runner.py" "rig_command_script"
+check_path "/app/src/autotransition/avatar/canonical_skeleton.py" "canonical_skeleton_source"
+check_path "/app/src/autotransition/avatar/reskin_pipeline.py" "reskin_pipeline_source"
 check_path "/app/src/autotransition/avatar/worker.py" "worker_source"
 
 artifact_root="${AVATAR_ARTIFACT_ROOT:-/var/lib/faceless/avatar-jobs}"
@@ -89,7 +92,7 @@ from autotransition.config import AvatarConfig
 
 config = AvatarConfig.from_env()
 print(f"[avatar-startup] avatar_config gpu_required={config.gpu_required} max_attempts={config.max_attempts}")
-print(f"[avatar-startup] avatar_commands image={bool(config.image_command)} mesh={bool(config.mesh_command)} rig={bool(config.rig_command)}")
+print(f"[avatar-startup] avatar_commands image={bool(config.image_command)} mesh={bool(config.mesh_command)} rig={bool(config.rig_command)} reskin={bool(config.reskin_command)}")
 app = create_avatar_worker_app(config)
 print(f"[avatar-startup] app_constructed routes={len(app.routes)}")
 PY
