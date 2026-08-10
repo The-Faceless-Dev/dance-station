@@ -194,6 +194,12 @@ def test_artifact_roles_match_shared_callback_contract() -> None:
     assert salad_adapter._artifact_role("manifest.json") == "metadata"
 
 
+def test_artifact_mime_type_resolves_wildcard_media_types() -> None:
+    assert salad_adapter._artifact_mime_type("source-image.png", "image/*") == "image/png"
+    assert salad_adapter._artifact_mime_type("avatar.glb", "model/gltf-binary") == "model/gltf-binary"
+    assert salad_adapter._artifact_mime_type("manifest.json", None) == "application/json"
+
+
 def test_queue_paper_run_completes_pipeline_and_callback_delivery(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "reference.png"
     write_png(source)

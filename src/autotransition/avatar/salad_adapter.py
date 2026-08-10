@@ -235,6 +235,15 @@ def _artifact_role(file_name: str) -> str:
     return "metadata"
 
 
+def _artifact_mime_type(file_name: str, requested: str | None) -> str:
+    """Return a concrete upload MIME type for the launch-server callback."""
+
+    requested = str(requested or "").strip()
+    if requested and not requested.endswith("/*"):
+        return requested
+    return mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+
+
 def _failure_callback_url(complete_url: str) -> str:
     """Derive the launch-server failure callback from its complete callback."""
 
@@ -270,7 +279,7 @@ def _failure_message(job: dict[str, Any]) -> str:
 def _upload_artifact(url: str, token: str, path: Path, artifact: dict[str, Any]) -> str:
     body = path.read_bytes()
     file_name = Path(str(artifact.get("name") or path.name)).name
-    mime_type = str(artifact.get("media_type") or mimetypes.guess_type(file_name)[0] or "application/octet-stream")
+    mime_type = _artifact_mime_type(file_name, artifact.get("media_type"))
     request = UrlRequest(
         url,
         data=body,
