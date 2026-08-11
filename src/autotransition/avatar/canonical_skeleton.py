@@ -226,6 +226,139 @@ def _inverse_translation_matrix(position: tuple[float, float, float]) -> list[fl
     ]
 
 
+def _inverse_affine_matrix(matrix: list[list[float]]) -> list[list[float]]:
+    """Invert an affine node matrix while preserving its rotation and scale."""
+
+    linear = [[float(matrix[row][column]) for column in range(3)] for row in range(3)]
+    determinant = (
+        linear[0][0] * (linear[1][1] * linear[2][2] - linear[1][2] * linear[2][1])
+        - linear[0][1] * (linear[1][0] * linear[2][2] - linear[1][2] * linear[2][0])
+        + linear[0][2] * (linear[1][0] * linear[2][1] - linear[1][1] * linear[2][0])
+    )
+    if abs(determinant) <= 1e-9:
+        raise ValueError("canonical skeleton contains a non-invertible bone transform")
+    inverse_determinant = 1.0 / determinant
+    inverse_linear = [
+        [
+            (linear[1][1] * linear[2][2] - linear[1][2] * linear[2][1]) * inverse_determinant,
+            (linear[0][2] * linear[2][1] - linear[0][1] * linear[2][2]) * inverse_determinant,
+            (linear[0][1] * linear[1][2] - linear[0][2] * linear[1][1]) * inverse_determinant,
+        ],
+        [
+            (linear[1][2] * linear[2][0] - linear[1][0] * linear[2][2]) * inverse_determinant,
+            (linear[0][0] * linear[2][2] - linear[0][2] * linear[2][0]) * inverse_determinant,
+            (linear[0][2] * linear[1][0] - linear[0][0] * linear[1][2]) * inverse_determinant,
+        ],
+        [
+            (linear[1][0] * linear[2][1] - linear[1][1] * linear[2][0]) * inverse_determinant,
+            (linear[0][1] * linear[2][0] - linear[0][0] * linear[2][1]) * inverse_determinant,
+            (linear[0][0] * linear[1][1] - linear[0][1] * linear[1][0]) * inverse_determinant,
+        ],
+    ]
+    translation = [float(matrix[row][3]) for row in range(3)]
+    inverse_translation = [
+        -sum(inverse_linear[row][column] * translation[column] for column in range(3))
+        for row in range(3)
+    ]
+    return [
+        [*inverse_linear[0], inverse_translation[0]],
+        [*inverse_linear[1], inverse_translation[1]],
+        [*inverse_linear[2], inverse_translation[2]],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+
+
+def _column_major_matrix_values(matrix: list[list[float]]) -> list[float]:
+    return [float(matrix[row][column]) for column in range(4) for row in range(4)]
+
+
+def _set_node_local_position(node: dict[str, Any], position: list[float]) -> None:
+    # Canonical joints are bind-pose translations. Keeping a SkinTokens
+    # rotation/scale here changes the skeleton while the inverse binds are
+    # regenerated and produces stretched limbs during retargeting.
+    node.pop("matrix", None)
+    node["translation"] = [float(value) for value in position]
+    node.pop("rotation", None)
+    node.pop("scale", None)
+
+
+def _update_existing_canonical_skeleton(
+    document: GlbDocument,
+    profile: dict[str, Any],
+    indexes: dict[str, int],
+) -> GlbDocument:
+    """Apply a profile to a GLB that already contains the canonical rig.
+
+    Avatar reskin is intentionally repeatable: the output of one reskin is a
+    valid input to the next adjustment. Rebuilding a second skeleton would
+    create duplicate joints and invalidate the existing skin, so only the
+    canonical node transforms and matching inverse bind matrices are updated.
+    """
+
+    nodes = document.payload.get("nodes")
+    if not isinstance(nodes, list):
+        raise ValueError("existing canonical skeleton has no nodes")
+    joints = profile["joints"]
+    for name in CANONICAL_PARENTS:
+        parent = CANONICAL_PARENTS[name]
+        position = joints[name]["position"]
+        if parent is None:
+            local = position
+        else:
+            parent_position = joints[parent]["position"]
+            local = [position[index] - parent_position[index] for index in range(3)]
+        node = nodes[indexes[name]]
+        if not isinstance(node, dict):
+            raise ValueError(f"canonical skeleton node is invalid: {name}")
+        _set_node_local_position(node, local)
+
+    updated_document = GlbDocument(payload=document.payload, binary=document.binary)
+    world_matrices = _indexed_world_matrices(updated_document)
+    payload = updated_document.payload
+    skins = payload.get("skins")
+    accessors = payload.get("accessors")
+    views = payload.get("bufferViews")
+    if not isinstance(skins, list) or not isinstance(accessors, list) or not isinstance(views, list):
+        return updated_document
+
+    binary = bytearray(updated_document.binary)
+    for skin in skins:
+        if not isinstance(skin, dict) or not isinstance(skin.get("joints"), list):
+            continue
+        inverse_accessor_index = skin.get("inverseBindMatrices")
+        if not isinstance(inverse_accessor_index, int):
+            continue
+        if inverse_accessor_index < 0 or inverse_accessor_index >= len(accessors):
+            raise ValueError("canonical skeleton inverse bind accessor is out of range")
+        accessor = accessors[inverse_accessor_index]
+        if not isinstance(accessor, dict) or accessor.get("componentType") != 5126 or accessor.get("type") != "MAT4":
+            raise ValueError("canonical skeleton inverse bind accessor must contain float MAT4 values")
+        view_index = accessor.get("bufferView")
+        if not isinstance(view_index, int) or view_index < 0 or view_index >= len(views):
+            raise ValueError("canonical skeleton inverse bind buffer view is invalid")
+        view = views[view_index]
+        if not isinstance(view, dict):
+            raise ValueError("canonical skeleton inverse bind buffer view is invalid")
+        stride = int(view.get("byteStride", 64))
+        if stride < 64:
+            raise ValueError("canonical skeleton inverse bind stride is too small")
+        base_offset = int(view.get("byteOffset", 0)) + int(accessor.get("byteOffset", 0))
+        skin_joints = skin["joints"]
+        for joint_order, node_index in enumerate(skin_joints):
+            if not isinstance(node_index, int):
+                continue
+            if node_index not in indexes.values():
+                continue
+            if node_index < 0 or node_index >= len(nodes):
+                raise ValueError("canonical skeleton skin joint index is out of range")
+            offset = base_offset + joint_order * stride
+            if offset < 0 or offset + 64 > len(binary):
+                raise ValueError("canonical skeleton inverse bind matrix exceeds the GLB buffer")
+            inverse = _inverse_affine_matrix(world_matrices[node_index])
+            struct.pack_into("<16f", binary, offset, *_column_major_matrix_values(inverse))
+    return GlbDocument(payload=payload, binary=bytes(binary))
+
+
 def read_positions(document: GlbDocument) -> list[tuple[float, float, float]]:
     payload = document.payload
     meshes = payload.get("meshes")
@@ -257,6 +390,118 @@ def read_positions(document: GlbDocument) -> list[tuple[float, float, float]]:
         tuple(struct.unpack_from("<fff", document.binary, base_offset + index * stride))
         for index in range(count)
     ]
+
+
+_ACCESSOR_COMPONENT_FORMATS: dict[int, tuple[str, int]] = {
+    5120: ("b", 1),
+    5121: ("B", 1),
+    5122: ("h", 2),
+    5123: ("H", 2),
+    5125: ("I", 4),
+    5126: ("f", 4),
+}
+_ACCESSOR_COMPONENT_COUNTS = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT2": 4, "MAT3": 9, "MAT4": 16}
+
+
+def _read_accessor_values(document: GlbDocument, accessor_index: int) -> list[tuple[float, ...]]:
+    """Read the non-sparse accessors needed for skin influence diagnostics."""
+
+    payload = document.payload
+    accessors = payload.get("accessors")
+    views = payload.get("bufferViews")
+    if not isinstance(accessors, list) or not isinstance(views, list):
+        raise ValueError("GLB does not contain accessor metadata")
+    if not isinstance(accessor_index, int) or accessor_index < 0 or accessor_index >= len(accessors):
+        raise ValueError("GLB accessor index is invalid")
+    accessor = accessors[accessor_index]
+    if not isinstance(accessor, dict) or not isinstance(accessor.get("bufferView"), int):
+        raise ValueError("sparse or malformed GLB accessors are not supported")
+    view_index = accessor["bufferView"]
+    if view_index < 0 or view_index >= len(views) or not isinstance(views[view_index], dict):
+        raise ValueError("GLB accessor buffer view is invalid")
+    view = views[view_index]
+    component_type = accessor.get("componentType")
+    component_info = _ACCESSOR_COMPONENT_FORMATS.get(component_type)
+    component_count = _ACCESSOR_COMPONENT_COUNTS.get(accessor.get("type"))
+    if component_info is None or component_count is None:
+        raise ValueError("GLB accessor component type or shape is unsupported")
+    fmt, component_size = component_info
+    element_size = component_size * component_count
+    stride = int(view.get("byteStride", element_size))
+    if stride < element_size:
+        raise ValueError("GLB accessor byte stride is too small")
+    base_offset = int(view.get("byteOffset", 0)) + int(accessor.get("byteOffset", 0))
+    count = int(accessor.get("count", 0))
+    if count < 0 or base_offset + max(0, count - 1) * stride + element_size > len(document.binary):
+        raise ValueError("GLB accessor exceeds the binary buffer")
+    normalized = bool(accessor.get("normalized"))
+
+    def normalize(value: float) -> float:
+        if not normalized:
+            return value
+        if component_type == 5120:
+            return max(value / 127.0, -1.0)
+        if component_type == 5121:
+            return value / 255.0
+        if component_type == 5122:
+            return max(value / 32767.0, -1.0)
+        if component_type == 5123:
+            return value / 65535.0
+        if component_type == 5125:
+            return value / 4294967295.0
+        return value
+
+    values: list[tuple[float, ...]] = []
+    for index in range(count):
+        offset = base_offset + index * stride
+        values.append(tuple(normalize(float(value)) for value in struct.unpack_from("<" + fmt * component_count, document.binary, offset)))
+    return values
+
+
+def _weighted_joint_centroids(
+    document: GlbDocument,
+    skin: dict[str, Any],
+) -> tuple[dict[int, tuple[float, float, float]], dict[int, float]]:
+    """Find the geometry region primarily influenced by each skin joint."""
+
+    skin_joints = skin.get("joints")
+    meshes = document.payload.get("meshes")
+    if not isinstance(skin_joints, list) or not isinstance(meshes, list):
+        return {}, {}
+    sums: dict[int, list[float]] = {}
+    totals: dict[int, float] = {}
+    for mesh in meshes:
+        if not isinstance(mesh, dict):
+            continue
+        for primitive in mesh.get("primitives", []):
+            attributes = primitive.get("attributes", {}) if isinstance(primitive, dict) else {}
+            position_index = attributes.get("POSITION") if isinstance(attributes, dict) else None
+            joints_index = attributes.get("JOINTS_0") if isinstance(attributes, dict) else None
+            weights_index = attributes.get("WEIGHTS_0") if isinstance(attributes, dict) else None
+            if not all(isinstance(value, int) for value in (position_index, joints_index, weights_index)):
+                continue
+            positions = _read_accessor_values(document, position_index)
+            joint_values = _read_accessor_values(document, joints_index)
+            weight_values = _read_accessor_values(document, weights_index)
+            for position, joint_set, weight_set in zip(positions, joint_values, weight_values):
+                for ordinal_value, weight_value in zip(joint_set, weight_set):
+                    ordinal = int(round(ordinal_value))
+                    weight = max(0.0, float(weight_value))
+                    if weight <= 1e-5 or ordinal < 0 or ordinal >= len(skin_joints):
+                        continue
+                    node_index = skin_joints[ordinal]
+                    if not isinstance(node_index, int):
+                        continue
+                    total = totals.get(node_index, 0.0) + weight
+                    totals[node_index] = total
+                    current = sums.setdefault(node_index, [0.0, 0.0, 0.0])
+                    for axis in range(3):
+                        current[axis] += float(position[axis]) * weight
+    return {
+        node_index: tuple(value / totals[node_index] for value in sums[node_index])
+        for node_index in sums
+        if totals.get(node_index, 0.0) > 1e-5
+    }, totals
 
 
 def _bounds(points: Iterable[tuple[float, float, float]]) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
@@ -490,10 +735,38 @@ def write_skeleton_glb(mesh: Path, profile: dict[str, Any], output: Path) -> Pat
     nodes = payload.setdefault("nodes", [])
     if not isinstance(nodes, list):
         raise ValueError("GLB nodes must be an array")
-    existing_names = {node.get("name") for node in nodes if isinstance(node, dict)}
-    collisions = set(CANONICAL_PARENTS) & existing_names
-    if collisions:
-        raise ValueError(f"mesh already contains canonical skeleton names: {', '.join(sorted(collisions))}")
+    existing_indexes: dict[str, int] = {}
+    duplicate_names: set[str] = set()
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict) or not isinstance(node.get("name"), str):
+            continue
+        name = node["name"]
+        if name in existing_indexes:
+            duplicate_names.add(name)
+        else:
+            existing_indexes[name] = index
+    existing_canonical = set(CANONICAL_PARENTS) & set(existing_indexes)
+    if existing_canonical:
+        if duplicate_names & set(CANONICAL_PARENTS):
+            duplicates = ", ".join(sorted(duplicate_names & set(CANONICAL_PARENTS)))
+            raise ValueError(f"existing canonical skeleton has duplicate joint names: {duplicates}")
+        if existing_canonical != set(CANONICAL_PARENTS):
+            missing = ", ".join(sorted(set(CANONICAL_PARENTS) - existing_canonical))
+            raise ValueError(f"mesh has a partial canonical skeleton; missing: {missing}")
+        updated = _update_existing_canonical_skeleton(
+            document,
+            profile,
+            {name: existing_indexes[name] for name in CANONICAL_PARENTS},
+        )
+        updated_payload = updated.payload
+        extras = updated_payload.setdefault("extras", {})
+        extras["canonicalSkeleton"] = {
+            "id": CANONICAL_SKELETON_ID,
+            "profileVersion": CANONICAL_PROFILE_VERSION,
+            "requiredRoles": list(REQUIRED_CANONICAL_ROLES),
+        }
+        write_glb(output, GlbDocument(payload=updated_payload, binary=updated.binary))
+        return output
     joints = profile["joints"]
     indexes = {name: len(nodes) + index for index, name in enumerate(CANONICAL_PARENTS)}
     for name in CANONICAL_PARENTS:
@@ -594,12 +867,13 @@ def canonicalize_skinned_glb(
     profile: dict[str, Any],
     manifest_path: Path,
 ) -> Path:
-    """Rename SkinTokens' topology-preserved joints to canonical role names.
+    """Normalize SkinTokens output onto the submitted canonical profile.
 
-    SkinTokens preserves the supplied skeleton topology and positions but its
-    Blender export currently renames joints to ``bone_N``.  Match the output
-    joints against the fitted profile within the preserved parent/child graph,
-    then write stable names and a canonical manifest.
+    SkinTokens preserves the supplied skeleton topology but its Blender export
+    can return non-canonical rotations and can attach a symmetric lower-limb
+    chain to the opposite side.  Match the graph, use skin influence regions
+    to detect left/right swaps, rebuild the canonical hierarchy, and reset the
+    bind pose to the submitted profile before regenerating inverse binds.
     """
 
     errors = validate_profile(profile)
@@ -625,7 +899,8 @@ def canonicalize_skinned_glb(
             if isinstance(child, int) and child in joint_set:
                 parents[child] = parent_index
                 children[parent_index].append(child)
-    world = _indexed_world_matrices(GlbDocument(payload=payload, binary=document.binary))
+    source_document = GlbDocument(payload=payload, binary=document.binary)
+    world = _indexed_world_matrices(source_document)
     expected = {name: tuple(value["position"]) for name, value in profile["joints"].items()}
     root_candidates = [index for index in joint_set if index not in parents]
     if not root_candidates:
@@ -643,9 +918,101 @@ def canonicalize_skinned_glb(
         )
         mapping[role] = selected
         used.add(selected)
+
+    # The topology is normally correct, but SkinTokens can assign the two
+    # lower-leg chains to the opposite side.  Use actual skin influence
+    # centroids to choose the semantic side rather than trusting bone_N order.
+    centroids, influence_totals = _weighted_joint_centroids(source_document, skins[0])
+    influence_swaps: list[dict[str, Any]] = []
+    symmetric_pairs = (
+        ("leftShoulder", "rightShoulder"),
+        ("leftArm", "rightArm"),
+        ("leftForearm", "rightForearm"),
+        ("leftHand", "rightHand"),
+        ("leftUpperLeg", "rightUpperLeg"),
+        ("leftLowerLeg", "rightLowerLeg"),
+        ("leftFoot", "rightFoot"),
+        ("leftToe", "rightToe"),
+    )
+    for left_role, right_role in symmetric_pairs:
+        left_node = mapping[left_role]
+        right_node = mapping[right_role]
+        left_centroid = centroids.get(left_node)
+        right_centroid = centroids.get(right_node)
+        if left_centroid is None or right_centroid is None:
+            continue
+        left_expected_x = expected[left_role][0]
+        right_expected_x = expected[right_role][0]
+        current_cost = abs(left_centroid[0] - left_expected_x) + abs(right_centroid[0] - right_expected_x)
+        swapped_cost = abs(right_centroid[0] - left_expected_x) + abs(left_centroid[0] - right_expected_x)
+        if swapped_cost + 1e-4 < current_cost:
+            mapping[left_role], mapping[right_role] = right_node, left_node
+            influence_swaps.append({
+                "leftRole": left_role,
+                "rightRole": right_role,
+                "leftCentroid": list(left_centroid),
+                "rightCentroid": list(right_centroid),
+                "currentCost": current_cost,
+                "swappedCost": swapped_cost,
+            })
+
+    canonical_nodes = set(mapping.values())
+    if canonical_nodes != joint_set:
+        missing = joint_set - canonical_nodes
+        raise ValueError(f"SkinTokens output has unmapped skin joints: {sorted(missing)}")
+
+    # Preserve non-skeleton children such as a mesh node, then rebuild the
+    # canonical parent/child edges so a repaired left/right chain is coherent.
+    for node_index in canonical_nodes:
+        node = nodes[node_index]
+        if not isinstance(node, dict):
+            raise ValueError("SkinTokens output contains an invalid joint node")
+        external_children = [
+            child for child in node.get("children", [])
+            if isinstance(child, int) and child not in canonical_nodes
+        ]
+        if external_children:
+            node["children"] = external_children
+        else:
+            node.pop("children", None)
     for role, node_index in mapping.items():
         nodes[node_index]["name"] = role
-    write_glb(output_path, GlbDocument(payload=payload, binary=document.binary))
+    for role, parent_role in CANONICAL_PARENTS.items():
+        if parent_role is None:
+            continue
+        parent_node = nodes[mapping[parent_role]]
+        parent_node.setdefault("children", []).append(mapping[role])
+
+    normalized = _update_existing_canonical_skeleton(
+        source_document,
+        profile,
+        mapping,
+    )
+    normalized_payload = normalized.payload
+    extras = normalized_payload.setdefault("extras", {})
+    canonical_extras = extras.setdefault("canonicalSkeleton", {})
+    canonical_extras.update({
+        "id": CANONICAL_SKELETON_ID,
+        "profileVersion": CANONICAL_PROFILE_VERSION,
+        "requiredRoles": list(REQUIRED_CANONICAL_ROLES),
+        "influenceSwaps": influence_swaps,
+        "jointMapping": {role: mapping[role] for role in CANONICAL_PARENTS},
+        "influenceTotals": {str(index): total for index, total in influence_totals.items()},
+    })
+    final_document = GlbDocument(payload=normalized_payload, binary=normalized.binary)
+    final_world = _indexed_world_matrices(final_document)
+    position_errors = {
+        role: math.dist(_position(final_world[node_index]), expected[role])
+        for role, node_index in mapping.items()
+    }
+    max_position_error = max(position_errors.values(), default=0.0)
+    if max_position_error > 1e-4:
+        raise ValueError(
+            "canonical skeleton normalization produced displaced joints: "
+            + json.dumps({"maxError": max_position_error, "errors": position_errors}, sort_keys=True)
+        )
+    canonical_extras["maxProfilePositionError"] = max_position_error
+    write_glb(output_path, final_document)
     write_manifest(profile, manifest_path, model_file=output_path.name)
     return output_path
 

@@ -399,6 +399,10 @@ class AvatarPipeline:
             event_logger.emit("finalization_started", attempt=attempt, files=files)
         image_suffix = files["image"].suffix.lower() or ".png"
         self.store.finalize_file(job.id, files["image"], f"source-image{image_suffix}")
+        # Keep the unrigged mesh as the reskin source.  A later bone/profile
+        # adjustment must never send the already-rigged avatar back through
+        # SkinTokens, because that compounds the previous bind pose.
+        self.store.finalize_file(job.id, files["mesh"], "source-mesh.glb")
         self.store.finalize_file(job.id, files["rig"], "avatar.glb")
         self.store.finalize_file(job.id, files["manifest"], "manifest.json")
         self.store.finalize_json(
@@ -413,6 +417,7 @@ class AvatarPipeline:
             shutil.copy2(files["rig"], debug_dir / "avatar.glb")
         artifacts = [
             self.store.artifact(job.id, f"source-image{image_suffix}", "image/*"),
+            self.store.artifact(job.id, "source-mesh.glb", "model/gltf-binary"),
             self.store.artifact(job.id, "avatar.glb", "model/gltf-binary"),
             self.store.artifact(job.id, "manifest.json", "application/json"),
             self.store.artifact(job.id, "diagnostics.json", "application/json"),
