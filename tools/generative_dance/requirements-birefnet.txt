@@ -1,0 +1,7 @@
+# Optional runtime dependencies for tools/generative_dance/birefnet_video.py.
+# Install these in the dedicated Wan/matting worker image, not the base app.
+torch>=2.5
+torchvision>=0.20
+transformers>=4.45
+Pillow>=10
+opencv-python-headless>=4.10

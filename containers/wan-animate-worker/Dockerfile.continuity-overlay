@@ -1,0 +1,15 @@
+# The 2026-08-19 image is the verified complete Q6 worker, including the
+# transformer, companion encoders, BiRefNet, and pinned Wan source layers.
+ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260819-r1
+FROM ${BASE_IMAGE}
+
+USER root
+
+# Keep the large model layers immutable and replace only the application code
+# that implements the sequence/continuity contract.
+COPY src/autotransition/generative_dance /app/src/autotransition/generative_dance
+COPY tools/generative_dance /app/tools/generative_dance
+
+RUN chown -R wan:wan /app/src/autotransition/generative_dance /app/tools/generative_dance
+
+USER wan
