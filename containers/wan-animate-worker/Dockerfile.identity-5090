@@ -1,0 +1,20 @@
+# Identity-preserving overlay for the currently verified public Q6 worker.
+# The model, companion encoders, matting model, and runtime layers stay in the
+# existing image so Salad can reuse its cached blobs.
+ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260828-r1
+FROM ${BASE_IMAGE}
+
+USER root
+
+# RTX 5090 test profile. The request may override this value, but production
+# jobs use the stronger identity anchor unless they explicitly opt out.
+ENV GENERATIVE_DANCE_WAN_REFERENCE_STRENGTH=1.25
+
+COPY src/autotransition/generative_dance /app/src/autotransition/generative_dance
+COPY tools/generative_dance/wan_animate_2_runner.py /app/tools/generative_dance/wan_animate_2_runner.py
+
+RUN python -m compileall -q \
+      /app/src/autotransition/generative_dance \
+      /app/tools/generative_dance/wan_animate_2_runner.py
+
+USER wan
