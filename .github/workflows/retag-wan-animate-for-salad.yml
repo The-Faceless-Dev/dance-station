@@ -30,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           docker buildx imagetools create \
+            --prefer-index=false \
             --tag "${IMAGE}:${TARGET_TAG}" \
             "${IMAGE}:${SOURCE_TAG}"
           docker buildx imagetools inspect "${IMAGE}:${TARGET_TAG}"
