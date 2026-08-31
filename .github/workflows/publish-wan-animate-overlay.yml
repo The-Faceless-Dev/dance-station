@@ -32,42 +32,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Prepare single-layer overlay context
+      - name: Compose and publish registry overlay
         shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          rm -rf .wan-overlay-context
-          mkdir -p .wan-overlay-context/payload/app/src/autotransition
-          mkdir -p .wan-overlay-context/payload/app/tools/generative_dance
-          cp -a src/autotransition/generative_dance \
-            .wan-overlay-context/payload/app/src/autotransition/
-          cp tools/generative_dance/wan_animate_2_runner.py \
-            .wan-overlay-context/payload/app/tools/generative_dance/
-          cp containers/wan-animate-worker/Dockerfile.identity-5090 \
-            .wan-overlay-context/Dockerfile
-
-      - name: Build and publish overlay
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Pull the base with retries before invoking the legacy Docker builder.
-          # This keeps BuildKit from re-reading the large model layer after a
-          # transient GHCR 429 and leaves the final image at 34 layers.
-          for attempt in 1 2 3 4; do
-            if docker pull "${BASE_IMAGE}"; then
-              break
-            fi
-            if [ "${attempt}" -eq 4 ]; then
-              echo "Unable to pull ${BASE_IMAGE} after ${attempt} attempts" >&2
-              exit 1
-            fi
-            sleep "$((attempt * 90))"
-          done
-
-          docker build \
-            --file ./.wan-overlay-context/Dockerfile \
-            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
-            --tag "${IMAGE}:${TAG}" \
-            ./.wan-overlay-context
-          docker push "${IMAGE}:${TAG}"
+          python3 tools/publish_wan_overlay_manifest.py \
+            --repo "${IMAGE#ghcr.io/}" \
+            --base-tag "wan-q6-salad-20260826-r7" \
+            --tag "${TAG}"
