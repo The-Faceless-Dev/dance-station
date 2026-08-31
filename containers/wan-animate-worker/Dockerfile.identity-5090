@@ -1,8 +1,7 @@
-# Identity-preserving overlay for the currently verified public Q6 worker.
-# The model, companion encoders, matting model, and runtime layers stay in the
-# currently deployed image so Salad can reuse its cached blobs, including the
-# completion-artifact fix already present in that image.
-ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260830-artifact-cleanup-r3
+# Identity-preserving overlay for the verified public Q6 worker.
+# The workflow builds the payload directory before invoking Docker so all
+# changed runtime files land in one small layer beside the known-good image.
+ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260829-identity-5090-r1
 FROM ${BASE_IMAGE}
 
 USER root
@@ -11,11 +10,7 @@ USER root
 # jobs use the stronger identity anchor unless they explicitly opt out.
 ENV GENERATIVE_DANCE_WAN_REFERENCE_STRENGTH=1.25
 
-COPY src/autotransition/generative_dance /app/src/autotransition/generative_dance
-COPY tools/generative_dance/wan_animate_2_runner.py /app/tools/generative_dance/wan_animate_2_runner.py
-
-RUN python -m compileall -q \
-      /app/src/autotransition/generative_dance \
-      /app/tools/generative_dance/wan_animate_2_runner.py
+# payload/app mirrors the destination paths, so this remains one overlay layer.
+COPY payload/ /
 
 USER wan

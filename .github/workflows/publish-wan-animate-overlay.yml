@@ -15,7 +15,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  TAG: wan-q6-salad-20260831-identity-5090-r3base-r1
+  TAG: wan-q6-salad-20260831-identity-5090-single-layer-r1
 
 jobs:
   publish:
@@ -31,12 +31,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
+      - name: Prepare single-layer overlay context
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .wan-overlay-context
+          mkdir -p .wan-overlay-context/payload/app/src/autotransition
+          mkdir -p .wan-overlay-context/payload/app/tools/generative_dance
+          cp -a src/autotransition/generative_dance \
+            .wan-overlay-context/payload/app/src/autotransition/
+          cp tools/generative_dance/wan_animate_2_runner.py \
+            .wan-overlay-context/payload/app/tools/generative_dance/
+          cp containers/wan-animate-worker/Dockerfile.identity-5090 \
+            .wan-overlay-context/Dockerfile
+
       - name: Build and publish overlay
         uses: docker/build-push-action@v6
         with:
-          context: .
-          file: ./containers/wan-animate-worker/Dockerfile.identity-5090
+          context: ./.wan-overlay-context
+          file: ./.wan-overlay-context/Dockerfile
           build-args: |
-            BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260830-artifact-cleanup-r3
+            BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260829-identity-5090-r1
           push: true
           tags: ${{ env.IMAGE }}:${{ env.TAG }}
