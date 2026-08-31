@@ -1,7 +1,7 @@
 # Identity-preserving overlay for the verified public Q6 worker.
 # The workflow builds the payload directory before invoking Docker so all
 # changed runtime files land in one small layer beside the known-good image.
-ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260829-identity-5090-r1
+ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260826-r7
 FROM ${BASE_IMAGE}
 
 USER root
