@@ -15,8 +15,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260826-r7
-  TAG: wan-q6-salad-20260831-identity-5090-compat-r1
+  BASE_IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260829-identity-5090-r1
+  TAG: wan-q6-salad-20260829-identity-5090-r1
 
 jobs:
   publish:
@@ -41,5 +41,5 @@ jobs:
           set -euo pipefail
           python3 tools/publish_wan_overlay_manifest.py \
             --repo "${IMAGE#ghcr.io/}" \
-            --base-tag "wan-q6-salad-20260826-r7" \
+            --base-tag "wan-q6-salad-20260829-identity-5090-r1" \
             --tag "${TAG}"

@@ -15,6 +15,7 @@ request or artifact contract.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from contextlib import nullcontext
 import gc
 import json
@@ -790,6 +791,69 @@ def _log_memory(stage: str, device: Any) -> None:
     )
 
 
+def _require_finite_tensor(label: str, tensor: Any) -> None:
+    """Reject invalid model output before it can become a black encoded video."""
+
+    import torch
+
+    finite = torch.isfinite(tensor)
+    finite_count = int(finite.sum().item())
+    total_count = int(tensor.numel())
+    nan_count = int(torch.isnan(tensor).sum().item())
+    positive_inf_count = int(torch.isposinf(tensor).sum().item())
+    negative_inf_count = int(torch.isneginf(tensor).sum().item())
+    if finite_count:
+        finite_values = tensor[finite].float()
+        minimum = float(finite_values.min().item())
+        maximum = float(finite_values.max().item())
+        mean = float(finite_values.mean().item())
+    else:
+        minimum = maximum = mean = float("nan")
+    LOGGER.info(
+        "stage=tensor_check tensor=%s finite=%s/%s nan=%s pos_inf=%s neg_inf=%s min=%.6g max=%.6g mean=%.6g",
+        label,
+        finite_count,
+        total_count,
+        nan_count,
+        positive_inf_count,
+        negative_inf_count,
+        minimum,
+        maximum,
+        mean,
+    )
+    if finite_count != total_count:
+        raise RuntimeError(
+            f"Wan-Animate-2 produced non-finite {label}: "
+            f"finite={finite_count}/{total_count} nan={nan_count} "
+            f"pos_inf={positive_inf_count} neg_inf={negative_inf_count}"
+        )
+
+
+class _ScaledReferenceValues:
+    """Temporarily scale cached reference values without duplicating the cache."""
+
+    def __init__(self, values: dict[int, Any], strength: float):
+        self.values = values
+        self.strength = strength
+        self._originals: dict[int, Any] = {}
+
+    def __enter__(self) -> None:
+        if self.strength == 1.0:
+            return None
+        for index, value in self.values.items():
+            self._originals[index] = value
+            value.mul_(self.strength)
+        return None
+
+    def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+        if self.strength == 1.0:
+            return
+        inverse = 1.0 / self.strength
+        for index, value in self._originals.items():
+            value.mul_(inverse)
+        self._originals.clear()
+
+
 def load_runtime(
     paths: RunnerPaths,
     *,
@@ -1057,9 +1121,10 @@ def _render_window(
     clip_len: int,
     steps: int,
     seed: int,
-    continuation_frame: np.ndarray | None = None,
+    reference_strength: float = 1.0,
+    continuation_frames: list[np.ndarray] | None = None,
 ) -> dict[str, Any]:
-    """Render one short segment using Wan's one-frame continuation contract."""
+    """Render one short segment using Wan's temporal continuation contract."""
 
     import torch
     from einops import rearrange
@@ -1076,7 +1141,7 @@ def _render_window(
     generator.manual_seed(seed)
 
     LOGGER.info(
-        "stage=render_start reference=%s driver=%s width=%s height=%s fps=%s clip_len=%s steps=%s seed=%s",
+        "stage=render_start reference=%s driver=%s width=%s height=%s fps=%s clip_len=%s steps=%s seed=%s reference_strength=%.4f",
         reference_image,
         driver_video,
         width,
@@ -1085,25 +1150,28 @@ def _render_window(
         clip_len,
         steps,
         seed,
+        reference_strength,
     )
     first_image = cv2.imread(str(reference_image), cv2.IMREAD_COLOR)
     if first_image is None:
         raise RuntimeError(f"could not read reference image: {reference_image}")
     first_image = cv2.cvtColor(first_image, cv2.COLOR_BGR2RGB)
     first_image = cv2.resize(first_image, (width, height), interpolation=cv2.INTER_AREA)
-    if continuation_frame is not None:
-        continuation_frame = cv2.resize(continuation_frame, (width, height), interpolation=cv2.INTER_AREA)
+    if continuation_frames:
+        continuation_frames = [
+            cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+            for frame in continuation_frames
+        ]
     driver_frames, source_fps = _read_driver(driver_video, width=width, height=height, frame_count=clip_len)
     LOGGER.info(
-        "stage=inputs_ready driver_fps=%.3f frames=%s continuation=%s",
+        "stage=inputs_ready driver_fps=%.3f frames=%s continuation_frames=%s",
         source_fps,
         len(driver_frames),
-        continuation_frame is not None,
+        len(continuation_frames or []),
     )
 
-    # A first frame is reused as the reference temporal context, matching the
-    # official single-frame Wan-Animate-2 inference contract.
-    first_num = 1
+    # The reference image remains the identity anchor; continuation frames
+    # are supplied separately as temporal context for the next window.
     target_frames = clip_len + 1
     lat_h = height // 8
     lat_w = width // 8
@@ -1156,6 +1224,7 @@ def _render_window(
     with torch.inference_mode(), autocast_context:
         LOGGER.info("stage=vae_reference_encode")
         ref_latents = torch.stack(vae.encode(ref_pixel_values))
+        _require_finite_tensor("reference_latents", ref_latents)
         mask_ref = get_i2v_mask(1, lat_h, lat_w, 1, device=device)
         y_ref = torch.concat([mask_ref, ref_latents[0]]).to(dtype=compute_dtype, device=device)
 
@@ -1163,19 +1232,20 @@ def _render_window(
         # the driver frames. Keep the target-side conditioning tensor separate
         # from the driver tensor used by forward_ref; the official pipeline
         # uses both shapes and the transformer requires them to match exactly.
-        continuation_count = 1 if continuation_frame is not None else 0
+        continuation_count = len(continuation_frames or [])
         mask_reft = get_i2v_mask(lat_t - 1, lat_h, lat_w, continuation_count, device=device)
         reft_frame_count = max(1, target_frames - continuation_count - 1)
         reft_parts: list[torch.Tensor] = []
-        if continuation_frame is not None:
-            continuation_tensor = torch.tensor(continuation_frame / 127.5 - 1.0)
-            continuation_tensor = rearrange(continuation_tensor, "h w c -> c 1 h w")
+        if continuation_frames:
+            continuation_tensor = torch.tensor(np.stack(continuation_frames) / 127.5 - 1.0)
+            continuation_tensor = rearrange(continuation_tensor, "t h w c -> c t h w")
             reft_parts.append(continuation_tensor)
         reft_parts.append(torch.zeros(3, reft_frame_count, height, width))
         reft_pixels = torch.cat(reft_parts, dim=1)
         expected_reft_t = mask_reft.shape[1]
         for _ in range(8):
             reft_latents = torch.stack(vae.encode([reft_pixels.to(device=device, dtype=compute_dtype)]))
+            _require_finite_tensor("driver_condition_latents", reft_latents)
             if reft_latents.shape[2] >= expected_reft_t:
                 break
             reft_pixels = torch.cat([reft_pixels, torch.zeros(3, 1, height, width)], dim=1)
@@ -1216,6 +1286,7 @@ def _render_window(
 
         LOGGER.info("stage=condition_encode")
         condition_latents = torch.stack(vae.encode(conditioning_pixel_values))
+        _require_finite_tensor("condition_latents", condition_latents)
         condition_lat_t = condition_latents.shape[2]
         condition_lat_h = condition_latents.shape[3]
         condition_lat_w = condition_latents.shape[4]
@@ -1269,38 +1340,71 @@ def _render_window(
             **ref_args,
         )
         latents = noise
-        for index, timestep in enumerate(timesteps):
-            LOGGER.info("stage=denoise step=%s/%s", index + 1, len(timesteps))
-            t = torch.stack([timestep])
-            prediction = model(
-                latents,
-                k_cache=cache_k,
-                v_cache=cache_v,
-                t=t,
-                grid_sizes_ref=grid_sizes_ref,
-                method="forward_gen",
-                **cond_args,
+        with _ScaledReferenceValues(cache_v, reference_strength):
+            LOGGER.info(
+                "stage=reference_strength_applied value=%.4f cache_layers=%s",
+                reference_strength,
+                len(cache_v),
             )
-            latents[0] = scheduler.step(
-                prediction[0].unsqueeze(0),
-                timestep,
-                latents[0].unsqueeze(0),
-                return_dict=False,
-                generator=generator,
-            )[0].squeeze(0)
-            del prediction
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            for index, timestep in enumerate(timesteps):
+                LOGGER.info("stage=denoise step=%s/%s", index + 1, len(timesteps))
+                t = torch.stack([timestep])
+                prediction = model(
+                    latents,
+                    k_cache=cache_k,
+                    v_cache=cache_v,
+                    t=t,
+                    grid_sizes_ref=grid_sizes_ref,
+                    method="forward_gen",
+                    **cond_args,
+                )
+                # The Wan adapter returns a one-item list here; the scheduler consumes
+                # the tensor at index zero, so validate that exact value.
+                _require_finite_tensor("denoise_prediction", prediction[0])
+                latents[0] = scheduler.step(
+                    prediction[0].unsqueeze(0),
+                    timestep,
+                    latents[0].unsqueeze(0),
+                    return_dict=False,
+                    generator=generator,
+                )[0].squeeze(0)
+                _require_finite_tensor("sample_latents", latents[0])
+                del prediction
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
-        LOGGER.info("stage=vae_decode")
-        decoded = torch.stack(vae.decode([latents[0].to(dtype=torch.float32)]))
-        frames = (
-            rearrange(((decoded + 1.0) * 127.5), "1 c t h w -> t h w c")
-            .clamp(0, 255)
-            .cpu()
-            .numpy()
-            .astype(np.uint8)
+        # Wan allocates one leading latent for the conditioning frame. It is
+        # not a generated video frame and must be removed before VAE decode.
+        # Decoding it and trimming pixels afterward shifts every temporal
+        # window and exposes the conditioning transition as visible repeats
+        # and color changes at the start of each window.
+        generated_latents = latents[0][:, 1:]
+        LOGGER.info(
+            "stage=vae_decode conditioning_latent_dropped=true latent_frames=%s generated_latent_frames=%s",
+            int(latents[0].shape[1]),
+            int(generated_latents.shape[1]),
         )
+        decoded = torch.stack(vae.decode([generated_latents.to(dtype=torch.float32)]))
+        _require_finite_tensor("decoded_frames", decoded)
+        frame_values = rearrange(((decoded + 1.0) * 127.5), "1 c t h w -> t h w c")
+        _require_finite_tensor("decoded_pixel_values", frame_values)
+        frame_values = frame_values.clamp(0, 255).cpu().numpy()
+        if not np.isfinite(frame_values).all():
+            raise RuntimeError("Wan-Animate-2 produced non-finite pixel values after VAE decode")
+        frames = frame_values.astype(np.uint8)
+        nonzero_fraction = float(np.count_nonzero(frames) / max(1, frames.size))
+        LOGGER.info(
+            "stage=decoded_frames_ready frame_min=%s frame_max=%s frame_mean=%.6g nonzero_fraction=%.6g",
+            int(frames.min()),
+            int(frames.max()),
+            float(frames.mean()),
+            nonzero_fraction,
+        )
+        if int(frames.max()) == 0 or nonzero_fraction < 0.0001:
+            raise RuntimeError(
+                "Wan-Animate-2 produced a blank render after VAE decode; "
+                "the job was not encoded as a successful video"
+            )
 
     _write_video([frame for frame in frames], output, fps)
     metadata = {
@@ -1313,8 +1417,9 @@ def _render_window(
         "fps": fps,
         "frameCount": len(frames),
         "steps": steps,
-        "continuationUsed": continuation_frame is not None,
-        "continuationFrames": 1 if continuation_frame is not None else 0,
+        "referenceStrength": reference_strength,
+        "continuationUsed": bool(continuation_frames),
+        "continuationFrames": len(continuation_frames or []),
         "backend": "autotransition-wan-animate-2-gguf",
     }
     output.with_suffix(".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -1340,18 +1445,64 @@ def _read_rendered_frames(path: Path) -> list[np.ndarray]:
     return frames
 
 
-def _read_last_rendered_frame(path: Path) -> np.ndarray:
-    frames = _read_rendered_frames(path)
-    return frames[-1]
+def _read_continuation_frames(path: Path, count: int) -> list[np.ndarray]:
+    """Read the newest continuation frames in chronological order."""
 
-
-def _read_continuation_frame(path: Path) -> np.ndarray:
-    if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+    if count < 1:
+        return []
+    image_suffixes = {".png", ".jpg", ".jpeg", ".webp"}
+    if path.is_dir():
+        image_paths = sorted(
+            candidate
+            for candidate in path.iterdir()
+            if candidate.is_file() and candidate.suffix.lower() in image_suffixes
+        )[-count:]
+        frames: list[np.ndarray] = []
+        for image_path in image_paths:
+            frame = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+            if frame is None:
+                raise RuntimeError(f"could not read continuation frame: {image_path}")
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        if frames:
+            return frames
+        raise RuntimeError(f"continuation frame directory contained no images: {path}")
+    if path.suffix.lower() in image_suffixes:
         frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
         if frame is None:
             raise RuntimeError(f"could not read continuation frame: {path}")
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    return _read_last_rendered_frame(path)
+        return [cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)]
+
+    capture = cv2.VideoCapture(str(path))
+    if not capture.isOpened():
+        raise RuntimeError(f"could not open continuation video: {path}")
+    frames = deque(maxlen=count)
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    finally:
+        capture.release()
+    if not frames:
+        raise RuntimeError(f"continuation video contained no readable frames: {path}")
+    return list(frames)
+
+
+def _read_last_rendered_frames(path: Path, count: int) -> list[np.ndarray]:
+    if count < 1:
+        return []
+    return _read_rendered_frames(path)[-count:]
+
+
+def _read_last_rendered_frame(path: Path) -> np.ndarray:
+    return _read_last_rendered_frames(path, 1)[0]
+
+
+def _read_continuation_frame(path: Path) -> np.ndarray:
+    """Backward-compatible one-frame continuation reader."""
+
+    return _read_continuation_frames(path, 1)[0]
 
 
 def render_segment(
@@ -1369,6 +1520,9 @@ def render_segment(
     steps: int,
     seed: int,
     max_clip_len: int = 81,
+    temporal_context_frames: int = 5,
+    reference_strength: float = 1.0,
+    continuation_frames: Path | None = None,
     continuation_frame: Path | None = None,
 ) -> dict[str, Any]:
     """Render the complete driver using bounded overlapping temporal windows.
@@ -1383,6 +1537,10 @@ def render_segment(
 
     if max_clip_len < 2:
         raise ValueError("max_clip_len must be at least 2")
+    if temporal_context_frames not in {0, 1, 5}:
+        raise ValueError("temporal_context_frames must be 0, 1, or 5")
+    if temporal_context_frames >= max_clip_len:
+        raise ValueError("temporal_context_frames must be smaller than max_clip_len")
     all_frames, source_fps = _read_driver(
         driver_video,
         width=width,
@@ -1401,16 +1559,24 @@ def render_segment(
 
     window_dir = output.parent / ".windows"
     window_dir.mkdir(parents=True, exist_ok=True)
-    overlap = 1
+    overlap = temporal_context_frames
     step = max_clip_len - overlap
     stitched: list[np.ndarray] = []
     window_reports: list[dict[str, Any]] = []
     start = 0
     window_index = 0
-    continuity_frame = None
-    if continuation_frame is not None:
-        continuity_frame = _read_continuation_frame(continuation_frame)
-        LOGGER.info("stage=segment_continuation_loaded path=%s", continuation_frame)
+    continuity_frames: list[np.ndarray] | None = None
+    effective_continuation = continuation_frames or continuation_frame
+    if effective_continuation is not None and temporal_context_frames > 0:
+        continuity_frames = _read_continuation_frames(
+            effective_continuation,
+            temporal_context_frames,
+        )
+        LOGGER.info(
+            "stage=segment_continuation_loaded path=%s frames=%s",
+            effective_continuation,
+            len(continuity_frames),
+        )
     try:
         while start < len(all_frames):
             end = min(len(all_frames), start + max_clip_len)
@@ -1440,7 +1606,8 @@ def render_segment(
                 clip_len=len(window_frames),
                 steps=steps,
                 seed=(seed + window_index - 1) if seed >= 0 else seed,
-                continuation_frame=continuity_frame,
+                reference_strength=reference_strength,
+                continuation_frames=continuity_frames,
             )
             # Keep one immutable stdout/stderr pair per temporal window. The
             # adapter writes logs beside the window output; retaining them is
@@ -1450,13 +1617,13 @@ def render_segment(
                 retained.write_bytes(log_path.read_bytes())
             rendered = _read_rendered_frames(window_output)
             raw_rendered_count = len(rendered)
-            if continuity_frame is not None and len(rendered) > overlap:
-                # Wan returns the conditioning frame as the first decoded
-                # frame when a continuation is supplied. It is context, not
-                # a new frame in this segment.
+            if continuity_frames is not None and len(rendered) > overlap:
+                # These are the carried frames used to condition this window,
+                # not new timeline frames. The leading conditioning latent
+                # was already removed before VAE decode above.
                 rendered = rendered[overlap:]
             stitched.extend(rendered)
-            continuity_frame = _read_last_rendered_frame(window_output)
+            continuity_frames = _read_last_rendered_frames(window_output, overlap)
             report.update(
                 {
                     "windowIndex": window_index,
@@ -1466,6 +1633,19 @@ def render_segment(
                     "rawOutputFrameCount": raw_rendered_count,
                     "outputFrameCount": len(rendered),
                     "continuationUsed": report.get("continuationUsed", False),
+                    "continuationFrameIndices": (
+                        list(range(max(0, start - overlap), start))
+                        if continuity_frames is not None
+                        else []
+                    ),
+                    "continuationFrameTimestampsSeconds": (
+                        [
+                            round(frame_index / output_fps, 6)
+                            for frame_index in range(max(0, start - overlap), start)
+                        ]
+                        if continuity_frames is not None
+                        else []
+                    ),
                 }
             )
             window_reports.append(report)
@@ -1494,6 +1674,7 @@ def render_segment(
         "driverVideo": str(driver_video),
         "output": str(output),
         "seed": seed,
+        "referenceStrength": reference_strength,
         "width": width,
         "height": height,
         "fps": output_fps,
@@ -1504,8 +1685,13 @@ def render_segment(
         "temporalWindow": max_clip_len,
         "temporalOverlap": overlap,
         "windowCount": len(window_reports),
-        "continuityMode": "one-frame-carry",
-        "initialContinuation": continuation_frame is not None,
+        "continuityMode": (
+            "multi-frame-carry"
+            if temporal_context_frames > 0
+            else "disabled"
+        ),
+        "temporalContextFrames": temporal_context_frames,
+        "initialContinuation": effective_continuation is not None,
         "windows": window_reports,
         "backend": "autotransition-wan-animate-2-gguf",
     }
@@ -1545,9 +1731,25 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--clip-len", type=int, default=None, help="optional test window; production uses the full driver")
     parser.add_argument("--full-driver", action="store_true", help="process every driver frame with overlapping windows")
     parser.add_argument("--max-clip-len", type=int, default=81, help="maximum frames per inference window")
-    parser.add_argument("--continuation-frame", type=Path, help="last RGB frame from the preceding render segment")
+    parser.add_argument(
+        "--temporal-context-frames",
+        type=int,
+        default=5,
+        help="previous rendered frames carried across windows; Wan supports 0, 1, or 5",
+    )
+    parser.add_argument(
+        "--continuation-frames",
+        type=Path,
+        help="directory or video containing the previous render's boundary frames",
+    )
+    parser.add_argument(
+        "--continuation-frame",
+        type=Path,
+        help="deprecated alias for a single preceding render frame",
+    )
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--text-length", type=int, default=256)
+    parser.add_argument("--reference-strength", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
     return parser
 
@@ -1598,6 +1800,9 @@ def main() -> int:
         steps=args.steps,
         seed=args.seed,
         max_clip_len=args.max_clip_len,
+        temporal_context_frames=args.temporal_context_frames,
+        reference_strength=args.reference_strength,
+        continuation_frames=args.continuation_frames,
         continuation_frame=args.continuation_frame,
     )
     return 0

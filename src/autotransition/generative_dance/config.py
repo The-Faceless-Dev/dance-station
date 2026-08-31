@@ -63,9 +63,22 @@ class GenerativeDanceConfig:
     wan_compute_dtype: str = "bfloat16"
     wan_python: str | None = None
     wan_inference_steps: int = 10
+    wan_min_inference_steps: int = 10
     wan_guidance_scale: float = 1.0
     wan_text_length: int = 256
     wan_temporal_window: int = 81
+    # Wan Animate's documented temporal-guidance choices are 1 or 5. The
+    # context count also controls source overlap and decoded-frame trimming.
+    wan_temporal_context_frames: int = 5
+    # Scales the reference-image value tokens during the generation pass.
+    # 1.0 preserves the original behavior; production can opt into a stronger
+    # identity anchor without changing the request contract.
+    wan_reference_strength: float = 1.0
+    identity_audit_enabled: bool = False
+    identity_audit_command: str | None = None
+    identity_audit_cwd: Path | None = None
+    identity_audit_threshold: float = 0.8
+    identity_audit_max_retries: int = 1
     job_timeout_seconds: float = 1800.0
     max_upload_bytes: int = 1_000_000_000
     keep_failed_artifacts: bool = True
@@ -156,9 +169,19 @@ class GenerativeDanceConfig:
             wan_compute_dtype=os.getenv("GENERATIVE_DANCE_WAN_DTYPE", "bfloat16"),
             wan_python=os.getenv("GENERATIVE_DANCE_WAN_PYTHON"),
             wan_inference_steps=integer("GENERATIVE_DANCE_WAN_STEPS", 10),
+            wan_min_inference_steps=integer("GENERATIVE_DANCE_WAN_MIN_STEPS", 10),
             wan_guidance_scale=number("GENERATIVE_DANCE_WAN_GUIDANCE_SCALE", 1.0),
             wan_text_length=integer("GENERATIVE_DANCE_WAN_TEXT_LENGTH", 256),
             wan_temporal_window=integer("GENERATIVE_DANCE_WAN_TEMPORAL_WINDOW", 81),
+            wan_temporal_context_frames=integer("GENERATIVE_DANCE_WAN_TEMPORAL_CONTEXT_FRAMES", 5),
+            wan_reference_strength=number("GENERATIVE_DANCE_WAN_REFERENCE_STRENGTH", 1.0),
+            identity_audit_enabled=_bool("GENERATIVE_DANCE_IDENTITY_AUDIT_ENABLED", False),
+            identity_audit_command=os.getenv("GENERATIVE_DANCE_IDENTITY_AUDIT_COMMAND"),
+            identity_audit_cwd=Path(os.environ["GENERATIVE_DANCE_IDENTITY_AUDIT_CWD"]).expanduser()
+            if os.getenv("GENERATIVE_DANCE_IDENTITY_AUDIT_CWD")
+            else None,
+            identity_audit_threshold=number("GENERATIVE_DANCE_IDENTITY_AUDIT_THRESHOLD", 0.8),
+            identity_audit_max_retries=integer("GENERATIVE_DANCE_IDENTITY_AUDIT_MAX_RETRIES", 1),
             job_timeout_seconds=number("GENERATIVE_DANCE_JOB_TIMEOUT_SECONDS", 1800.0),
             max_upload_bytes=integer("GENERATIVE_DANCE_MAX_UPLOAD_BYTES", 1_000_000_000),
             keep_failed_artifacts=_bool("GENERATIVE_DANCE_KEEP_FAILED_ARTIFACTS", True),
@@ -181,6 +204,30 @@ class GenerativeDanceConfig:
             raise ValueError("generative dance Wan text length must be between 32 and 512")
         if self.wan_temporal_window < 2:
             raise ValueError("generative dance Wan temporal window must be at least 2")
+        if self.wan_temporal_context_frames not in {0, 1, 5}:
+            raise ValueError(
+                "generative dance Wan temporal context must be 0, 1, or 5 frames"
+            )
+        if self.wan_temporal_context_frames >= self.wan_temporal_window:
+            raise ValueError(
+                "generative dance Wan temporal context must be smaller than the temporal window"
+            )
+        if not 0 < self.wan_reference_strength <= 5:
+            raise ValueError(
+                "generative dance Wan reference strength must be greater than 0 and at most 5"
+            )
+        if not 0 <= self.identity_audit_threshold <= 1:
+            raise ValueError("generative dance identity audit threshold must be between 0 and 1")
+        if self.identity_audit_max_retries < 0 or self.identity_audit_max_retries > 2:
+            raise ValueError("generative dance identity audit retries must be between 0 and 2")
+        if self.wan_inference_steps < 1:
+            raise ValueError("generative dance Wan inference steps must be positive")
+        if self.wan_min_inference_steps < 1:
+            raise ValueError("generative dance Wan minimum inference steps must be positive")
+        if self.wan_inference_steps < self.wan_min_inference_steps:
+            raise ValueError(
+                "generative dance Wan default inference steps cannot be below the configured minimum"
+            )
         if self.matte_input_size < 64:
             raise ValueError("generative dance matte input size must be at least 64")
         if not 0 <= self.matte_alpha_threshold <= 1:
@@ -250,6 +297,14 @@ class GenerativeDanceConfig:
             "wanInferenceSteps": self.wan_inference_steps,
             "wanGuidanceScale": self.wan_guidance_scale,
             "wanTextLength": self.wan_text_length,
+            "wanTemporalWindow": self.wan_temporal_window,
+            "wanTemporalContextFrames": self.wan_temporal_context_frames,
+            "wanReferenceStrength": self.wan_reference_strength,
+            "identityAuditEnabled": self.identity_audit_enabled,
+            "identityAuditCommandConfigured": bool(self.identity_audit_command),
+            "identityAuditCwd": str(self.identity_audit_cwd) if self.identity_audit_cwd else None,
+            "identityAuditThreshold": self.identity_audit_threshold,
+            "identityAuditMaxRetries": self.identity_audit_max_retries,
             "jobTimeoutSeconds": self.job_timeout_seconds,
             "maxUploadBytes": self.max_upload_bytes,
             "keepFailedArtifacts": self.keep_failed_artifacts,

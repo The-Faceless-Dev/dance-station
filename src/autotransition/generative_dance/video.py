@@ -6,6 +6,7 @@ import json
 import shutil
 import subprocess
 import sys
+from collections import deque
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
@@ -382,6 +383,40 @@ def extract_last_frame(source: Path, output: Path) -> Path:
     return output
 
 
+def extract_tail_frames(source: Path, output_dir: Path, count: int) -> Path:
+    """Persist the final RGB frames used for multi-frame Wan continuation."""
+
+    import cv2
+
+    if count < 1:
+        raise ValueError("continuation frame count must be positive")
+    if not source.is_file():
+        raise VideoToolError(f"rendered video was not found: {source}")
+    capture = cv2.VideoCapture(str(source))
+    if not capture.isOpened():
+        raise VideoToolError(f"could not open rendered video: {source}")
+    tail: deque[object] = deque(maxlen=count)
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            tail.append(frame)
+    finally:
+        capture.release()
+    if not tail:
+        raise VideoToolError(f"rendered video contained no frames: {source}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for path in output_dir.glob("frame-*.png"):
+        path.unlink(missing_ok=True)
+    for index, frame in enumerate(tail, start=1):
+        output = output_dir / f"frame-{index:04d}.png"
+        if not cv2.imwrite(str(output), frame):
+            raise VideoToolError(f"could not write continuation frame: {output}")
+    return output_dir
+
+
 def transform_boundary(boundary: BoundaryState, transform: PlacementTransform, *, canvas: CanvasContract) -> BoundaryState:
     """Apply a clip-level authored transform to boundary metadata."""
 
@@ -529,6 +564,60 @@ def encode_transparent_video(
     result = probe_video(output)
     if not result.has_alpha:
         raise VideoToolError(f"transparent video encoding lost alpha: {result.to_dict()}")
+    return result
+
+
+def transform_alpha_video(
+    source: Path,
+    output: Path,
+    *,
+    width: int,
+    height: int,
+    fps: int,
+    frame_count: int,
+    crf: int = 30,
+) -> VideoProbe:
+    """Match an existing matte to a post-processing RGB timeline.
+
+    The source alpha already came from the per-part matte pass. Quality stages
+    change dimensions and/or cadence, but do not change subject placement, so
+    rerunning the neural matting model over the enlarged timeline is wasteful.
+    ``fps`` duplicates the source coverage frames to the exact output cadence;
+    the RGB timeline's RIFE interpolation remains responsible for motion.
+    """
+
+    ffmpeg = resolve_ffmpeg()
+    if not ffmpeg:
+        raise VideoToolError("ffmpeg is required to transform an alpha video")
+    if not source.is_file():
+        raise VideoToolError(f"alpha source was not found: {source}")
+    if width < 1 or height < 1 or fps < 1 or frame_count < 1:
+        raise ValueError("invalid alpha transform dimensions, frame rate, or frame count")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    command = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(source),
+        "-vf",
+        f"scale={width}:{height}:flags=lanczos,fps={_format_filter_number(float(fps))}",
+        "-frames:v",
+        str(frame_count),
+        "-an",
+        *_alpha_encoder_args("prores_ks", crf),
+        str(output),
+    ]
+    _run_ffmpeg(command, purpose="alpha timeline transformation")
+    result = probe_video(output)
+    if result.width != width or result.height != height or not result.has_alpha:
+        raise VideoToolError(f"alpha transform produced invalid metadata: {result.to_dict()}")
+    if result.frame_count is not None and result.frame_count != frame_count:
+        raise VideoToolError(
+            "alpha transform changed the requested frame count: "
+            f"expected={frame_count} actual={result.frame_count}"
+        )
+    if result.fps <= 0 or abs(result.fps - fps) > max(0.1, fps * 0.02):
+        raise VideoToolError(f"alpha transform changed the requested frame rate: {result.to_dict()}")
     return result
 
 

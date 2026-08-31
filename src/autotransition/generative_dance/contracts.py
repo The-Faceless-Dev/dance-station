@@ -185,6 +185,7 @@ class RenderedSegment:
     transparent_placed_video: Path | None = None
     transparent_video: Path | None = None
     transparent_preview_video: Path | None = None
+    runtime_metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return _jsonable(asdict(self))

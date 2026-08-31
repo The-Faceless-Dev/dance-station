@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -64,8 +65,10 @@ class WanAnimate2LiteAdapter:
             "--fps", "{fps}",
             "--full-driver",
             "--max-clip-len", "{temporal_window}",
+            "--temporal-context-frames", "{temporal_context_frames}",
             "--steps", "{inference_steps}",
             "--text-length", "{text_length}",
+            "--reference-strength", "{reference_strength}",
             "--seed", "{seed}",
         )
 
@@ -84,16 +87,51 @@ class WanAnimate2LiteAdapter:
         seed: int | None = None,
         inference_steps: int | None = None,
         text_length: int | None = None,
+        reference_strength: float | None = None,
+        continuation_frames: Path | None = None,
         continuation_frame: Path | None = None,
     ) -> RenderedSegment:
         command = self.command or self.native_command
-        if not self.command and continuation_frame is not None:
-            command = (*command, "--continuation-frame", "{continuation_frame}")
+        effective_continuation = continuation_frames or continuation_frame
+        if not self.command and effective_continuation is not None:
+            command = (*command, "--continuation-frames", "{continuation_frames}")
         if not command:
             raise AvatarAdapterError(
                 "wan_animate_not_configured",
                 "Wan Animate 2 is not configured; set the native runtime paths or GENERATIVE_DANCE_WAN_COMMAND",
                 retryable=False,
+            )
+        effective_steps = (
+            inference_steps
+            if inference_steps is not None
+            else self.config.wan_inference_steps
+        )
+        effective_reference_strength = (
+            reference_strength
+            if reference_strength is not None
+            else self.config.wan_reference_strength
+        )
+        if not 0 < effective_reference_strength <= 5:
+            raise AvatarAdapterError(
+                "wan_invalid_reference_strength",
+                "Wan-Animate-2 reference strength must be greater than 0 and at most 5",
+                retryable=False,
+                details={"referenceStrength": effective_reference_strength},
+            )
+        if effective_steps < self.config.wan_min_inference_steps:
+            raise AvatarAdapterError(
+                "wan_invalid_inference_steps",
+                (
+                    "The Wan-Animate-2 distilled worker requires at least "
+                    f"{self.config.wan_min_inference_steps} inference steps; "
+                    f"received {effective_steps}."
+                ),
+                retryable=False,
+                details={
+                    "requestedSteps": effective_steps,
+                    "minimumSteps": self.config.wan_min_inference_steps,
+                    "modelRevision": self.config.wan_model_revision,
+                },
             )
         output_dir.mkdir(parents=True, exist_ok=True)
         output = output_dir / "render.mp4"
@@ -124,10 +162,13 @@ class WanAnimate2LiteAdapter:
                     # The native runner requires an integer argument; use its
                     # deterministic default when the request leaves seed unset.
                     "seed": seed if seed is not None else 0,
-                    "inference_steps": inference_steps if inference_steps is not None else self.config.wan_inference_steps,
+                    "inference_steps": effective_steps,
                     "text_length": text_length if text_length is not None else self.config.wan_text_length,
+                    "reference_strength": effective_reference_strength,
                     "continuation_frame": continuation_frame or "",
+                    "continuation_frames": effective_continuation or "",
                     "temporal_window": self.config.wan_temporal_window,
+                    "temporal_context_frames": self.config.wan_temporal_context_frames,
                     "guidance_scale": self.config.wan_guidance_scale,
                     "wan_transformer": self.config.wan_transformer_checkpoint or "",
                     "wan_official_source": self.config.wan_official_source or "",
@@ -166,15 +207,28 @@ class WanAnimate2LiteAdapter:
         except Exception as exc:
             raise AvatarAdapterError("wan_animate_output_invalid", str(exc), retryable=True) from exc
         metadata_path = output_dir / "render.json"
+        runtime_metadata: dict[str, object] = {}
+        if metadata_path.is_file():
+            try:
+                loaded = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    runtime_metadata = loaded
+            except (OSError, ValueError):
+                # The runtime log remains available beside the output. The
+                # adapter still writes its own validated segment metadata.
+                runtime_metadata = {}
         metadata_path.write_text(
-            __import__("json").dumps(
+            json.dumps(
                 {
+                    **runtime_metadata,
                     "segmentId": segment_id,
                     "referenceId": reference.id,
                     "driverId": driver.id,
                     "modelRevision": self.config.wan_model_revision,
                     "backend": "native" if not self.command and self.native_command else "command",
                     "prompt": prompt_value,
+                    "seed": seed if seed is not None else 0,
+                    "referenceStrength": effective_reference_strength,
                     "probe": probe.to_dict(),
                 },
                 indent=2,
@@ -191,4 +245,5 @@ class WanAnimate2LiteAdapter:
             metadata_path=metadata_path,
             model_revision=self.config.wan_model_revision,
             prompt=prompt_value,
+            runtime_metadata=runtime_metadata,
         )

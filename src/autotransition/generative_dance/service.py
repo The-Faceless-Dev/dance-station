@@ -84,6 +84,9 @@ class GenerativeDanceService:
             "ffmpeg": resolve_ffmpeg(),
             "ffprobe": resolve_ffprobe(),
             "wanReady": bool(self.wan.configured and config_ready),
+            "identityAuditReady": bool(
+                not self.config.identity_audit_enabled or self.config.identity_audit_command
+            ),
             "birefnetReady": self.matte.configured,
             "transparentOutputReady": bool(self.matte.configured and resolve_ffmpeg() and resolve_ffprobe()),
         }
@@ -137,8 +140,10 @@ class GenerativeDanceService:
         seed: int | None = None,
         inference_steps: int | None = None,
         text_length: int | None = None,
+        reference_strength: float | None = None,
         placement: SegmentPlacement | None = None,
         transparent: bool = True,
+        continuation_frames: Path | None = None,
         continuation_frame: Path | None = None,
     ) -> RenderedSegment:
         reference = self.get_reference(reference_id)
@@ -171,7 +176,8 @@ class GenerativeDanceService:
             seed=seed,
             inference_steps=inference_steps,
             text_length=text_length,
-            continuation_frame=continuation_frame,
+            reference_strength=reference_strength,
+            continuation_frames=continuation_frames or continuation_frame,
         )
         matte_video = None
         transparent_source_video = None
@@ -291,6 +297,7 @@ class GenerativeDanceService:
             transparent_source_video=transparent_source_video,
             transparent_video=transparent_video,
             transparent_preview_video=transparent_preview_video,
+            runtime_metadata=payload,
         )
 
     def compose(self, *, rendered_ids: list[str]) -> object:
@@ -413,6 +420,7 @@ class GenerativeDanceService:
                 if payload.get("transparentPreviewVideo")
                 else None
             ),
+            runtime_metadata=payload,
         )
 
     def list_items(self, category: str, manifest_name: str) -> list[dict[str, object]]:
@@ -473,6 +481,7 @@ class GenerativeDanceService:
             "transparentPreviewVideo": (
                 self.store.relative(render.transparent_preview_video) if render.transparent_preview_video else None
             ),
+            "runtimeMetadata": render.runtime_metadata,
         }
 
     def public_composition(self, composition: object) -> dict[str, object]:

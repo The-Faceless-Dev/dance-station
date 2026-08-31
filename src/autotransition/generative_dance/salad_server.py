@@ -51,7 +51,11 @@ def preflight() -> dict[str, object]:
         "missing": missing,
         "cuda": cuda,
         "offloadPolicy": "GGUF linear weights memory-mapped on CPU; T5/CLIP load, encode, release; one GPU job",
-        "temporalPolicy": "full driver with overlapping 81-frame windows; source FPS preserved",
+        "temporalPolicy": (
+            "full driver with configurable overlapping windows; "
+            f"window={config.wan_temporal_window} context={config.wan_temporal_context_frames} frames; "
+            "source FPS preserved"
+        ),
     }
 
 
