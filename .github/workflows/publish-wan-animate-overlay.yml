@@ -15,6 +15,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
+  BASE_IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260826-r7
   TAG: wan-q6-salad-20260831-identity-5090-compat-r1
 
 jobs:
@@ -46,11 +47,27 @@ jobs:
             .wan-overlay-context/Dockerfile
 
       - name: Build and publish overlay
-        uses: docker/build-push-action@v6
-        with:
-          context: ./.wan-overlay-context
-          file: ./.wan-overlay-context/Dockerfile
-          build-args: |
-            BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260826-r7
-          push: true
-          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Pull the base with retries before invoking the legacy Docker builder.
+          # This keeps BuildKit from re-reading the large model layer after a
+          # transient GHCR 429 and leaves the final image at 34 layers.
+          for attempt in 1 2 3 4; do
+            if docker pull "${BASE_IMAGE}"; then
+              break
+            fi
+            if [ "${attempt}" -eq 4 ]; then
+              echo "Unable to pull ${BASE_IMAGE} after ${attempt} attempts" >&2
+              exit 1
+            fi
+            sleep "$((attempt * 90))"
+          done
+
+          docker build \
+            --file ./.wan-overlay-context/Dockerfile \
+            --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+            --tag "${IMAGE}:${TAG}" \
+            ./.wan-overlay-context
+          docker push "${IMAGE}:${TAG}"
