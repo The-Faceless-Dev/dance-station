@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import re
 import shutil
 import threading
@@ -15,10 +16,10 @@ from uuid import uuid4
 from .artifacts import ArtifactStore
 from .config import GenerativeDanceConfig
 from .contracts import PlacementTransform, SegmentPlacement
+from .identity import audit_segment_identity
 from .service import GenerativeDanceService, _placement_from_payload
 from .video import (
     encode_transparent_video,
-    extract_last_frame,
     extract_video_range,
     make_blank_video,
     make_transparent_preview,
@@ -48,6 +49,26 @@ def _sequence_segments_are_adjacent(
     if previous_timeline_end is None:
         return False
     return abs(timeline_start - previous_timeline_end) <= (1.0 / fps + 0.01)
+
+
+def _resolve_identity_seed(parameters: dict[str, Any]) -> int:
+    """Resolve one seed for the whole request, rather than one per segment."""
+
+    configured = parameters.get("seed")
+    if configured is not None:
+        return int(configured) % (2**32)
+    return secrets.randbelow(2**32)
+
+
+def _resolve_reference_strength(
+    config: GenerativeDanceConfig,
+    parameters: dict[str, Any],
+) -> float:
+    configured = parameters.get("reference_strength", parameters.get("referenceStrength"))
+    value = config.wan_reference_strength if configured is None else float(configured)
+    if not 0 < value <= 5:
+        raise ValueError("Wan-Animate-2 reference strength must be greater than 0 and at most 5")
+    return value
 
 
 class GenerativeDanceWorker:
@@ -193,8 +214,16 @@ class GenerativeDanceWorker:
 
     def _artifacts(self, job_id: str, render_dir: Path) -> list[dict[str, Any]]:
         artifacts: list[dict[str, Any]] = []
+        job_root = self.job_dir(job_id)
+        # These are request inputs staged at the job root and removed in the
+        # worker's finally block. They must not be advertised for callback
+        # upload, or Salad will retry a job after inference already succeeded.
+        transient_inputs = {job_root / "reference.png", job_root / "reference.jpg", job_root / "reference.jpeg", job_root / "reference.webp"}
+        transient_inputs.update(job_root.glob("driver-*"))
         for path in sorted(render_dir.rglob("*")):
             if not path.is_file() or path.name.startswith("."):
+                continue
+            if path in transient_inputs:
                 continue
             relative = self.store.relative(path)
             suffix = path.suffix.lower()
@@ -229,6 +258,8 @@ class GenerativeDanceWorker:
         payload: dict[str, Any],
         parameters: dict[str, Any],
         reference_id: str,
+        identity_seed: int | None = None,
+        reference_strength: float | None = None,
     ) -> tuple[dict[str, Any], Path]:
         """Render the client sequence and assemble one final timeline."""
 
@@ -241,6 +272,10 @@ class GenerativeDanceWorker:
         sequence_fps = int(round(float(sequence.get("fps") or self.config.canvas.fps)))
         if sequence_fps < 1 or sequence_fps > 120:
             raise ValueError("generative dance sequence FPS must be between 1 and 120")
+        if identity_seed is None:
+            identity_seed = _resolve_identity_seed(parameters)
+        if reference_strength is None:
+            reference_strength = _resolve_reference_strength(self.config, parameters)
 
         driver_inputs = self._input_records(payload, "driver")
         if not driver_inputs:
@@ -258,12 +293,12 @@ class GenerativeDanceWorker:
 
         sequence_dir = self.job_dir(job_id) / "sequence"
         sequence_dir.mkdir(parents=True, exist_ok=True)
+        reference = self.service.get_reference(reference_id) if self.config.identity_audit_enabled else None
         rendered: list[dict[str, Any]] = []
         ordered_segments = sorted(
             (segment for segment in raw_segments if isinstance(segment, dict)),
             key=lambda segment: float(segment.get("timelineStartSeconds") or 0.0),
         )
-        continuation_frame: Path | None = None
         previous_timeline_end: float | None = None
         tolerance = 1.0 / sequence_fps + 0.01
         total = len(ordered_segments)
@@ -328,26 +363,87 @@ class GenerativeDanceWorker:
                 driver_id=driver.id,
             )
             adjacent = _sequence_segments_are_adjacent(timeline_start, previous_timeline_end, fps=sequence_fps)
-            if not adjacent:
-                continuation_frame = None
             self._progress(
                 job_id,
                 "wan_render",
                 0.18 + (0.70 * index / max(1, total)),
                 f"Rendering dance segment {index + 1} of {total}",
             )
-            result = self.service.render(
-                reference_id=reference_id,
-                driver_id=driver.id,
-                prompt=str(segment.get("prompt") or parameters.get("prompt") or "a person performing a full-body dance"),
-                seed=(int(parameters["seed"]) + index) if parameters.get("seed") is not None else None,
-                inference_steps=int(parameters.get("steps", parameters.get("num_inference_steps", self.config.wan_inference_steps))),
-                text_length=int(parameters.get("text_length", parameters.get("textLength", self.config.wan_text_length))),
-                placement=placement,
-                transparent=bool(parameters.get("transparent", True)),
-                continuation_frame=continuation_frame,
-            )
-            continuation_frame = extract_last_frame(result.output_video, segment_dir / "continuation-frame.png")
+            base_seed = identity_seed
+            audit_enabled = self.config.identity_audit_enabled and index > 0
+            audit_reports: list[dict[str, Any]] = []
+            result = None
+            for attempt in range(self.config.identity_audit_max_retries + 1):
+                effective_seed = base_seed + attempt
+                render_seed = effective_seed
+                self._event(
+                    job_id,
+                    "wan_segment_attempt",
+                    segmentId=segment_id,
+                    segmentIndex=index,
+                    attempt=attempt,
+                    seed=render_seed,
+                    seedScope="job",
+                    referenceStrength=reference_strength,
+                    crossSegmentContinuationFrames=0,
+                )
+                result = self.service.render(
+                    reference_id=reference_id,
+                    driver_id=driver.id,
+                    prompt=str(segment.get("prompt") or parameters.get("prompt") or "a person performing a full-body dance"),
+                    seed=render_seed,
+                    inference_steps=int(parameters.get("steps", parameters.get("num_inference_steps", self.config.wan_inference_steps))),
+                    text_length=int(parameters.get("text_length", parameters.get("textLength", self.config.wan_text_length))),
+                    reference_strength=reference_strength,
+                    placement=placement,
+                    transparent=bool(parameters.get("transparent", True)),
+                )
+                if not audit_enabled:
+                    audit_reports.append(
+                        {
+                            "enabled": False,
+                            "passed": True,
+                            "reason": "first-source-segment" if index == 0 else "disabled",
+                            "attempt": attempt,
+                            "seed": render_seed,
+                            "referenceStrength": reference_strength,
+                        }
+                    )
+                    break
+                if reference is None:
+                    raise RuntimeError("identity audit reference was not loaded")
+                audit = audit_segment_identity(
+                    self.config,
+                    reference_image=reference.normalized_image,
+                    render_video=result.output_video,
+                    output_dir=sequence_dir / f"{index + 1:03d}-{self._safe_token(segment_id, 'segment')}" / f"identity-attempt-{attempt + 1:02d}",
+                    segment_id=segment_id,
+                    seed=effective_seed,
+                    attempt=attempt,
+                )
+                audit_reports.append(audit)
+                self._event(job_id, "wan_identity_audit", segmentId=segment_id, **audit)
+                if audit["passed"]:
+                    break
+                if attempt < self.config.identity_audit_max_retries:
+                    self._event(
+                        job_id,
+                        "wan_identity_retry",
+                        segmentId=segment_id,
+                        attempt=attempt,
+                        nextAttempt=attempt + 1,
+                        score=audit["score"],
+                        threshold=audit["threshold"],
+                    )
+            if result is None:
+                raise RuntimeError(f"Wan Animate produced no result for segment {segment_id}")
+            if self.config.identity_audit_enabled and not audit_reports[-1].get("passed", False):
+                raise AvatarAdapterError(
+                    "wan_identity_audit_failed",
+                    f"Wan Animate identity audit failed for segment {segment_id} after {len(audit_reports)} attempt(s)",
+                    retryable=False,
+                    details={"segmentId": segment_id, "audits": audit_reports},
+                )
             previous_timeline_end = timeline_end
             rendered.append(
                 {
@@ -357,6 +453,13 @@ class GenerativeDanceWorker:
                     "timelineStartSeconds": timeline_start,
                     "timelineEndSeconds": timeline_end,
                     "adjacentToPrevious": adjacent,
+                    "continuity": {
+                        "policy": "within-source-segment-only",
+                        "crossSegmentContinuationUsed": False,
+                        "crossSegmentContinuationFrames": 0,
+                        "withinSegmentContextFrames": self.config.wan_temporal_context_frames,
+                        "identityAudit": audit_reports,
+                    },
                     "driver": driver,
                     "result": result,
                 }
@@ -398,7 +501,18 @@ class GenerativeDanceWorker:
         result_metadata = {
             "schemaVersion": 2,
             "runtime": "wan-animate",
-            "continuityMode": "one-frame-carry",
+            "continuityMode": (
+                "multi-frame-carry"
+                if self.config.wan_temporal_context_frames > 0
+                else "disabled"
+            ),
+            "temporalWindow": self.config.wan_temporal_window,
+            "temporalContextFrames": self.config.wan_temporal_context_frames,
+            "identitySeed": identity_seed,
+            "identitySeedScope": "job",
+            "referenceStrength": reference_strength,
+            "continuityPolicy": "within-source-segment-only",
+            "crossSegmentContinuation": False,
             "sequence": sequence,
             "segments": [
                 {
@@ -408,6 +522,7 @@ class GenerativeDanceWorker:
                     "timelineStartSeconds": item["timelineStartSeconds"],
                     "timelineEndSeconds": item["timelineEndSeconds"],
                     "adjacentToPrevious": item["adjacentToPrevious"],
+                    "continuity": item["continuity"],
                     "driver": item["driver"].to_dict(),
                     "render": item["result"].to_dict(),
                 }
@@ -437,6 +552,16 @@ class GenerativeDanceWorker:
                 raise ValueError("Wan Animate jobs require an avatar reference input")
             if not driver_url and not has_sequence:
                 raise ValueError("Wan Animate jobs require a driver video input")
+            identity_seed = _resolve_identity_seed(parameters)
+            reference_strength = _resolve_reference_strength(self.config, parameters)
+            self._event(
+                job_id,
+                "identity_policy_resolved",
+                seed=identity_seed,
+                seedScope="job",
+                referenceStrength=reference_strength,
+                referencePolicy="immutable-original-reference-per-window-and-segment",
+            )
             reference_path = self._download(job_id, reference_url, reference_name, prefix="reference", suffixes={".png", ".jpg", ".jpeg", ".webp"})
             self._event(job_id, "reference_input_validated", reference=str(reference_path))
             description = str(parameters.get("description") or parameters.get("prompt") or "uploaded character reference")
@@ -449,6 +574,8 @@ class GenerativeDanceWorker:
                     payload=payload,
                     parameters=parameters,
                     reference_id=reference.id,
+                    identity_seed=identity_seed,
+                    reference_strength=reference_strength,
                 )
                 output_root = final_output.parent.parent
                 self._progress(job_id, "finalize_artifacts", 0.95, "Validating the assembled sequence outputs")
@@ -488,9 +615,10 @@ class GenerativeDanceWorker:
                     reference_id=reference.id,
                     driver_id=driver.id,
                     prompt=str(parameters.get("prompt") or reference.prompt),
-                    seed=int(parameters["seed"]) if parameters.get("seed") is not None else None,
+                    seed=identity_seed,
                     inference_steps=int(parameters.get("steps", parameters.get("num_inference_steps", self.config.wan_inference_steps))),
                     text_length=int(parameters.get("text_length", parameters.get("textLength", self.config.wan_text_length))),
+                    reference_strength=reference_strength,
                     placement=placement,
                     transparent=bool(parameters.get("transparent", True)),
                 )
@@ -507,6 +635,9 @@ class GenerativeDanceWorker:
                         "renderedSegment": result.to_dict(),
                         "driver": driver.to_dict(),
                         "reference": reference.to_dict(),
+                        "identitySeed": identity_seed,
+                        "identitySeedScope": "job",
+                        "referenceStrength": reference_strength,
                     },
                     "artifacts": artifacts,
                     "completedAt": _now(),

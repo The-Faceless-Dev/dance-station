@@ -1,0 +1,42 @@
+name: Publish Wan Animate Overlay
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/publish-wan-animate-overlay.yml
+      - containers/wan-animate-worker/Dockerfile.identity-5090
+      - src/autotransition/generative_dance/**
+      - tools/generative_dance/wan_animate_2_runner.py
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
+  TAG: wan-q6-salad-20260830-artifact-cleanup-r1
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish overlay
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./containers/wan-animate-worker/Dockerfile.identity-5090
+          build-args: |
+            BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260828-r1
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
