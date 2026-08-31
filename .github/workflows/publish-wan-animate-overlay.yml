@@ -15,7 +15,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  TAG: wan-q6-salad-20260830-artifact-cleanup-r2
+  TAG: wan-q6-salad-20260831-identity-5090-r3base-r1
 
 jobs:
   publish:
@@ -37,6 +37,6 @@ jobs:
           context: .
           file: ./containers/wan-animate-worker/Dockerfile.identity-5090
           build-args: |
-            BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260828-r1
+            BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260830-artifact-cleanup-r3
           push: true
           tags: ${{ env.IMAGE }}:${{ env.TAG }}

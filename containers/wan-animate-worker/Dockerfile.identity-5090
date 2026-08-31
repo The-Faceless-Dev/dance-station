@@ -1,7 +1,8 @@
 # Identity-preserving overlay for the currently verified public Q6 worker.
 # The model, companion encoders, matting model, and runtime layers stay in the
-# existing image so Salad can reuse its cached blobs.
-ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260828-r1
+# currently deployed image so Salad can reuse its cached blobs, including the
+# completion-artifact fix already present in that image.
+ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-salad-20260830-artifact-cleanup-r3
 FROM ${BASE_IMAGE}
 
 USER root
