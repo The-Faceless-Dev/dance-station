@@ -16,7 +16,7 @@ permissions:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
   BASE_TAG: wan-q6-salad-20260826-r7
-  TAG: wan-q6-salad-20260831-identity-5090-compat-r3
+  TAG: wan-q6-salad-20260831-identity-5090-compat-r4
 
 jobs:
   publish:

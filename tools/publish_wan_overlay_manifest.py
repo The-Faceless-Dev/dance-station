@@ -72,6 +72,26 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path) -> None:
     runner = repo_root / "tools" / "generative_dance" / "wan_animate_2_runner.py"
     entries.append(("app/tools/generative_dance/wan_animate_2_runner.py", runner))
 
+    directories = {
+        "app",
+        "app/src",
+        "app/src/autotransition",
+        "app/src/autotransition/generative_dance",
+        "app/tools",
+        "app/tools/generative_dance",
+    }
+    for archive_name in sorted(directories):
+        info = tarfile.TarInfo(archive_name)
+        info.uid = 0
+        info.gid = 0
+        info.uname = ""
+        info.gname = ""
+        info.mtime = 0
+        info.mode = 0o755
+        info.type = tarfile.DIRTYPE
+        info.size = 0
+        tar.addfile(info)
+
     for archive_name, path in sorted(entries):
         info = tarfile.TarInfo(archive_name)
         info.uid = 0
