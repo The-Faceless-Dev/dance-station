@@ -36,7 +36,7 @@ jobs:
         shell: bash
         env:
           REGISTRY_USERNAME: ${{ github.actor }}
-          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REGISTRY_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           python3 tools/publish_wan_overlay_manifest.py \
