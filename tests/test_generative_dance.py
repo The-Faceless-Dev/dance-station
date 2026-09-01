@@ -52,6 +52,14 @@ def test_native_wan_runner_has_bounded_denoising_attention_mode() -> None:
     assert '"WAN_FLEX_ATTENTION_CHUNK_SIZE"' in source
 
 
+def test_native_wan_runtime_provides_writable_cuda_linker_alias() -> None:
+    source = Path("tools/generative_dance/wan_animate_2_runtime.py").read_text(encoding="utf-8")
+
+    assert "libcuda.so.1" in source
+    assert "LIBRARY_PATH" in source
+    assert "cuda-link" in source
+
+
 def test_native_wan_runner_drops_conditioning_latent_before_vae_decode() -> None:
     source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
     render_start = source.index("def _render_window(")

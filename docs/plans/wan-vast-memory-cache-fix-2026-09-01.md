@@ -16,9 +16,12 @@ pressure, while keeping the existing image/package and job contract unchanged.
    Q6 weights.
 3. Add explicit memory cleanup and memory telemetry around conditioning,
    denoising, and VAE decode so one job/window cannot retain temporary tensors.
-4. Fix the direct worker status endpoint so production failures can be queried
+4. Provide Triton's linker with a writable `libcuda.so` alias when the host
+   exposes only the driver soname `libcuda.so.1`; this is required by the Q6
+   CUDA dequantization path on Vast and does not modify the host filesystem.
+5. Fix the direct worker status endpoint so production failures can be queried
    without the current coroutine/type error.
-5. Include the runtime module and container environment in the same small
+6. Include the runtime module and container environment in the same small
    overlay layer, increment only the existing worker tag, and run focused
    tests plus a live Vast generation before cleanup.
 
@@ -35,6 +38,8 @@ pressure, while keeping the existing image/package and job contract unchanged.
 - Disabling the GPU raw cache can trade a small amount of dequantization work
   for lower peak VRAM; it is the correct default for a 32 GiB RTX 5090 profile.
 - Cache paths must be created and owned by `wan` without changing model layers.
+- Vast may expose only `libcuda.so.1`; the runtime must make Triton's `-lcuda`
+  link succeed without requiring root access or changing the host image.
 - Verify Python compilation, focused worker tests, image manifest publication,
   worker readiness, a completed production-shaped generation, returned media,
   and the final destruction of the temporary Vast instance.

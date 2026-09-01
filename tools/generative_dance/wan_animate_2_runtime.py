@@ -29,6 +29,56 @@ _TRITON_Q6_KERNEL: Any = None
 LOGGER = logging.getLogger("wan-animate-2")
 
 
+def _configure_cuda_linker(cache_root: Path) -> None:
+    """Make Triton's ``-lcuda`` link work when only the driver soname exists."""
+
+    if sys.platform != "linux":
+        return
+
+    library_dirs = (
+        Path("/usr/local/cuda/lib64"),
+        Path("/usr/lib/x86_64-linux-gnu"),
+        Path("/lib/x86_64-linux-gnu"),
+    )
+    if any((directory / "libcuda.so").exists() for directory in library_dirs):
+        return
+
+    driver_library = next(
+        (
+            directory / "libcuda.so.1"
+            for directory in library_dirs
+            if (directory / "libcuda.so.1").exists()
+        ),
+        None,
+    )
+    if driver_library is None:
+        LOGGER.warning("cuda_linker_alias_unavailable driver library libcuda.so.1 was not found")
+        return
+
+    alias_root = cache_root / "cuda-link"
+    alias_root.mkdir(parents=True, exist_ok=True)
+    alias = alias_root / "libcuda.so"
+    try:
+        if not alias.exists():
+            alias.symlink_to(driver_library)
+    except OSError as exc:
+        raise WanAnimate2RuntimeError(
+            f"could not create writable CUDA linker alias {alias}: {exc}"
+        ) from exc
+
+    existing_library_path = os.getenv("LIBRARY_PATH", "")
+    library_path = str(alias_root)
+    if existing_library_path:
+        library_path = os.pathsep.join((library_path, existing_library_path))
+    os.environ["LIBRARY_PATH"] = library_path
+    LOGGER.info(
+        "cuda_linker_ready driver=%s alias=%s library_path=%s",
+        driver_library,
+        alias,
+        alias_root,
+    )
+
+
 def prepare_runtime_cache_dirs() -> dict[str, str]:
     """Select writable per-user compiler/model caches before CUDA imports."""
 
@@ -69,6 +119,7 @@ def prepare_runtime_cache_dirs() -> dict[str, str]:
         os.environ[name] = str(path)
     if Path("/home/wan").is_dir():
         os.environ["HOME"] = "/home/wan"
+    _configure_cuda_linker(cache_root)
     LOGGER.info(
         "runtime_cache_ready root=%s triton=%s torchinductor=%s",
         cache_root,
