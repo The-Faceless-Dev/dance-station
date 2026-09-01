@@ -23,11 +23,11 @@ def run() -> int:
         ready, diagnostics = probe_ready(local_url)
         payload = {
             "provider": _env_value(values, "WORKER_PROVIDER", default="salad"),
-            "organization": _env_value(values, "SALAD_ORGANIZATION", "SALAD_ORGANIZATION_NAME"),
-            "project": _env_value(values, "SALAD_PROJECT", "SALAD_PROJECT_NAME"),
-            "container_group": _env_value(values, "SALAD_CONTAINER_GROUP", "SALAD_CONTAINER_GROUP_NAME"),
-            "instance_id": _env_value(values, "SALAD_INSTANCE_ID", "HOSTNAME", default="unknown-instance"),
-            "machine_id": _env_value(values, "SALAD_MACHINE_ID") or None,
+            "organization": _env_value(values, "SALAD_ORGANIZATION", "SALAD_ORGANIZATION_NAME", "VAST_ORGANIZATION"),
+            "project": _env_value(values, "SALAD_PROJECT", "SALAD_PROJECT_NAME", "VAST_PROJECT"),
+            "container_group": _env_value(values, "SALAD_CONTAINER_GROUP", "SALAD_CONTAINER_GROUP_NAME", "VAST_WORKER_GROUP", "VAST_INSTANCE_LABEL"),
+            "instance_id": _env_value(values, "SALAD_INSTANCE_ID", "VAST_INSTANCE_ID", "CONTAINER_ID", "HOSTNAME", default="unknown-instance"),
+            "machine_id": _env_value(values, "SALAD_MACHINE_ID", "VAST_MACHINE_ID") or None,
             "runtime": "wan-animate",
             "model_revision": _env_value(values, "WORKER_MODEL_REVISION", "GENERATIVE_DANCE_WAN_MODEL", default="Wan-Animate-2-Q6_K"),
             "state": "ready" if ready else "starting",

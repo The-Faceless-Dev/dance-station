@@ -20,6 +20,9 @@ from typing import Any
 
 DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json"
 DOCKER_LAYER = "application/vnd.docker.image.rootfs.diff.tar.gzip"
+OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
+OCI_LAYER = "application/vnd.oci.image.layer.v1.tar+gzip"
+MANIFEST_ACCEPT = ", ".join((DOCKER_MANIFEST, OCI_MANIFEST, "application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.oci.image.index.v1+json"))
 
 
 class RegistryError(RuntimeError):
@@ -163,7 +166,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     token = get_registry_token(args.repo, username, password)
     auth = {
         "Authorization": f"Bearer {token}",
-        "Accept": DOCKER_MANIFEST,
+        "Accept": MANIFEST_ACCEPT,
     }
     base_url = f"https://ghcr.io/v2/{args.repo}"
     _, _, manifest_body = registry_request(
@@ -172,9 +175,9 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         headers=auth,
     )
     base_manifest = json.loads(manifest_body)
-    if base_manifest.get("mediaType") != DOCKER_MANIFEST:
+    if base_manifest.get("mediaType") not in {DOCKER_MANIFEST, OCI_MANIFEST}:
         raise RuntimeError(
-            f"base image is not Docker schema 2: {base_manifest.get('mediaType')}"
+            f"base image is not a single Docker/OCI image manifest: {base_manifest.get('mediaType')}"
         )
 
     _, _, config_body = registry_request(
@@ -203,9 +206,14 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     upload_blob(args.repo, token, f"sha256:{compressed_digest}", layer)
     upload_blob(args.repo, token, f"sha256:{config_digest}", config_bytes)
 
+    base_media_type = base_manifest.get("mediaType", DOCKER_MANIFEST)
+    base_layer_media_type = (
+        base_manifest.get("layers", [{}])[0].get("mediaType")
+        or (OCI_LAYER if base_media_type == OCI_MANIFEST else DOCKER_LAYER)
+    )
     manifest = {
         "schemaVersion": 2,
-        "mediaType": DOCKER_MANIFEST,
+        "mediaType": base_media_type,
         "config": {
             "mediaType": base_manifest["config"]["mediaType"],
             "size": len(config_bytes),
@@ -214,7 +222,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "layers": [
             *base_manifest["layers"],
             {
-                "mediaType": DOCKER_LAYER,
+                "mediaType": base_layer_media_type,
                 "size": len(layer),
                 "digest": f"sha256:{compressed_digest}",
             },
@@ -226,8 +234,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         f"{base_url}/manifests/{args.tag}",
         headers={
             "Authorization": f"Bearer {token}",
-            "Content-Type": DOCKER_MANIFEST,
-            "Accept": DOCKER_MANIFEST,
+            "Content-Type": base_media_type,
+            "Accept": MANIFEST_ACCEPT,
         },
         data=manifest_bytes,
     )

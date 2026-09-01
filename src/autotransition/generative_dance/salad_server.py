@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import urlsplit
@@ -18,6 +20,8 @@ from .worker import GenerativeDanceWorker
 
 config = GenerativeDanceConfig.from_env()
 worker = GenerativeDanceWorker(config)
+_direct_jobs: set[str] = set()
+_direct_jobs_lock = threading.Lock()
 
 
 def _asset_report(path: object) -> dict[str, object]:
@@ -78,6 +82,30 @@ def status() -> dict[str, object]:
     return {**report, "activeJobs": active, "config": config.to_public_dict()}
 
 
+def _direct_dispatch_enabled() -> bool:
+    return os.getenv("SALAD_QUEUE_WORKER_ENABLED", "true").lower() == "false"
+
+
+def _direct_dispatch_token() -> str:
+    return os.getenv("WORKER_DISPATCH_TOKEN", "")
+
+
+def _run_direct_job(payload: dict[str, Any]) -> None:
+    job_id = str(payload.get("job_id") or "")
+    try:
+        asyncio.run(process_queue_job(payload, worker, config))
+    except Exception as exc:
+        print(json.dumps({
+            "event": "wan_direct_job_failed",
+            "jobId": job_id,
+            "errorType": type(exc).__name__,
+            "error": str(exc),
+        }), flush=True)
+    finally:
+        with _direct_jobs_lock:
+            _direct_jobs.discard(job_id)
+
+
 class _WanHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -115,6 +143,20 @@ class _WanRequestHandler(BaseHTTPRequestHandler):
         if path == "/v1/worker/status":
             self._write_json(200, status())
             return
+        if path.startswith("/jobs/"):
+            job_id = path.removeprefix("/jobs/").strip("/")
+            if not job_id:
+                self._write_json(404, {"detail": "job id is required"})
+                return
+            try:
+                result = asyncio.run(self.server.worker.get(job_id))
+            except FileNotFoundError:
+                result = None
+            if result is None:
+                self._write_json(404, {"detail": "job not found"})
+            else:
+                self._write_json(200, result)
+            return
         self._write_json(404, {"detail": "not found"})
 
     def do_POST(self) -> None:
@@ -122,6 +164,12 @@ class _WanRequestHandler(BaseHTTPRequestHandler):
         if path != "/process":
             self._write_json(404, {"detail": "not found"})
             return
+        if _direct_dispatch_enabled():
+            expected = _direct_dispatch_token()
+            supplied = self.headers.get("X-Worker-Dispatch-Token", "")
+            if not expected or not hmac.compare_digest(supplied, expected):
+                self._write_json(401, {"detail": "worker dispatch authentication failed"})
+                return
         try:
             length = int(self.headers.get("Content-Length") or "0")
             if length <= 0 or length > 16 * 1024 * 1024:
@@ -131,6 +179,29 @@ class _WanRequestHandler(BaseHTTPRequestHandler):
                 raise ValueError("request body must be a JSON object")
             if payload.get("runtime") not in {None, "wan-animate", "wan-animate-worker", "generative-dance", "generative-dance-worker"}:
                 raise ValueError(f"unsupported runtime: {payload.get('runtime')}")
+            if _direct_dispatch_enabled():
+                job_id = str(payload.get("job_id") or "")
+                if not job_id:
+                    raise ValueError("job_id is required")
+                with _direct_jobs_lock:
+                    already_running = job_id in _direct_jobs
+                    if not already_running:
+                        _direct_jobs.add(job_id)
+                if already_running:
+                    self._write_json(202, {"id": job_id, "status": "accepted", "duplicate": True})
+                    return
+                try:
+                    existing = asyncio.run(self.server.worker.get(job_id))
+                except FileNotFoundError:
+                    existing = None
+                if existing is not None and existing.get("status") in {"succeeded", "failed", "cancelled", "expired"}:
+                    with _direct_jobs_lock:
+                        _direct_jobs.discard(job_id)
+                    self._write_json(200, existing)
+                    return
+                threading.Thread(target=_run_direct_job, args=(payload,), name=f"wan-job-{job_id[:8]}", daemon=True).start()
+                self._write_json(202, {"id": job_id, "status": "accepted"})
+                return
             result = asyncio.run(process_queue_job(payload, self.server.worker, self.server.config))
             self._write_json(200, result)
         except SaladRequestError as exc:
