@@ -570,6 +570,11 @@ class GGUFLinear:
                 if bias is not None:
                     bias = bias.to(device=input_tensor.device, dtype=weight.dtype)
                 result = functional.linear(linear_input, weight, bias)
+                if result.dtype != weight.dtype:
+                    # Autocast can promote this custom module's output even
+                    # when both operands are lower precision. Do not let
+                    # that promotion turn Wan's reference cache into FP32.
+                    result = result.to(dtype=weight.dtype)
                 del linear_input, weight
                 return result
 

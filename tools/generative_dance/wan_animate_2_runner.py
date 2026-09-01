@@ -791,6 +791,19 @@ def _log_memory(stage: str, device: Any) -> None:
     )
 
 
+def _normalize_reference_cache(cache: dict[int, Any], dtype: Any) -> int:
+    """Keep the reference K/V cache in the same dtype as denoising."""
+
+    converted = 0
+    for index, value in list(cache.items()):
+        if value.dtype == dtype:
+            continue
+        cache[index] = value.to(dtype=dtype)
+        del value
+        converted += 1
+    return converted
+
+
 def _require_finite_tensor(label: str, tensor: Any) -> None:
     """Reject invalid model output before it can become a black encoded video."""
 
@@ -1341,6 +1354,8 @@ def _render_window(
             **ref_args,
         )
         latents = noise
+        converted_cache_values = _normalize_reference_cache(cache_k, compute_dtype)
+        converted_cache_values += _normalize_reference_cache(cache_v, compute_dtype)
         cache_bytes = sum(
             int(value.numel()) * int(value.element_size())
             for value in (*cache_k.values(), *cache_v.values())
@@ -1349,10 +1364,12 @@ def _render_window(
             {str(value.dtype) for value in (*cache_k.values(), *cache_v.values())}
         )
         LOGGER.info(
-            "stage=reference_cache_ready layers=%s bytes=%.2fGiB dtypes=%s",
+            "stage=reference_cache_ready layers=%s bytes=%.2fGiB dtypes=%s converted_values=%s target_dtype=%s",
             len(cache_v),
             cache_bytes / 1024**3,
             cache_dtypes,
+            converted_cache_values,
+            compute_dtype,
         )
         _log_memory("reference_pass_complete", device)
         with _ScaledReferenceValues(cache_v, reference_strength):

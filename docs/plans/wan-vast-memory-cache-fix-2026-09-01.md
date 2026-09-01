@@ -31,6 +31,9 @@ pressure, while keeping the existing image/package and job contract unchanged.
    instead of inheriting the official block's temporary FP32 input dtype. This
    prevents the 40-layer reference K/V cache from doubling in size on the
    32 GiB RTX 5090, and log its exact byte size and dtype before denoising.
+9. Enforce the same dtype on any cache values still promoted by an upstream
+   autocast operation before denoising begins, and record how many values were
+   normalized.
 
 ## Affected Files
 
