@@ -791,6 +791,21 @@ def _log_memory(stage: str, device: Any) -> None:
     )
 
 
+class _TypedReferenceCache(dict[int, Any]):
+    """Store reference K/V tensors in inference dtype as each block returns."""
+
+    def __init__(self, dtype: Any) -> None:
+        super().__init__()
+        self.dtype = dtype
+        self.converted = 0
+
+    def __setitem__(self, index: int, value: Any) -> None:
+        if value.dtype != self.dtype:
+            value = value.to(dtype=self.dtype)
+            self.converted += 1
+        super().__setitem__(index, value)
+
+
 def _normalize_reference_cache(cache: dict[int, Any], dtype: Any) -> int:
     """Keep the reference K/V cache in the same dtype as denoising."""
 
@@ -1342,8 +1357,8 @@ def _render_window(
             "origin_area": [width, height],
         }
         LOGGER.info("stage=reference_transformer_pass")
-        cache_k: dict[int, Any] = {}
-        cache_v: dict[int, Any] = {}
+        cache_k = _TypedReferenceCache(compute_dtype)
+        cache_v = _TypedReferenceCache(compute_dtype)
         model(
             condition_latents,
             grid_sizes=grid_sizes,
@@ -1354,7 +1369,8 @@ def _render_window(
             **ref_args,
         )
         latents = noise
-        converted_cache_values = _normalize_reference_cache(cache_k, compute_dtype)
+        converted_cache_values = cache_k.converted + cache_v.converted
+        converted_cache_values += _normalize_reference_cache(cache_k, compute_dtype)
         converted_cache_values += _normalize_reference_cache(cache_v, compute_dtype)
         cache_bytes = sum(
             int(value.numel()) * int(value.element_size())

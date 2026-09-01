@@ -68,6 +68,8 @@ def test_native_wan_runtime_has_explicit_cuda_dequant_dtype_policy() -> None:
     assert "torch.bfloat16" in source
     assert "result.dtype != weight.dtype" not in source
     assert "reference_cache_ready" in runner_source
+    assert "class _TypedReferenceCache" in runner_source
+    assert "cache_k = _TypedReferenceCache(compute_dtype)" in runner_source
     assert "_normalize_reference_cache" in runner_source
 
 

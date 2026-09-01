@@ -37,6 +37,9 @@ pressure, while keeping the existing image/package and job contract unchanged.
 10. Preserve the official reference-pass FP32 input contract; normalize only
     the completed K/V cache after `forward_ref` returns so the memory fix does
     not break Wan's reference assertions.
+11. Avoid a full-cache conversion peak by storing each K/V tensor in inference
+    dtype at insertion time while the official block still retains its local
+    FP32 tensor for the current reference computation.
 
 ## Affected Files
 
