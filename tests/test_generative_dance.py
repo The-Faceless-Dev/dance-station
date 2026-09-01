@@ -60,6 +60,13 @@ def test_native_wan_runtime_provides_writable_cuda_linker_alias() -> None:
     assert "cuda-link" in source
 
 
+def test_wan_overlay_forces_eager_bounded_attention_when_triton_is_installed() -> None:
+    source = Path("tools/publish_wan_overlay_manifest.py").read_text(encoding="utf-8")
+
+    assert '"WAN_FLEX_ATTENTION_BACKEND": "sdpa"' in source
+    assert '"WAN_SDPA_BACKEND": "chunked"' in source
+
+
 def test_native_wan_runner_drops_conditioning_latent_before_vae_decode() -> None:
     source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
     render_start = source.index("def _render_window(")

@@ -19,9 +19,12 @@ pressure, while keeping the existing image/package and job contract unchanged.
 4. Provide Triton's linker with a writable `libcuda.so` alias when the host
    exposes only the driver soname `libcuda.so.1`; this is required by the Q6
    CUDA dequantization path on Vast and does not modify the host filesystem.
-5. Fix the direct worker status endpoint so production failures can be queried
+5. Force the project-owned eager bounded-attention fallback on runtimes where
+   Triton is installed, and select its chunked SDPA path explicitly. This
+   avoids unsupported high-register Flex Attention kernels on RTX 5090.
+6. Fix the direct worker status endpoint so production failures can be queried
    without the current coroutine/type error.
-6. Include the runtime module and container environment in the same small
+7. Include the runtime module and container environment in the same small
    overlay layer, increment only the existing worker tag, and run focused
    tests plus a live Vast generation before cleanup.
 

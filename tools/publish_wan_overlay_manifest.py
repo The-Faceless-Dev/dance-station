@@ -208,7 +208,11 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "WAN_GGUF_GPU_RAW_CACHE": "0",
         "WAN_GGUF_DEQUANT_BACKEND": "triton",
         "WAN_T5_DEVICE": "cpu",
-        "WAN_FLEX_ATTENTION_BACKEND": "chunked",
+        # `sdpa` forces the runner's eager masked-attention adapter. The
+        # `chunked` value alone leaves official torch.compile Flex Attention
+        # active whenever Triton is installed.
+        "WAN_FLEX_ATTENTION_BACKEND": "sdpa",
+        "WAN_SDPA_BACKEND": "chunked",
         "WAN_FLEX_ATTENTION_CHUNK_SIZE": "64",
         "WAN_SDPA_CHUNK_SIZE": "256",
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
