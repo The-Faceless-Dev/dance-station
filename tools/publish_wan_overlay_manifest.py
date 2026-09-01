@@ -207,6 +207,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "MPLCONFIGDIR": "/home/wan/.cache/matplotlib",
         "WAN_GGUF_GPU_RAW_CACHE": "0",
         "WAN_GGUF_DEQUANT_BACKEND": "triton",
+        "WAN_GGUF_DEQUANT_DTYPE": "bfloat16",
         "WAN_T5_DEVICE": "cpu",
         # `sdpa` forces the runner's eager masked-attention adapter. The
         # `chunked` value alone leaves official torch.compile Flex Attention

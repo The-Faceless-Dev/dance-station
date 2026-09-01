@@ -1341,6 +1341,20 @@ def _render_window(
             **ref_args,
         )
         latents = noise
+        cache_bytes = sum(
+            int(value.numel()) * int(value.element_size())
+            for value in (*cache_k.values(), *cache_v.values())
+        )
+        cache_dtypes = sorted(
+            {str(value.dtype) for value in (*cache_k.values(), *cache_v.values())}
+        )
+        LOGGER.info(
+            "stage=reference_cache_ready layers=%s bytes=%.2fGiB dtypes=%s",
+            len(cache_v),
+            cache_bytes / 1024**3,
+            cache_dtypes,
+        )
+        _log_memory("reference_pass_complete", device)
         with _ScaledReferenceValues(cache_v, reference_strength):
             LOGGER.info(
                 "stage=reference_strength_applied value=%.4f cache_layers=%s",

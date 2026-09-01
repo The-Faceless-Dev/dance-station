@@ -27,6 +27,10 @@ pressure, while keeping the existing image/package and job contract unchanged.
 7. Include the runtime module and container environment in the same small
    overlay layer, increment only the existing worker tag, and run focused
    tests plus a live Vast generation before cleanup.
+8. Keep CUDA dequantized linear projections in the configured inference dtype
+   instead of inheriting the official block's temporary FP32 input dtype. This
+   prevents the 40-layer reference K/V cache from doubling in size on the
+   32 GiB RTX 5090, and log its exact byte size and dtype before denoising.
 
 ## Affected Files
 

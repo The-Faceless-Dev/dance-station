@@ -527,14 +527,50 @@ class GGUFLinear:
                     self.bias = None
 
             def forward(self, input_tensor: Any) -> Any:
+                import torch
                 import torch.nn.functional as functional
 
-                weight = store.materialize(self.weight_name, device=str(input_tensor.device), dtype=input_tensor.dtype)
+                requested_dtype = os.getenv("WAN_GGUF_DEQUANT_DTYPE", "auto").strip().lower()
+                dtype_names = {
+                    "float16": torch.float16,
+                    "fp16": torch.float16,
+                    "bfloat16": torch.bfloat16,
+                    "bf16": torch.bfloat16,
+                    "float32": torch.float32,
+                    "fp32": torch.float32,
+                }
+                if requested_dtype in {"", "auto", "input"}:
+                    # The official Wan blocks normalize through FP32 before
+                    # their linear projections. Keeping that transient dtype
+                    # would also make every cached reference K/V tensor FP32.
+                    # CUDA inference uses the runtime's lower-precision dtype
+                    # for those projections; CPU keeps the input dtype.
+                    dequant_dtype = (
+                        torch.bfloat16
+                        if input_tensor.is_cuda and input_tensor.dtype == torch.float32
+                        else input_tensor.dtype
+                    )
+                else:
+                    try:
+                        dequant_dtype = dtype_names[requested_dtype]
+                    except KeyError as exc:
+                        raise WanAnimate2RuntimeError(
+                            "WAN_GGUF_DEQUANT_DTYPE must be auto, float16, or bfloat16"
+                        ) from exc
+
+                weight = store.materialize(
+                    self.weight_name,
+                    device=str(input_tensor.device),
+                    dtype=dequant_dtype,
+                )
+                linear_input = input_tensor
+                if linear_input.dtype != weight.dtype:
+                    linear_input = linear_input.to(dtype=weight.dtype)
                 bias = self.bias
                 if bias is not None:
-                    bias = bias.to(device=input_tensor.device, dtype=input_tensor.dtype)
-                result = functional.linear(input_tensor, weight, bias)
-                del weight
+                    bias = bias.to(device=input_tensor.device, dtype=weight.dtype)
+                result = functional.linear(linear_input, weight, bias)
+                del linear_input, weight
                 return result
 
         return LazyLinear()
