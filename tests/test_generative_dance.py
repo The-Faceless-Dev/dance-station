@@ -62,15 +62,13 @@ def test_native_wan_runtime_provides_writable_cuda_linker_alias() -> None:
 
 def test_native_wan_runtime_has_explicit_cuda_dequant_dtype_policy() -> None:
     source = Path("tools/generative_dance/wan_animate_2_runtime.py").read_text(encoding="utf-8")
+    runner_source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
 
     assert 'WAN_GGUF_DEQUANT_DTYPE' in source
     assert "torch.bfloat16" in source
-    assert "reference_cache_ready" in Path(
-        "tools/generative_dance/wan_animate_2_runner.py"
-    ).read_text(encoding="utf-8")
-    assert "_normalize_reference_cache" in Path(
-        "tools/generative_dance/wan_animate_2_runner.py"
-    ).read_text(encoding="utf-8")
+    assert "result.dtype != weight.dtype" not in source
+    assert "reference_cache_ready" in runner_source
+    assert "_normalize_reference_cache" in runner_source
 
 
 def test_wan_overlay_forces_eager_bounded_attention_when_triton_is_installed() -> None:

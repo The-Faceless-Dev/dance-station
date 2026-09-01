@@ -34,6 +34,9 @@ pressure, while keeping the existing image/package and job contract unchanged.
 9. Enforce the same dtype on any cache values still promoted by an upstream
    autocast operation before denoising begins, and record how many values were
    normalized.
+10. Preserve the official reference-pass FP32 input contract; normalize only
+    the completed K/V cache after `forward_ref` returns so the memory fix does
+    not break Wan's reference assertions.
 
 ## Affected Files
 
