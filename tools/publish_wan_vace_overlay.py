@@ -49,11 +49,7 @@ class RemoteFile:
     size: int
 
     def open(self):
-        request = urllib.request.Request(self.url)
-        token = os.getenv("HF_TOKEN")
-        if token:
-            request.add_header("Authorization", f"Bearer {token}")
-        return urllib.request.urlopen(request, timeout=600)
+        return urllib.request.urlopen(self.url, timeout=600)
 
 VACE_ENV = {
     "PYTHONPATH": "/app/src:/opt/wan-animate-2:/opt/wan-vace:/opt/wan-vace/vace:/opt/wan21",
