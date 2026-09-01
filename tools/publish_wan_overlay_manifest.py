@@ -74,6 +74,8 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path) -> None:
 
     runner = repo_root / "tools" / "generative_dance" / "wan_animate_2_runner.py"
     entries.append(("app/tools/generative_dance/wan_animate_2_runner.py", runner))
+    runtime = repo_root / "tools" / "generative_dance" / "wan_animate_2_runtime.py"
+    entries.append(("app/tools/generative_dance/wan_animate_2_runtime.py", runtime))
 
     directories = {
         "app",
@@ -194,12 +196,27 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     )
     image_config = config.setdefault("config", {})
     env = list(image_config.get("Env") or [])
-    env = [
-        value
-        for value in env
-        if not value.startswith("GENERATIVE_DANCE_WAN_REFERENCE_STRENGTH=")
-    ]
-    env.append("GENERATIVE_DANCE_WAN_REFERENCE_STRENGTH=1.25")
+    env_overrides = {
+        "HOME": "/home/wan",
+        "XDG_CACHE_HOME": "/home/wan/.cache",
+        "TRITON_CACHE_DIR": "/home/wan/.cache/triton",
+        "TORCHINDUCTOR_CACHE_DIR": "/home/wan/.cache/torchinductor",
+        "HF_HOME": "/home/wan/.cache/huggingface",
+        "TRANSFORMERS_CACHE": "/home/wan/.cache/huggingface/transformers",
+        "TORCH_HOME": "/home/wan/.cache/torch",
+        "MPLCONFIGDIR": "/home/wan/.cache/matplotlib",
+        "WAN_GGUF_GPU_RAW_CACHE": "0",
+        "WAN_GGUF_DEQUANT_BACKEND": "triton",
+        "WAN_T5_DEVICE": "cpu",
+        "WAN_FLEX_ATTENTION_BACKEND": "chunked",
+        "WAN_FLEX_ATTENTION_CHUNK_SIZE": "64",
+        "WAN_SDPA_CHUNK_SIZE": "256",
+        "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+        "GENERATIVE_DANCE_WAN_REFERENCE_STRENGTH": "1.25",
+    }
+    keys = set(env_overrides)
+    env = [value for value in env if value.split("=", 1)[0] not in keys]
+    env.extend(f"{key}={value}" for key, value in env_overrides.items())
     image_config["Env"] = env
     config_bytes = json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()
     config_digest = hashlib.sha256(config_bytes).hexdigest()

@@ -29,6 +29,55 @@ _TRITON_Q6_KERNEL: Any = None
 LOGGER = logging.getLogger("wan-animate-2")
 
 
+def prepare_runtime_cache_dirs() -> dict[str, str]:
+    """Select writable per-user compiler/model caches before CUDA imports."""
+
+    requested_root = os.getenv("XDG_CACHE_HOME", "").strip()
+    candidates = [Path(requested_root)] if requested_root else []
+    if Path("/home/wan").is_dir():
+        candidates.append(Path("/home/wan/.cache"))
+    candidates.append(Path("/tmp/wan-animate-cache"))
+
+    cache_root: Path | None = None
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write-test"
+            probe.write_text("ok", encoding="ascii")
+            probe.unlink(missing_ok=True)
+            cache_root = candidate
+            break
+        except OSError:
+            continue
+    if cache_root is None:
+        attempted = ", ".join(str(candidate) for candidate in candidates)
+        raise WanAnimate2RuntimeError(
+            f"no writable runtime cache directory; tried: {attempted}"
+        )
+
+    paths = {
+        "XDG_CACHE_HOME": cache_root,
+        "TRITON_CACHE_DIR": cache_root / "triton",
+        "TORCHINDUCTOR_CACHE_DIR": cache_root / "torchinductor",
+        "HF_HOME": cache_root / "huggingface",
+        "TRANSFORMERS_CACHE": cache_root / "huggingface" / "transformers",
+        "TORCH_HOME": cache_root / "torch",
+        "MPLCONFIGDIR": cache_root / "matplotlib",
+    }
+    for name, path in paths.items():
+        path.mkdir(parents=True, exist_ok=True)
+        os.environ[name] = str(path)
+    if Path("/home/wan").is_dir():
+        os.environ["HOME"] = "/home/wan"
+    LOGGER.info(
+        "runtime_cache_ready root=%s triton=%s torchinductor=%s",
+        cache_root,
+        paths["TRITON_CACHE_DIR"],
+        paths["TORCHINDUCTOR_CACHE_DIR"],
+    )
+    return {name: str(path) for name, path in paths.items()}
+
+
 def _triton_q6_kernel() -> Any:
     """Create the Q6_K decoder only in runtimes that opt into CUDA dequantization."""
 
@@ -490,6 +539,7 @@ def load_transformer(
     import torch
     import torch.nn as nn
 
+    prepare_runtime_cache_dirs()
     store = GGUFWeightStore(checkpoint, model_type="animate2")
     store.configure_gpu_raw_cache(device)
     transformer_class = _official_module(official_source)

@@ -31,7 +31,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from wan_animate_2_runtime import load_transformer
+from wan_animate_2_runtime import load_transformer, prepare_runtime_cache_dirs
 
 
 LOGGER = logging.getLogger("wan-animate-2")
@@ -866,6 +866,7 @@ def load_runtime(
     import torch
 
     paths.validate()
+    prepare_runtime_cache_dirs()
     _add_source(paths.source)
     device = torch.device(device_name)
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -1445,6 +1446,17 @@ def _read_rendered_frames(path: Path) -> list[np.ndarray]:
     return frames
 
 
+def _release_window_memory(device: Any, *, stage: str) -> None:
+    """Release temporaries after a window has returned all frames to host RAM."""
+
+    import torch
+
+    gc.collect()
+    if getattr(device, "type", str(device)) == "cuda":
+        torch.cuda.empty_cache()
+    _log_memory(stage, device)
+
+
 def _read_continuation_frames(path: Path, count: int) -> list[np.ndarray]:
     """Read the newest continuation frames in chronological order."""
 
@@ -1649,6 +1661,7 @@ def render_segment(
                 }
             )
             window_reports.append(report)
+            _release_window_memory(runtime.device, stage=f"window_{window_index}_released")
             LOGGER.info(
                 "stage=window_complete index=%s stitched_frames=%s/%s",
                 window_index,

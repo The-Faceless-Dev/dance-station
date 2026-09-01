@@ -45,6 +45,13 @@ def test_native_wan_runner_accepts_configured_temporal_window() -> None:
     assert "_encode_t5" in source
 
 
+def test_native_wan_runner_has_bounded_denoising_attention_mode() -> None:
+    source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
+
+    assert 'if _sdpa_backend_name() in {"cpu", "chunked", "manual"}' in source
+    assert '"WAN_FLEX_ATTENTION_CHUNK_SIZE"' in source
+
+
 def test_native_wan_runner_drops_conditioning_latent_before_vae_decode() -> None:
     source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
     render_start = source.index("def _render_window(")

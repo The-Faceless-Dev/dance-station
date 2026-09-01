@@ -149,7 +149,7 @@ class _WanRequestHandler(BaseHTTPRequestHandler):
                 self._write_json(404, {"detail": "job id is required"})
                 return
             try:
-                result = asyncio.run(self.server.worker.get(job_id))
+                result = self.server.worker.get(job_id)
             except FileNotFoundError:
                 result = None
             if result is None:
@@ -191,7 +191,7 @@ class _WanRequestHandler(BaseHTTPRequestHandler):
                     self._write_json(202, {"id": job_id, "status": "accepted", "duplicate": True})
                     return
                 try:
-                    existing = asyncio.run(self.server.worker.get(job_id))
+                    existing = self.server.worker.get(job_id)
                 except FileNotFoundError:
                     existing = None
                 if existing is not None and existing.get("status") in {"succeeded", "failed", "cancelled", "expired"}:
