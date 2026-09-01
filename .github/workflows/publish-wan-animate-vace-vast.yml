@@ -1,0 +1,67 @@
+name: Publish Wan Animate VACE Vast Overlay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
+  BASE_TAG: wan-q6-vast-direct-20260901-r6
+  TAG: wan-q6-vast-direct-20260901-vace14b-r1
+  VACE_COMMIT: 48eb44f1c4be87cc65a98bff985a26976841e9f3
+  WAN21_COMMIT: 9737cba9c1c3c4d04b33fcad41c111989865d315
+  VACE_CHECKPOINT_URL: https://huggingface.co/spacepxl/Wan2.1_VACE-14B_fp8_scaled/resolve/main/wan2.1_vace_14B_fp8_scaled.safetensors
+  VACE_CHECKPOINT_BYTES: 17578334838
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Fetch pinned VACE source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init /tmp/wan-vace-source
+          git -C /tmp/wan-vace-source remote add origin https://github.com/ali-vilab/VACE.git
+          git -C /tmp/wan-vace-source fetch --depth 1 origin "${VACE_COMMIT}"
+          git -C /tmp/wan-vace-source checkout --detach "${VACE_COMMIT}"
+
+      - name: Fetch pinned Wan2.1 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init /tmp/wan21-source
+          git -C /tmp/wan21-source remote add origin https://github.com/Wan-Video/Wan2.1.git
+          git -C /tmp/wan21-source fetch --depth 1 origin "${WAN21_COMMIT}"
+          git -C /tmp/wan21-source checkout --detach "${WAN21_COMMIT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish VACE layer on the known-good Vast image
+        shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python tools/publish_wan_vace_overlay.py \
+            --repo-root . \
+            --repo "${IMAGE#ghcr.io/}" \
+            --base-tag "${BASE_TAG}" \
+            --tag "${TAG}" \
+            --vace-source /tmp/wan-vace-source/vace \
+            --wan21-source /tmp/wan21-source/wan \
+            --checkpoint-url "${VACE_CHECKPOINT_URL}" \
+            --checkpoint-size "${VACE_CHECKPOINT_BYTES}"

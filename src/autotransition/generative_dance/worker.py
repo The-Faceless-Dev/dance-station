@@ -26,7 +26,12 @@ from .video import (
     probe_video,
     stitch_transparent_videos,
     stitch_videos,
+    transform_alpha_video,
 )
+from .vace_bridge import VaceBridgeComposer
+from autotransition.vace_stitch.config import VaceStitchConfig
+from autotransition.vace_stitch.enhancement import VaceVideoStage
+from autotransition.vace_stitch.video import frame_count as vace_frame_count
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -469,35 +474,158 @@ class GenerativeDanceWorker:
         final_dir.mkdir(parents=True, exist_ok=True)
         rgb_inputs: list[Path] = []
         alpha_inputs: list[Path] = []
-        cursor = 0.0
         has_alpha = bool(parameters.get("transparent", True))
-        for item in rendered:
-            timeline_start = float(item["timelineStartSeconds"])
-            if timeline_start > cursor + tolerance:
-                gap = timeline_start - cursor
-                rgb_inputs.append(make_blank_video(final_dir / f"gap-{len(rgb_inputs):03d}.mp4", width=self.config.canvas.width, height=self.config.canvas.height, fps=sequence_fps, duration_seconds=gap).path)
+        vace_config = VaceStitchConfig.from_env()
+        vace_parts: dict[str, dict[str, Any]] = {}
+        vace_results: list[Any] = []
+        vace_bridges: list[Any] = []
+        vace_loop = None
+        if vace_config.enabled and len(rendered) > 1:
+            self._progress(job_id, "vace_bridge", 0.80, "Generating VACE transitions between dance clips")
+            composer = VaceBridgeComposer(
+                vace_config,
+                self.store,
+                event=self._event,
+                matte=self.service.matte,
+            )
+            vace_parts, vace_results, vace_bridges, vace_loop = composer.run(
+                job_id=job_id,
+                rendered=rendered,
+                sequence=sequence,
+                parameters=parameters,
+                job_dir=self.job_dir(job_id),
+                output_width=self.config.canvas.width,
+                output_height=self.config.canvas.height,
+                output_fps=sequence_fps,
+                transparent=has_alpha,
+                job_seed=None,
+            )
+            self._event(
+                job_id,
+                "vace_sequence_completed",
+                bridgeCount=len(vace_results),
+                loopEnabled=bool(vace_loop),
+                modelName=vace_config.model_name,
+                modelSize=vace_config.model_size,
+            )
+
+        for index, item in enumerate(rendered):
+            if vace_parts and index > 0:
+                bridge = vace_bridges[index - 1]
+                part = vace_parts[bridge.id]
+                rgb_inputs.append(part["rgb"])
                 if has_alpha:
-                    alpha_inputs.append(make_blank_video(final_dir / f"gap-{len(alpha_inputs):03d}.mov", width=self.config.canvas.width, height=self.config.canvas.height, fps=sequence_fps, duration_seconds=gap, transparent=True, crf=self.config.transparent_crf).path)
+                    if part["alpha"] is None:
+                        raise RuntimeError(f"VACE bridge {bridge.id} has no alpha output")
+                    alpha_inputs.append(part["alpha"])
+            elif not vace_parts:
+                timeline_start = float(item["timelineStartSeconds"])
+                cursor = max(
+                    (float(previous["timelineEndSeconds"]) for previous in rendered[:index]),
+                    default=0.0,
+                )
+                if timeline_start > cursor + tolerance:
+                    gap = timeline_start - cursor
+                    rgb_inputs.append(
+                        make_blank_video(
+                            final_dir / f"gap-{len(rgb_inputs):03d}.mp4",
+                            width=self.config.canvas.width,
+                            height=self.config.canvas.height,
+                            fps=sequence_fps,
+                            duration_seconds=gap,
+                        ).path
+                    )
+                    if has_alpha:
+                        alpha_inputs.append(
+                            make_blank_video(
+                                final_dir / f"gap-{len(alpha_inputs):03d}.mov",
+                                width=self.config.canvas.width,
+                                height=self.config.canvas.height,
+                                fps=sequence_fps,
+                                duration_seconds=gap,
+                                transparent=True,
+                                crf=self.config.transparent_crf,
+                            ).path
+                        )
             result = item["result"]
             rgb_inputs.append(result.output_video)
             alpha_path = result.transparent_source_video or result.transparent_video
             if has_alpha and alpha_path is not None:
                 alpha_inputs.append(alpha_path)
-            cursor = max(cursor, float(item["timelineEndSeconds"]))
+        if vace_loop is not None:
+            loop_part = vace_parts[vace_loop.id]
+            rgb_inputs.append(loop_part["rgb"])
+            if has_alpha:
+                if loop_part["alpha"] is None:
+                    raise RuntimeError("VACE loop bridge has no alpha output")
+                alpha_inputs.append(loop_part["alpha"])
         if not rgb_inputs:
             raise RuntimeError("sequence rendering produced no output videos")
         final_rgb = final_dir / "generative-dance-output.mp4"
-        stitch_videos(rgb_inputs, final_rgb, width=self.config.canvas.width, height=self.config.canvas.height, fps=sequence_fps)
+        final_probe = stitch_videos(
+            rgb_inputs,
+            final_rgb,
+            width=self.config.canvas.width,
+            height=self.config.canvas.height,
+            fps=sequence_fps,
+        )
+
+        # Postprocessing is deliberately after the complete RGB timeline is
+        # composed. The alpha timeline is transformed to the resulting frame
+        # cadence below so transparency stays frame-aligned.
+        quality_rgb = final_rgb
+        quality_probe = final_probe
+        video_stages: list[dict[str, Any]] = []
+        for stage in (
+            VaceVideoStage(vace_config, stage="enhancement"),
+            VaceVideoStage(vace_config, stage="motion-interpolation"),
+        ):
+            if not stage.enabled:
+                continue
+            self._event(job_id, "vace_video_stage_started", stage=stage.stage, input=str(quality_rgb))
+            stage_result = stage.process(
+                input_video=quality_rgb,
+                output_dir=final_dir / stage.stage,
+                width=self.config.canvas.width,
+                height=self.config.canvas.height,
+                fps=sequence_fps,
+            )
+            quality_rgb = stage_result.output_video
+            quality_probe = stage_result.probe or probe_video(quality_rgb)
+            video_stages.append(stage_result.to_dict())
+            self._event(job_id, "vace_video_stage_completed", stage=stage.stage, output=str(quality_rgb))
+
         final_alpha = None
         final_webm = None
         final_preview = None
         if has_alpha and alpha_inputs and len(alpha_inputs) == len(rgb_inputs):
             final_alpha = final_dir / "generative-dance-output-alpha.mov"
-            stitch_transparent_videos(alpha_inputs, final_alpha, width=self.config.canvas.width, height=self.config.canvas.height, fps=sequence_fps, codec="prores_ks", crf=self.config.transparent_crf)
+            stitch_transparent_videos(
+                alpha_inputs,
+                final_alpha,
+                width=self.config.canvas.width,
+                height=self.config.canvas.height,
+                fps=sequence_fps,
+                codec="prores_ks",
+                crf=self.config.transparent_crf,
+            )
+            if quality_rgb != final_rgb:
+                final_alpha = transform_alpha_video(
+                    final_alpha,
+                    final_dir / "postprocessed-alpha" / "generative-dance-output-alpha.mov",
+                    width=quality_probe.width,
+                    height=quality_probe.height,
+                    fps=max(1, round(quality_probe.fps)),
+                    frame_count=vace_frame_count(
+                        quality_probe,
+                        max(1, round(quality_probe.fps)),
+                    ),
+                    crf=self.config.transparent_crf,
+                ).path
             final_webm = final_dir / "generative-dance-output.webm"
             encode_transparent_video(final_alpha, final_webm, codec=self.config.transparent_codec, crf=self.config.transparent_crf)
             final_preview = final_dir / "generative-dance-output-preview.mp4"
-            make_transparent_preview(final_alpha, final_preview, width=self.config.canvas.width, height=self.config.canvas.height, fps=sequence_fps, pixel_aspect_ratio=self.config.canvas.pixel_aspect_ratio)
+            make_transparent_preview(final_alpha, final_preview, width=quality_probe.width, height=quality_probe.height, fps=max(1, round(quality_probe.fps)), pixel_aspect_ratio=self.config.canvas.pixel_aspect_ratio)
         result_metadata = {
             "schemaVersion": 2,
             "runtime": "wan-animate",
@@ -511,8 +639,17 @@ class GenerativeDanceWorker:
             "identitySeed": identity_seed,
             "identitySeedScope": "job",
             "referenceStrength": reference_strength,
-            "continuityPolicy": "within-source-segment-only",
+            "continuityPolicy": "within-source-segment-only-with-vace-boundaries" if vace_parts else "within-source-segment-only",
             "crossSegmentContinuation": False,
+            "vace": {
+                "enabled": bool(vace_parts),
+                "modelName": vace_config.model_name,
+                "modelSize": vace_config.model_size,
+                "bridges": [result.to_dict() for result in vace_results],
+                "loopEnabled": bool(vace_loop),
+                "config": vace_config.to_public_dict(),
+            },
+            "videoStages": video_stages,
             "sequence": sequence,
             "segments": [
                 {
@@ -528,8 +665,10 @@ class GenerativeDanceWorker:
                 }
                 for item in rendered
             ],
-            "finalOutput": str(final_rgb),
+            "finalOutput": str(quality_rgb),
+            "finalMasterOutput": str(final_rgb),
             "finalTransparentOutput": str(final_webm) if final_webm else None,
+            "finalOutputProbe": quality_probe.to_dict(),
         }
         metadata_path = final_dir / "job-result.json"
         self.store.write_json(metadata_path, result_metadata)
