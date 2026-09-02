@@ -72,6 +72,13 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path) -> None:
         relative = path.relative_to(runtime_root).as_posix()
         entries.append((f"app/src/autotransition/generative_dance/{relative}", path))
 
+    vace_root = repo_root / "src" / "autotransition" / "vace_stitch"
+    for path in vace_root.rglob("*"):
+        if "__pycache__" in path.parts or not path.is_file():
+            continue
+        relative = path.relative_to(vace_root).as_posix()
+        entries.append((f"app/src/autotransition/vace_stitch/{relative}", path))
+
     runner = repo_root / "tools" / "generative_dance" / "wan_animate_2_runner.py"
     entries.append(("app/tools/generative_dance/wan_animate_2_runner.py", runner))
     runtime = repo_root / "tools" / "generative_dance" / "wan_animate_2_runtime.py"
@@ -82,6 +89,7 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path) -> None:
         "app/src",
         "app/src/autotransition",
         "app/src/autotransition/generative_dance",
+        "app/src/autotransition/vace_stitch",
         "app/tools",
         "app/tools/generative_dance",
     }
@@ -205,21 +213,33 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "TRANSFORMERS_CACHE": "/home/wan/.cache/huggingface/transformers",
         "TORCH_HOME": "/home/wan/.cache/torch",
         "MPLCONFIGDIR": "/home/wan/.cache/matplotlib",
-        "WAN_GGUF_GPU_RAW_CACHE": "0",
+        # The Vast target is the RTX 5090. Keep the quantized Q6 bytes on the
+        # device, but retain a reserve for activations and VAE work. A hard
+        # failure is preferable to silently dropping to host-transfer latency.
+        "WAN_GGUF_GPU_RAW_CACHE": "1",
+        "WAN_GGUF_GPU_RAW_RESERVE_MB": "4096",
         "WAN_GGUF_DEQUANT_BACKEND": "triton",
         "WAN_GGUF_DEQUANT_DTYPE": "bfloat16",
         "WAN_T5_DEVICE": "cpu",
-        # `sdpa` forces the runner's eager masked-attention adapter. The
-        # `chunked` value alone leaves official torch.compile Flex Attention
-        # active whenever Triton is installed.
-        "WAN_FLEX_ATTENTION_BACKEND": "sdpa",
-        "WAN_SDPA_BACKEND": "chunked",
-        "WAN_FLEX_ATTENTION_CHUNK_SIZE": "64",
-        "WAN_SDPA_CHUNK_SIZE": "256",
+        # Production 5090 runs must use the fused CUDA paths. There is no
+        # eager, manually chunked, or CPU attention fallback in this profile.
+        "WAN_FLEX_ATTENTION_COMPILE_MODE": "max-autotune",
+        "WAN_FLEX_ATTENTION_BACKEND": "official",
+        "WAN_REQUIRE_FLEX_ATTENTION": "1",
+        "WAN_REQUIRE_FLASH_ATTENTION": "1",
+        "WAN_REFERENCE_ATTENTION_BACKEND": "flash",
+        "WAN_SDPA_BACKEND": "auto",
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
         "GENERATIVE_DANCE_WAN_REFERENCE_STRENGTH": "1.25",
+        "GENERATIVE_DANCE_STAGE_TIMEOUT_SECONDS": "7200",
+        "VACE_STITCH_STAGE_TIMEOUT_SECONDS": "7200",
     }
-    keys = set(env_overrides)
+    keys = set(env_overrides) | {
+        "GENERATIVE_DANCE_JOB_TIMEOUT_SECONDS",
+        "VACE_STITCH_JOB_TIMEOUT_SECONDS",
+        "GENERATIVE_DANCE_WAN_RENDER_TIMEOUT_SECONDS",
+        "VACE_STITCH_RUNTIME_TIMEOUT_SECONDS",
+    }
     env = [value for value in env if value.split("=", 1)[0] not in keys]
     env.extend(f"{key}={value}" for key, value in env_overrides.items())
     image_config["Env"] = env

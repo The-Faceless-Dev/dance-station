@@ -73,12 +73,21 @@ def test_native_wan_runtime_has_explicit_cuda_dequant_dtype_policy() -> None:
     assert "_normalize_reference_cache" in runner_source
 
 
-def test_wan_overlay_forces_eager_bounded_attention_when_triton_is_installed() -> None:
+def test_wan_overlay_requires_fused_5090_attention_and_raw_cache() -> None:
     source = Path("tools/publish_wan_overlay_manifest.py").read_text(encoding="utf-8")
 
-    assert '"WAN_FLEX_ATTENTION_BACKEND": "sdpa"' in source
-    assert '"WAN_SDPA_BACKEND": "chunked"' in source
+    assert '"WAN_FLEX_ATTENTION_BACKEND": "official"' in source
+    assert '"WAN_REQUIRE_FLEX_ATTENTION": "1"' in source
+    assert '"WAN_REQUIRE_FLASH_ATTENTION": "1"' in source
+    assert '"WAN_REFERENCE_ATTENTION_BACKEND": "flash"' in source
+    assert '"WAN_GGUF_GPU_RAW_CACHE": "1"' in source
     assert '"WAN_GGUF_DEQUANT_DTYPE": "bfloat16"' in source
+
+
+def test_native_wan_runner_keeps_one_seed_across_temporal_windows() -> None:
+    source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
+    assert "windows_use_same_seed=true" in source
+    assert "seed=effective_seed" in source
 
 
 def test_native_wan_runner_drops_conditioning_latent_before_vae_decode() -> None:
@@ -340,6 +349,7 @@ def test_worker_sequence_resets_continuation_at_source_boundaries(
 
     def fake_stitch(inputs: list[Path], output: Path, **_: object) -> None:
         output.write_bytes(b"stitched")
+        return VideoProbe(output, 640, 800, 24.0, len(inputs), len(inputs) * 24, "yuv420p")
 
     monkeypatch.setattr(worker, "_download", fake_download)
     monkeypatch.setattr(worker_module, "probe_video", lambda _path: VideoProbe(Path("source.mp4"), 640, 800, 24.0, 10.0, 240, "yuv420p"))

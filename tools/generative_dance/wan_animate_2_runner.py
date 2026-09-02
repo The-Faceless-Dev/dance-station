@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import gc
 import json
 import logging
@@ -115,6 +115,11 @@ def _reference_sdpa_backend_name() -> str:
         "WAN_REFERENCE_SDPA_BACKEND",
         os.getenv("WAN_SDPA_BACKEND", "math"),
     ).strip().lower() or "auto"
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name, "1" if default else "0").strip().lower()
+    return value in {"1", "true", "yes", "on"}
 
 
 def _sampling_sigmas(sampling_steps: int, shift: float) -> np.ndarray:
@@ -571,9 +576,24 @@ def _install_flex_attention_fallback(model: Any) -> None:
     import types
 
     backend_name = os.getenv("WAN_FLEX_ATTENTION_BACKEND", "auto").strip().lower()
+    require_fused = _env_flag("WAN_REQUIRE_FLEX_ATTENTION")
     force_eager = backend_name in {"eager", "sdpa", "torch"}
+    if require_fused and force_eager:
+        raise RuntimeError(
+            "the RTX 5090 Wan-Animate profile requires compiled FlexAttention; "
+            f"refusing requested slow backend WAN_FLEX_ATTENTION_BACKEND={backend_name!r}"
+        )
     if not force_eager and importlib.util.find_spec("triton") is not None:
+        LOGGER.info(
+            "attention_backend=flex_attention implementation=compiled_inductor required=%s",
+            require_fused,
+        )
         return
+    if require_fused:
+        raise RuntimeError(
+            "compiled FlexAttention is required for the RTX 5090 Wan-Animate profile "
+            "but Triton is not installed; refusing to use eager masked attention"
+        )
     module = importlib.import_module("wanxiang.models.wan_animate_2_model")
     module.flex_attention = _sdpa_flex_attention
 
@@ -644,6 +664,12 @@ def _install_reference_attention_fallback(model: Any) -> None:
     if backend_name in {"", "auto", "flash", "flash_attention"}:
         return
 
+    if _env_flag("WAN_REQUIRE_FLASH_ATTENTION"):
+        raise RuntimeError(
+            "the RTX 5090 Wan-Animate profile requires FlashAttention for the "
+            f"reference pass; refusing WAN_REFERENCE_ATTENTION_BACKEND={backend_name!r}"
+        )
+
     attention = importlib.import_module("wanxiang.models.attention")
     model_module = importlib.import_module("wanxiang.models.wan_animate_2_model")
     original_flash = getattr(attention, "flash_attention", None)
@@ -685,12 +711,7 @@ def _install_reference_attention_fallback(model: Any) -> None:
 def _validate_flash_attention(device: Any) -> None:
     """Execute a small real CUDA kernel before loading the 14B transformer."""
 
-    required = os.getenv("WAN_REQUIRE_FLASH_ATTENTION", "0").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    required = _env_flag("WAN_REQUIRE_FLASH_ATTENTION")
     if not required:
         return
     if getattr(device, "type", None) != "cuda":
@@ -714,6 +735,28 @@ def _validate_flash_attention(device: Any) -> None:
         time.perf_counter() - started,
         torch.cuda.get_device_name(device),
     )
+
+
+def _validate_attention_dependencies(device: Any) -> None:
+    """Fail before model allocation when the production CUDA profile is incomplete."""
+
+    if getattr(device, "type", None) != "cuda":
+        if _env_flag("WAN_REQUIRE_FLASH_ATTENTION") or _env_flag("WAN_REQUIRE_FLEX_ATTENTION"):
+            raise RuntimeError("the RTX 5090 Wan-Animate profile requires CUDA attention kernels")
+        return
+
+    import importlib.util
+
+    if _env_flag("WAN_REQUIRE_FLASH_ATTENTION"):
+        attention_module = importlib.util.find_spec("flash_attn_interface") or importlib.util.find_spec("flash_attn")
+        if attention_module is None:
+            raise RuntimeError(
+                "FlashAttention is required for the RTX 5090 Wan-Animate profile but is not installed"
+            )
+    if _env_flag("WAN_REQUIRE_FLEX_ATTENTION") and importlib.util.find_spec("triton") is None:
+        raise RuntimeError(
+            "compiled FlexAttention is required for the RTX 5090 Wan-Animate profile but Triton is not installed"
+        )
 
 
 @dataclass(frozen=True)
@@ -784,11 +827,130 @@ def _log_memory(stage: str, device: Any) -> None:
         LOGGER.info("stage=%s cuda=unavailable", stage)
         return
     LOGGER.info(
-        "stage=%s cuda_allocated_mb=%.1f cuda_reserved_mb=%.1f",
+        "stage=%s cuda_allocated_mb=%.1f cuda_reserved_mb=%.1f cuda_peak_allocated_mb=%.1f cuda_peak_reserved_mb=%.1f",
         stage,
         torch.cuda.memory_allocated(device) / 1024**2,
         torch.cuda.memory_reserved(device) / 1024**2,
+        torch.cuda.max_memory_allocated(device) / 1024**2,
+        torch.cuda.max_memory_reserved(device) / 1024**2,
     )
+
+
+def _memory_snapshot(device: Any) -> dict[str, float | None]:
+    """Return comparable memory values for the retained inference report."""
+
+    import torch
+
+    if not torch.cuda.is_available() or getattr(device, "type", str(device)) != "cuda":
+        return {
+            "allocatedMiB": None,
+            "reservedMiB": None,
+            "peakAllocatedMiB": None,
+            "peakReservedMiB": None,
+        }
+    return {
+        "allocatedMiB": round(torch.cuda.memory_allocated(device) / 1024**2, 3),
+        "reservedMiB": round(torch.cuda.memory_reserved(device) / 1024**2, 3),
+        "peakAllocatedMiB": round(torch.cuda.max_memory_allocated(device) / 1024**2, 3),
+        "peakReservedMiB": round(torch.cuda.max_memory_reserved(device) / 1024**2, 3),
+    }
+
+
+def _device_of(value: Any) -> str | None:
+    """Read a module/tensor device without assuming a concrete model class."""
+
+    device = getattr(value, "device", None)
+    if device is not None:
+        return str(device)
+    try:
+        parameter = next(value.parameters())
+    except (AttributeError, StopIteration):
+        return None
+    return str(parameter.device)
+
+
+def _cuda_runtime_report(runtime: Any) -> dict[str, Any]:
+    """Capture the runtime facts needed to explain device/fallback behavior."""
+
+    import torch
+    try:
+        import importlib
+
+        attention_module = importlib.import_module("wanxiang.models.attention")
+        flash_version = getattr(attention_module, "FLASH_VER", None)
+    except Exception:
+        flash_version = None
+
+    report: dict[str, Any] = {
+        "torchVersion": getattr(torch, "__version__", None),
+        "torchCudaVersion": getattr(getattr(torch, "version", None), "cuda", None),
+        "cudaAvailable": bool(torch.cuda.is_available()),
+        "device": str(runtime.device),
+        "computeDtype": str(runtime.compute_dtype),
+        "modelDevice": _device_of(runtime.model),
+        "vaeDevice": _device_of(runtime.vae),
+        "sdpaBackend": _sdpa_backend_name(),
+        "referenceSdpaBackend": _reference_sdpa_backend_name(),
+        "referenceAttentionBackend": os.getenv("WAN_REFERENCE_ATTENTION_BACKEND", "sdpa"),
+        "requireFlashAttention": os.getenv("WAN_REQUIRE_FLASH_ATTENTION", "0"),
+        "requireFlexAttention": os.getenv("WAN_REQUIRE_FLEX_ATTENTION", "0"),
+        "flexAttentionBackend": os.getenv("WAN_FLEX_ATTENTION_BACKEND", "auto"),
+        "flashAttentionVersion": flash_version,
+        "ggufRawCache": os.getenv("WAN_GGUF_GPU_RAW_CACHE", "auto"),
+        "ggufRawCacheReserveMb": os.getenv("WAN_GGUF_GPU_RAW_RESERVE_MB", "2048"),
+    }
+    if torch.cuda.is_available() and getattr(runtime.device, "type", str(runtime.device)) == "cuda":
+        index = runtime.device.index if runtime.device.index is not None else torch.cuda.current_device()
+        properties = torch.cuda.get_device_properties(index)
+        report.update(
+            {
+                "cudaDeviceIndex": index,
+                "cudaDeviceName": properties.name,
+                "cudaComputeCapability": f"{properties.major}.{properties.minor}",
+                "cudaTotalMemoryMiB": round(properties.total_memory / 1024**2, 3),
+            }
+        )
+    return report
+
+
+@contextmanager
+def _timed_stage(timings: dict[str, dict[str, Any]], label: str, device: Any):
+    """Measure wall time and, when possible, synchronized CUDA time."""
+
+    import torch
+
+    use_cuda = bool(
+        torch.cuda.is_available()
+        and getattr(device, "type", str(device)) == "cuda"
+        and os.getenv("WAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"}
+    )
+    if use_cuda:
+        torch.cuda.synchronize(device)
+        cuda_start = torch.cuda.Event(enable_timing=True)
+        cuda_end = torch.cuda.Event(enable_timing=True)
+        cuda_start.record(torch.cuda.current_stream(device))
+    else:
+        cuda_start = cuda_end = None
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        wall_seconds = time.perf_counter() - started
+        cuda_seconds = None
+        if use_cuda and cuda_end is not None and cuda_start is not None:
+            cuda_end.record(torch.cuda.current_stream(device))
+            cuda_end.synchronize()
+            cuda_seconds = cuda_start.elapsed_time(cuda_end) / 1000.0
+        timings[label] = {
+            "wallSeconds": round(wall_seconds, 6),
+            "cudaSeconds": round(cuda_seconds, 6) if cuda_seconds is not None else None,
+        }
+        LOGGER.info(
+            "timing stage=%s wall_seconds=%.6f cuda_seconds=%s",
+            label,
+            wall_seconds,
+            f"{cuda_seconds:.6f}" if cuda_seconds is not None else "unmeasured",
+        )
 
 
 class _TypedReferenceCache(dict[int, Any]):
@@ -899,6 +1061,7 @@ def load_runtime(
     device = torch.device(device_name)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
+    _validate_attention_dependencies(device)
     _install_attention_fallback()
     _validate_flash_attention(device)
     dtype = _dtype(compute_dtype)
@@ -1163,6 +1326,11 @@ def _render_window(
 
     if seed < 0:
         seed = random.randint(0, 2**32 - 1)
+    device = runtime.device
+    timings: dict[str, dict[str, Any]] = {}
+    window_started = time.perf_counter()
+    if device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
@@ -1181,17 +1349,20 @@ def _render_window(
         seed,
         reference_strength,
     )
-    first_image = cv2.imread(str(reference_image), cv2.IMREAD_COLOR)
-    if first_image is None:
-        raise RuntimeError(f"could not read reference image: {reference_image}")
-    first_image = cv2.cvtColor(first_image, cv2.COLOR_BGR2RGB)
-    first_image = cv2.resize(first_image, (width, height), interpolation=cv2.INTER_AREA)
+    with _timed_stage(timings, "reference_image_load_resize", device):
+        first_image = cv2.imread(str(reference_image), cv2.IMREAD_COLOR)
+        if first_image is None:
+            raise RuntimeError(f"could not read reference image: {reference_image}")
+        first_image = cv2.cvtColor(first_image, cv2.COLOR_BGR2RGB)
+        first_image = cv2.resize(first_image, (width, height), interpolation=cv2.INTER_AREA)
     if continuation_frames:
-        continuation_frames = [
-            cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
-            for frame in continuation_frames
-        ]
-    driver_frames, source_fps = _read_driver(driver_video, width=width, height=height, frame_count=clip_len)
+        with _timed_stage(timings, "continuation_frame_resize", device):
+            continuation_frames = [
+                cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
+                for frame in continuation_frames
+            ]
+    with _timed_stage(timings, "driver_decode_resize", device):
+        driver_frames, source_fps = _read_driver(driver_video, width=width, height=height, frame_count=clip_len)
     LOGGER.info(
         "stage=inputs_ready driver_fps=%.3f frames=%s continuation_frames=%s",
         source_fps,
@@ -1210,29 +1381,41 @@ def _render_window(
         [torch.tensor([lat_t, lat_h // 2, lat_w // 2], dtype=torch.long)]
     )
 
-    device = runtime.device
     model = runtime.model
     vae = runtime.vae
     compute_dtype = runtime.compute_dtype
 
-    conditioning = torch.tensor(np.stack(driver_frames) / 127.5 - 1.0)
-    conditioning = rearrange(conditioning, "t h w c -> 1 c t h w").to(device=device, dtype=compute_dtype)
-    reference = torch.tensor(first_image / 127.5 - 1.0)
-    reference = rearrange(reference, "h w c -> 1 c h w").to(device=device, dtype=compute_dtype)
-    ref_pixel_values = reference.unsqueeze(2)
-    conditioning_pixel_values = conditioning
+    with _timed_stage(timings, "conditioning_tensor_prepare_transfer", device):
+        conditioning = torch.tensor(np.stack(driver_frames) / 127.5 - 1.0)
+        conditioning = rearrange(conditioning, "t h w c -> 1 c t h w").to(device=device, dtype=compute_dtype)
+        reference = torch.tensor(first_image / 127.5 - 1.0)
+        reference = rearrange(reference, "h w c -> 1 c h w").to(device=device, dtype=compute_dtype)
+        ref_pixel_values = reference.unsqueeze(2)
+        conditioning_pixel_values = conditioning
 
-    noise = [
-        torch.randn(
-            16,
-            target_shape[0],
-            target_shape[1],
-            target_shape[2],
-            dtype=torch.float32,
-            device=device,
-            generator=generator,
-        )
-    ]
+        noise = [
+            torch.randn(
+                16,
+                target_shape[0],
+                target_shape[1],
+                target_shape[2],
+                dtype=torch.float32,
+                device=device,
+                generator=generator,
+            )
+        ]
+    LOGGER.info(
+        "stage=shapes_ready target_shape=%s grid_shape=%s conditioning_shape=%s reference_shape=%s "
+        "target_frames=%s compute_dtype=%s model_device=%s vae_device=%s",
+        target_shape,
+        tuple(grid_sizes.shape),
+        tuple(conditioning.shape),
+        tuple(ref_pixel_values.shape),
+        target_frames,
+        compute_dtype,
+        _device_of(model),
+        _device_of(vae),
+    )
     # The released distilled profile explicitly uses Euler flow sampling.
     # Keep the shifted sigma schedule from the official Wan implementation,
     # but use the matching Euler update instead of the base-model multistep
@@ -1252,7 +1435,8 @@ def _render_window(
     )
     with torch.inference_mode(), autocast_context:
         LOGGER.info("stage=vae_reference_encode")
-        ref_latents = torch.stack(vae.encode(ref_pixel_values))
+        with _timed_stage(timings, "vae_reference_encode", device):
+            ref_latents = torch.stack(vae.encode(ref_pixel_values))
         _require_finite_tensor("reference_latents", ref_latents)
         mask_ref = get_i2v_mask(1, lat_h, lat_w, 1, device=device)
         y_ref = torch.concat([mask_ref, ref_latents[0]]).to(dtype=compute_dtype, device=device)
@@ -1272,12 +1456,13 @@ def _render_window(
         reft_parts.append(torch.zeros(3, reft_frame_count, height, width))
         reft_pixels = torch.cat(reft_parts, dim=1)
         expected_reft_t = mask_reft.shape[1]
-        for _ in range(8):
-            reft_latents = torch.stack(vae.encode([reft_pixels.to(device=device, dtype=compute_dtype)]))
-            _require_finite_tensor("driver_condition_latents", reft_latents)
-            if reft_latents.shape[2] >= expected_reft_t:
-                break
-            reft_pixels = torch.cat([reft_pixels, torch.zeros(3, 1, height, width)], dim=1)
+        with _timed_stage(timings, "vae_driver_condition_encode", device):
+            for _ in range(8):
+                reft_latents = torch.stack(vae.encode([reft_pixels.to(device=device, dtype=compute_dtype)]))
+                _require_finite_tensor("driver_condition_latents", reft_latents)
+                if reft_latents.shape[2] >= expected_reft_t:
+                    break
+                reft_pixels = torch.cat([reft_pixels, torch.zeros(3, 1, height, width)], dim=1)
         if reft_latents.shape[2] != expected_reft_t:
             raise RuntimeError(
                 f"VAE temporal conditioning mismatch: expected {expected_reft_t}, "
@@ -1291,30 +1476,35 @@ def _render_window(
         clip = _load_clip(runtime)
         try:
             LOGGER.info("stage=clip_reference_encode device=cpu")
-            with torch.autocast(device_type="cuda", enabled=False) if device.type == "cuda" else nullcontext():
-                clip.model.visual.to(device)
-                clip_context = clip.visual(
-                    [ref_pixel_values[0, :, 0].to(device=device, dtype=torch.float16).unsqueeze(1)]
-                ).to(dtype=compute_dtype, device=device)
-                clip.model.visual.to("cpu")
-                torch.cuda.empty_cache()
-                LOGGER.info("stage=clip_condition_encode device=cpu")
-                clip.model.visual.to(device)
-                condition_clip_context = clip.visual(
-                    [conditioning_pixel_values[0, :, 0].to(device=device, dtype=torch.float16).unsqueeze(1)]
-                ).to(dtype=compute_dtype, device=device)
-                clip.model.visual.to("cpu")
-                torch.cuda.empty_cache()
+            with _timed_stage(timings, "clip_reference_encode", device):
+                with torch.autocast(device_type="cuda", enabled=False) if device.type == "cuda" else nullcontext():
+                    clip.model.visual.to(device)
+                    clip_context = clip.visual(
+                        [ref_pixel_values[0, :, 0].to(device=device, dtype=torch.float16).unsqueeze(1)]
+                    ).to(dtype=compute_dtype, device=device)
+                    clip.model.visual.to("cpu")
+                    torch.cuda.empty_cache()
+            LOGGER.info("stage=clip_condition_encode device=cpu")
+            with _timed_stage(timings, "clip_condition_encode", device):
+                with torch.autocast(device_type="cuda", enabled=False) if device.type == "cuda" else nullcontext():
+                    clip.model.visual.to(device)
+                    condition_clip_context = clip.visual(
+                        [conditioning_pixel_values[0, :, 0].to(device=device, dtype=torch.float16).unsqueeze(1)]
+                    ).to(dtype=compute_dtype, device=device)
+                    clip.model.visual.to("cpu")
+                    torch.cuda.empty_cache()
         finally:
             _release_conditioner(clip, label="clip", device=device)
 
         t5_device = (os.getenv("WAN_T5_DEVICE", "auto").strip().lower())
         LOGGER.info("stage=t5_prompt_encode requested_device=%s", t5_device)
-        context = _encode_t5(runtime, prompt)
+        with _timed_stage(timings, "t5_prompt_encode", device):
+            context = _encode_t5(runtime, prompt)
         context_ref = context
 
         LOGGER.info("stage=condition_encode")
-        condition_latents = torch.stack(vae.encode(conditioning_pixel_values))
+        with _timed_stage(timings, "vae_condition_encode", device):
+            condition_latents = torch.stack(vae.encode(conditioning_pixel_values))
         _require_finite_tensor("condition_latents", condition_latents)
         condition_lat_t = condition_latents.shape[2]
         condition_lat_h = condition_latents.shape[3]
@@ -1359,15 +1549,16 @@ def _render_window(
         LOGGER.info("stage=reference_transformer_pass")
         cache_k = _TypedReferenceCache(compute_dtype)
         cache_v = _TypedReferenceCache(compute_dtype)
-        model(
-            condition_latents,
-            grid_sizes=grid_sizes,
-            k_cache=cache_k,
-            v_cache=cache_v,
-            t=torch.ones(1, device=device),
-            method="forward_ref",
-            **ref_args,
-        )
+        with _timed_stage(timings, "reference_transformer_pass", device):
+            model(
+                condition_latents,
+                grid_sizes=grid_sizes,
+                k_cache=cache_k,
+                v_cache=cache_v,
+                t=torch.ones(1, device=device),
+                method="forward_ref",
+                **ref_args,
+            )
         latents = noise
         converted_cache_values = cache_k.converted + cache_v.converted
         converted_cache_values += _normalize_reference_cache(cache_k, compute_dtype)
@@ -1395,31 +1586,33 @@ def _render_window(
                 len(cache_v),
             )
             for index, timestep in enumerate(timesteps):
-                LOGGER.info("stage=denoise step=%s/%s", index + 1, len(timesteps))
-                t = torch.stack([timestep])
-                prediction = model(
-                    latents,
-                    k_cache=cache_k,
-                    v_cache=cache_v,
-                    t=t,
-                    grid_sizes_ref=grid_sizes_ref,
-                    method="forward_gen",
-                    **cond_args,
-                )
-                # The Wan adapter returns a one-item list here; the scheduler consumes
-                # the tensor at index zero, so validate that exact value.
-                _require_finite_tensor("denoise_prediction", prediction[0])
-                latents[0] = scheduler.step(
-                    prediction[0].unsqueeze(0),
-                    timestep,
-                    latents[0].unsqueeze(0),
-                    return_dict=False,
-                    generator=generator,
-                )[0].squeeze(0)
-                _require_finite_tensor("sample_latents", latents[0])
-                del prediction
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                step_label = f"denoise_step_{index + 1:02d}"
+                LOGGER.info("stage=denoise step=%s/%s label=%s", index + 1, len(timesteps), step_label)
+                with _timed_stage(timings, step_label, device):
+                    t = torch.stack([timestep])
+                    prediction = model(
+                        latents,
+                        k_cache=cache_k,
+                        v_cache=cache_v,
+                        t=t,
+                        grid_sizes_ref=grid_sizes_ref,
+                        method="forward_gen",
+                        **cond_args,
+                    )
+                    # The Wan adapter returns a one-item list here; the scheduler consumes
+                    # the tensor at index zero, so validate that exact value.
+                    _require_finite_tensor("denoise_prediction", prediction[0])
+                    latents[0] = scheduler.step(
+                        prediction[0].unsqueeze(0),
+                        timestep,
+                        latents[0].unsqueeze(0),
+                        return_dict=False,
+                        generator=generator,
+                    )[0].squeeze(0)
+                    _require_finite_tensor("sample_latents", latents[0])
+                    del prediction
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
         # Wan allocates one leading latent for the conditioning frame. It is
         # not a generated video frame and must be removed before VAE decode.
@@ -1432,11 +1625,13 @@ def _render_window(
             int(latents[0].shape[1]),
             int(generated_latents.shape[1]),
         )
-        decoded = torch.stack(vae.decode([generated_latents.to(dtype=torch.float32)]))
+        with _timed_stage(timings, "vae_decode", device):
+            decoded = torch.stack(vae.decode([generated_latents.to(dtype=torch.float32)]))
         _require_finite_tensor("decoded_frames", decoded)
         frame_values = rearrange(((decoded + 1.0) * 127.5), "1 c t h w -> t h w c")
         _require_finite_tensor("decoded_pixel_values", frame_values)
-        frame_values = frame_values.clamp(0, 255).cpu().numpy()
+        with _timed_stage(timings, "decoded_frame_device_to_host", device):
+            frame_values = frame_values.clamp(0, 255).cpu().numpy()
         if not np.isfinite(frame_values).all():
             raise RuntimeError("Wan-Animate-2 produced non-finite pixel values after VAE decode")
         frames = frame_values.astype(np.uint8)
@@ -1454,7 +1649,20 @@ def _render_window(
                 "the job was not encoded as a successful video"
             )
 
-    _write_video([frame for frame in frames], output, fps)
+    with _timed_stage(timings, "output_video_write", device):
+        _write_video([frame for frame in frames], output, fps)
+    total_seconds = time.perf_counter() - window_started
+    LOGGER.info(
+        "stage=window_render_complete wall_seconds=%.6f output_frames=%s output_fps=%s "
+        "source_seconds=%.6f frames_per_second=%.6f source_seconds_per_second=%.6f memory=%s",
+        total_seconds,
+        len(frames),
+        fps,
+        len(frames) / max(1, fps),
+        len(frames) / max(total_seconds, 1e-9),
+        (len(frames) / max(1, fps)) / max(total_seconds, 1e-9),
+        _memory_snapshot(device),
+    )
     metadata = {
         "referenceImage": str(reference_image),
         "driverVideo": str(driver_video),
@@ -1469,6 +1677,18 @@ def _render_window(
         "continuationUsed": bool(continuation_frames),
         "continuationFrames": len(continuation_frames or []),
         "backend": "autotransition-wan-animate-2-gguf",
+        "diagnostics": {
+            "enabled": os.getenv("WAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"},
+            "timings": timings,
+            "wallSeconds": round(total_seconds, 6),
+            "framesPerSecond": round(len(frames) / max(total_seconds, 1e-9), 6),
+            "sourceSecondsPerSecond": round(
+                (len(frames) / max(1, fps)) / max(total_seconds, 1e-9),
+                6,
+            ),
+            "runtime": _cuda_runtime_report(runtime),
+            "memory": _memory_snapshot(device),
+        },
     }
     output.with_suffix(".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     LOGGER.info("stage=render_complete output=%s frames=%s", output, len(frames))
@@ -1616,6 +1836,24 @@ def render_segment(
     if output_fps < 1:
         raise RuntimeError(f"driver video has no usable frame rate: {source_fps}")
 
+    segment_started = time.perf_counter()
+    runtime_report = _cuda_runtime_report(runtime)
+    LOGGER.info(
+        "stage=segment_start driver=%s output=%s source_frames=%s source_fps=%.6f "
+        "output_fps=%s width=%s height=%s max_clip_len=%s overlap=%s steps=%s runtime=%s",
+        driver_video,
+        output,
+        len(all_frames),
+        source_fps,
+        output_fps,
+        width,
+        height,
+        max_clip_len,
+        temporal_context_frames,
+        steps,
+        runtime_report,
+    )
+
     window_dir = output.parent / ".windows"
     window_dir.mkdir(parents=True, exist_ok=True)
     overlap = temporal_context_frames
@@ -1624,6 +1862,8 @@ def render_segment(
     window_reports: list[dict[str, Any]] = []
     start = 0
     window_index = 0
+    effective_seed = seed if seed >= 0 else random.randint(0, 2**32 - 1)
+    LOGGER.info("stage=segment_seed_resolved seed=%s windows_use_same_seed=true", effective_seed)
     continuity_frames: list[np.ndarray] | None = None
     effective_continuation = continuation_frames or continuation_frame
     if effective_continuation is not None and temporal_context_frames > 0:
@@ -1643,7 +1883,13 @@ def render_segment(
             window_index += 1
             window_driver = window_dir / f"driver-{window_index:04d}.mp4"
             window_output = window_dir / f"render-{window_index:04d}.mp4"
+            window_prepare_started = time.perf_counter()
             _write_video(window_frames, window_driver, output_fps)
+            LOGGER.info(
+                "timing stage=window_driver_write index=%s wall_seconds=%.6f",
+                window_index,
+                time.perf_counter() - window_prepare_started,
+            )
             LOGGER.info(
                 "stage=window_start index=%s start_frame=%s end_frame=%s input_frames=%s fps=%s",
                 window_index,
@@ -1664,7 +1910,7 @@ def render_segment(
                 fps=output_fps,
                 clip_len=len(window_frames),
                 steps=steps,
-                seed=(seed + window_index - 1) if seed >= 0 else seed,
+                seed=effective_seed,
                 reference_strength=reference_strength,
                 continuation_frames=continuity_frames,
             )
@@ -1728,12 +1974,32 @@ def render_segment(
             raise RuntimeError("Wan Animate produced no frames after window stitching")
         stitched.extend(stitched[-1].copy() for _ in range(len(all_frames) - len(stitched)))
     stitched = stitched[: len(all_frames)]
+    output_write_started = time.perf_counter()
     _write_video(stitched, output, output_fps)
+    output_write_seconds = time.perf_counter() - output_write_started
+    LOGGER.info(
+        "timing stage=segment_output_video_write wall_seconds=%.6f bytes=%s",
+        output_write_seconds,
+        output.stat().st_size if output.exists() else 0,
+    )
+    segment_wall_seconds = time.perf_counter() - segment_started
+    LOGGER.info(
+        "stage=segment_complete output=%s wall_seconds=%.6f frames=%s fps=%s "
+        "frames_per_second=%.6f source_seconds_per_second=%.6f windows=%s memory=%s",
+        output,
+        segment_wall_seconds,
+        len(stitched),
+        output_fps,
+        len(stitched) / max(segment_wall_seconds, 1e-9),
+        (len(stitched) / max(1, output_fps)) / max(segment_wall_seconds, 1e-9),
+        len(window_reports),
+        _memory_snapshot(runtime.device),
+    )
     metadata = {
         "referenceImage": str(reference_image),
         "driverVideo": str(driver_video),
         "output": str(output),
-        "seed": seed,
+        "seed": effective_seed,
         "referenceStrength": reference_strength,
         "width": width,
         "height": height,
@@ -1754,6 +2020,17 @@ def render_segment(
         "initialContinuation": effective_continuation is not None,
         "windows": window_reports,
         "backend": "autotransition-wan-animate-2-gguf",
+        "diagnostics": {
+            "enabled": os.getenv("WAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"},
+            "runtime": runtime_report,
+            "wallSeconds": round(segment_wall_seconds, 6),
+            "framesPerSecond": round(len(stitched) / max(segment_wall_seconds, 1e-9), 6),
+            "sourceSecondsPerSecond": round(
+                (len(stitched) / max(1, output_fps)) / max(segment_wall_seconds, 1e-9),
+                6,
+            ),
+            "outputVideoWriteSeconds": round(output_write_seconds, 6),
+        },
     }
     output.with_suffix(".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
     LOGGER.info(
