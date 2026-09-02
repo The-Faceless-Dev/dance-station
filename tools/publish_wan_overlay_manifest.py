@@ -272,6 +272,11 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "GENERATIVE_DANCE_WAN_LIGHTX2V_ENABLED": "1",
         "GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT": "/models/wan-animate-2/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
         "GENERATIVE_DANCE_WAN_LIGHTX2V_STRENGTH": "1.0",
+        # The 32 GB RTX 5090 profile fits the Q6 + LightX2V stack with the
+        # proven 17-frame window. The base image used by the overlay carried
+        # a 33-frame value, which OOMs once the adapter activations are added.
+        "GENERATIVE_DANCE_WAN_TEMPORAL_WINDOW": "17",
+        "GENERATIVE_DANCE_WAN_TEMPORAL_CONTEXT_FRAMES": "5",
         "WAN_LIGHTX2V_ENABLED": "1",
         "WAN_LIGHTX2V_CHECKPOINT": "/models/wan-animate-2/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
         "WAN_LIGHTX2V_STRENGTH": "1.0",
