@@ -127,6 +127,14 @@ def _sampling_sigmas(sampling_steps: int, shift: float) -> np.ndarray:
     return shift * sigma / (1 + (shift - 1) * sigma)
 
 
+def _lightx2v_sampling_sigmas(sampling_steps: int) -> np.ndarray:
+    """Return the official [1000, 750, 500, 250] four-step schedule."""
+
+    if sampling_steps != 4:
+        raise ValueError("LightX2V Wan-Animate-2 sampling requires exactly 4 steps")
+    return np.asarray([1.0, 0.75, 0.5, 0.25], dtype=np.float32)
+
+
 def _retrieve_sigmas(scheduler: Any, *, sigmas: np.ndarray, device: Any) -> Any:
     scheduler.set_timesteps(sigmas=sigmas, device=device)
     return scheduler.timesteps
@@ -795,6 +803,7 @@ class LoadedRuntime:
     clip_checkpoint: Path
     clip_tokenizer: Path
     t5_text_length: int
+    lightx2v: dict[str, Any]
 
 
 def _add_source(source: Path) -> None:
@@ -898,6 +907,9 @@ def _cuda_runtime_report(runtime: Any) -> dict[str, Any]:
         "flashAttentionVersion": flash_version,
         "ggufRawCache": os.getenv("WAN_GGUF_GPU_RAW_CACHE", "auto"),
         "ggufRawCacheReserveMb": os.getenv("WAN_GGUF_GPU_RAW_RESERVE_MB", "2048"),
+        "lightx2vEnabled": os.getenv("WAN_LIGHTX2V_ENABLED", "0"),
+        "lightx2vCheckpoint": os.getenv("WAN_LIGHTX2V_CHECKPOINT"),
+        "lightx2vStrength": os.getenv("WAN_LIGHTX2V_STRENGTH", "1.0"),
     }
     if torch.cuda.is_available() and getattr(runtime.device, "type", str(runtime.device)) == "cuda":
         index = runtime.device.index if runtime.device.index is not None else torch.cuda.current_device()
@@ -1050,6 +1062,8 @@ def load_runtime(
     device_name: str,
     compute_dtype: str,
     text_length: int,
+    lightx2v_checkpoint: Path | None = None,
+    lightx2v_strength: float = 1.0,
 ) -> LoadedRuntime:
     """Load every component with explicit stage boundaries and memory policy."""
 
@@ -1072,6 +1086,8 @@ def load_runtime(
         paths.transformer,
         paths.source,
         device=str(device),
+        lightx2v_checkpoint=lightx2v_checkpoint,
+        lightx2v_strength=lightx2v_strength,
     )
     _install_reference_attention_fallback(model)
     _install_flex_attention_fallback(model)
@@ -1109,6 +1125,7 @@ def load_runtime(
         clip_checkpoint=paths.clip_checkpoint,
         clip_tokenizer=paths.clip_tokenizer,
         t5_text_length=text_length,
+        lightx2v=validation.get("lightx2v", {"enabled": False}),
     )
 
 
@@ -1425,7 +1442,18 @@ def _render_window(
         shift=1,
         use_dynamic_shifting=False,
     )
-    sigmas = _sampling_sigmas(steps, 5.0)
+    lightx2v_enabled = bool(runtime.lightx2v.get("enabled"))
+    sigmas = (
+        _lightx2v_sampling_sigmas(steps)
+        if lightx2v_enabled
+        else _sampling_sigmas(steps, 5.0)
+    )
+    LOGGER.info(
+        "stage=scheduler_ready profile=%s steps=%s timesteps=%s",
+        "lightx2v-4step" if lightx2v_enabled else "wan-flow-shift",
+        steps,
+        [round(float(value) * 1000) for value in sigmas],
+    )
     timesteps = _retrieve_sigmas(scheduler, sigmas=sigmas, device=device)
 
     autocast_context = (
@@ -1673,6 +1701,7 @@ def _render_window(
         "fps": fps,
         "frameCount": len(frames),
         "steps": steps,
+        "lightx2v": runtime.lightx2v,
         "referenceStrength": reference_strength,
         "continuationUsed": bool(continuation_frames),
         "continuationFrames": len(continuation_frames or []),
@@ -2008,6 +2037,7 @@ def render_segment(
         "frameCount": len(stitched),
         "sourceFrameCount": len(all_frames),
         "steps": steps,
+        "lightx2v": runtime.lightx2v,
         "temporalWindow": max_clip_len,
         "temporalOverlap": overlap,
         "windowCount": len(window_reports),
@@ -2087,6 +2117,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--steps", type=int, default=4)
     parser.add_argument("--text-length", type=int, default=256)
     parser.add_argument("--reference-strength", type=float, default=1.0)
+    parser.add_argument(
+        "--lightx2v",
+        type=Path,
+        help="official Wan-Animate-2 LightX2V LoRA; enables strict four-step sampling",
+    )
+    parser.add_argument("--lightx2v-strength", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
     return parser
 
@@ -2109,6 +2145,12 @@ def main() -> int:
         from wanxiang.wanxiang_animate_2_arch import WanxiangAnimate2Transformer
 
         LOGGER.info("preflight=ok model=%s source=%s class=%s", paths.transformer, paths.source, WanxiangAnimate2Transformer.__name__)
+        if args.lightx2v is not None:
+            if not args.lightx2v.is_file():
+                _parser().error(f"--lightx2v checkpoint was not found: {args.lightx2v}")
+            if args.steps != 4:
+                _parser().error("--lightx2v requires --steps 4")
+            LOGGER.info("preflight=lightx2v checkpoint=%s strength=%.4f steps=4", args.lightx2v, args.lightx2v_strength)
         return 0
     if not args.load and not (args.reference_image and args.driver_video and args.output):
         _parser().error("rendering requires --reference-image, --driver-video, and --output")
@@ -2119,6 +2161,8 @@ def main() -> int:
         device_name=args.device,
         compute_dtype=args.dtype,
         text_length=args.text_length,
+        lightx2v_checkpoint=args.lightx2v,
+        lightx2v_strength=args.lightx2v_strength,
     )
     if args.load:
         LOGGER.info("load=ok")

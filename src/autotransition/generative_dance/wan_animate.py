@@ -40,11 +40,13 @@ class WanAnimate2LiteAdapter:
             self.config.wan_clip_tokenizer,
             self.config.wan_vae_checkpoint,
         )
+        if self.config.wan_lightx2v_enabled:
+            required = (*required, self.config.wan_lightx2v_checkpoint)
         if not all(required):
             return ()
         repo_root = Path(__file__).resolve().parents[3]
         runner = repo_root / "tools" / "generative_dance" / "wan_animate_2_runner.py"
-        return (
+        command = [
             self.config.wan_python or sys.executable,
             str(runner),
             "--model", "{wan_transformer}",
@@ -70,7 +72,13 @@ class WanAnimate2LiteAdapter:
             "--text-length", "{text_length}",
             "--reference-strength", "{reference_strength}",
             "--seed", "{seed}",
-        )
+        ]
+        if self.config.wan_lightx2v_enabled:
+            command.extend((
+                "--lightx2v", "{wan_lightx2v_checkpoint}",
+                "--lightx2v-strength", "{wan_lightx2v_strength}",
+            ))
+        return tuple(command)
 
     @property
     def configured(self) -> bool:
@@ -133,6 +141,13 @@ class WanAnimate2LiteAdapter:
                     "modelRevision": self.config.wan_model_revision,
                 },
             )
+        if self.config.wan_lightx2v_enabled and effective_steps != 4:
+            raise AvatarAdapterError(
+                "wan_lightx2v_invalid_steps",
+                "The Wan-Animate-2 LightX2V profile requires exactly 4 inference steps",
+                retryable=False,
+                details={"requestedSteps": effective_steps, "requiredSteps": 4},
+            )
         output_dir.mkdir(parents=True, exist_ok=True)
         output = output_dir / "render.mp4"
         prompt_value = prompt or reference.prompt
@@ -177,11 +192,13 @@ class WanAnimate2LiteAdapter:
                     "wan_clip_checkpoint": self.config.wan_clip_checkpoint or "",
                     "wan_clip_tokenizer": self.config.wan_clip_tokenizer or "",
                     "wan_vae_checkpoint": self.config.wan_vae_checkpoint or "",
+                    "wan_lightx2v_checkpoint": self.config.wan_lightx2v_checkpoint or "",
+                    "wan_lightx2v_strength": self.config.wan_lightx2v_strength,
                     "wan_device": self.config.wan_device,
                     "wan_dtype": self.config.wan_compute_dtype,
                 },
                 cwd=self.config.wan_cwd,
-                timeout_seconds=self.config.job_timeout_seconds,
+                timeout_seconds=self.config.wan_render_timeout_seconds,
                 log_dir=output_dir,
                 component="wan-animate-2-lite",
             )

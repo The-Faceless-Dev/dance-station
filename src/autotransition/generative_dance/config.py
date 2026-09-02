@@ -15,6 +15,13 @@ def _bool(name: str, default: bool) -> bool:
     return default if value is None else value.lower() in {"1", "true", "yes", "on"}
 
 
+def _optional_number(name: str) -> float | None:
+    value = os.getenv(name)
+    if value is None or value.strip().lower() in {"", "none", "null", "off", "disabled"}:
+        return None
+    return float(value)
+
+
 @dataclass(frozen=True)
 class GenerativeDanceConfig:
     """Paths, resource limits, and external model command boundaries."""
@@ -59,6 +66,9 @@ class GenerativeDanceConfig:
     wan_clip_checkpoint: Path | None = None
     wan_clip_tokenizer: Path | None = None
     wan_vae_checkpoint: Path | None = None
+    wan_lightx2v_enabled: bool = False
+    wan_lightx2v_checkpoint: Path | None = None
+    wan_lightx2v_strength: float = 1.0
     wan_device: str = "cuda"
     wan_compute_dtype: str = "bfloat16"
     wan_python: str | None = None
@@ -74,6 +84,9 @@ class GenerativeDanceConfig:
     # 1.0 preserves the original behavior; production can opt into a stronger
     # identity anchor without changing the request contract.
     wan_reference_strength: float = 1.0
+    # Wan renders can legitimately run for hours on long sequences. None means
+    # completion is governed by the process and worker state, not wall time.
+    wan_render_timeout_seconds: float | None = None
     identity_audit_enabled: bool = False
     identity_audit_command: str | None = None
     identity_audit_cwd: Path | None = None
@@ -165,6 +178,11 @@ class GenerativeDanceConfig:
             wan_vae_checkpoint=Path(os.environ["GENERATIVE_DANCE_WAN_VAE_CHECKPOINT"]).expanduser()
             if os.getenv("GENERATIVE_DANCE_WAN_VAE_CHECKPOINT")
             else None,
+            wan_lightx2v_enabled=_bool("GENERATIVE_DANCE_WAN_LIGHTX2V_ENABLED", False),
+            wan_lightx2v_checkpoint=Path(os.environ["GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT"]).expanduser()
+            if os.getenv("GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT")
+            else None,
+            wan_lightx2v_strength=number("GENERATIVE_DANCE_WAN_LIGHTX2V_STRENGTH", 1.0),
             wan_device=os.getenv("GENERATIVE_DANCE_WAN_DEVICE", "cuda"),
             wan_compute_dtype=os.getenv("GENERATIVE_DANCE_WAN_DTYPE", "bfloat16"),
             wan_python=os.getenv("GENERATIVE_DANCE_WAN_PYTHON"),
@@ -182,7 +200,11 @@ class GenerativeDanceConfig:
             else None,
             identity_audit_threshold=number("GENERATIVE_DANCE_IDENTITY_AUDIT_THRESHOLD", 0.8),
             identity_audit_max_retries=integer("GENERATIVE_DANCE_IDENTITY_AUDIT_MAX_RETRIES", 1),
-            job_timeout_seconds=number("GENERATIVE_DANCE_JOB_TIMEOUT_SECONDS", 1800.0),
+            job_timeout_seconds=number(
+                "GENERATIVE_DANCE_STAGE_TIMEOUT_SECONDS",
+                number("GENERATIVE_DANCE_JOB_TIMEOUT_SECONDS", 1800.0),
+            ),
+            wan_render_timeout_seconds=_optional_number("GENERATIVE_DANCE_WAN_RENDER_TIMEOUT_SECONDS"),
             max_upload_bytes=integer("GENERATIVE_DANCE_MAX_UPLOAD_BYTES", 1_000_000_000),
             keep_failed_artifacts=_bool("GENERATIVE_DANCE_KEEP_FAILED_ARTIFACTS", True),
             canvas=canvas,
@@ -191,11 +213,19 @@ class GenerativeDanceConfig:
     def validate(self) -> None:
         self.canvas.validate()
         if self.job_timeout_seconds <= 0:
-            raise ValueError("generative dance job timeout must be positive")
+            raise ValueError("generative dance stage timeout must be positive")
+        if self.wan_render_timeout_seconds is not None and self.wan_render_timeout_seconds <= 0:
+            raise ValueError("Wan render timeout must be positive when configured")
         if self.max_upload_bytes < 1:
             raise ValueError("generative dance max upload size must be positive")
         if self.wan_backend not in {"command", "native"}:
             raise ValueError("generative dance Wan backend must be command or native")
+        if self.wan_lightx2v_enabled and self.wan_lightx2v_checkpoint is None:
+            raise ValueError(
+                "LightX2V is enabled but GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT is missing"
+            )
+        if not 0 < self.wan_lightx2v_strength <= 2:
+            raise ValueError("LightX2V strength must be greater than 0 and at most 2")
         if self.matte_backend not in {"command", "native"}:
             raise ValueError("generative dance matte backend must be command or native")
         if self.matte_batch_size < 1:
@@ -228,6 +258,10 @@ class GenerativeDanceConfig:
             raise ValueError(
                 "generative dance Wan default inference steps cannot be below the configured minimum"
             )
+        if self.wan_lightx2v_enabled and self.wan_inference_steps != 4:
+            raise ValueError("LightX2V Wan-Animate-2 acceleration requires exactly 4 inference steps")
+        if self.wan_lightx2v_enabled and self.wan_min_inference_steps != 4:
+            raise ValueError("LightX2V Wan-Animate-2 acceleration requires a 4-step minimum")
         if self.matte_input_size < 64:
             raise ValueError("generative dance matte input size must be at least 64")
         if not 0 <= self.matte_alpha_threshold <= 1:
@@ -291,6 +325,9 @@ class GenerativeDanceConfig:
                     self.wan_vae_checkpoint,
                 )
             ),
+            "wanLightX2VEnabled": self.wan_lightx2v_enabled,
+            "wanLightX2VCheckpoint": str(self.wan_lightx2v_checkpoint) if self.wan_lightx2v_checkpoint else None,
+            "wanLightX2VStrength": self.wan_lightx2v_strength,
             "wanDevice": self.wan_device,
             "wanComputeDtype": self.wan_compute_dtype,
             "wanPythonConfigured": bool(self.wan_python),
@@ -300,12 +337,13 @@ class GenerativeDanceConfig:
             "wanTemporalWindow": self.wan_temporal_window,
             "wanTemporalContextFrames": self.wan_temporal_context_frames,
             "wanReferenceStrength": self.wan_reference_strength,
+            "wanRenderTimeoutSeconds": self.wan_render_timeout_seconds,
             "identityAuditEnabled": self.identity_audit_enabled,
             "identityAuditCommandConfigured": bool(self.identity_audit_command),
             "identityAuditCwd": str(self.identity_audit_cwd) if self.identity_audit_cwd else None,
             "identityAuditThreshold": self.identity_audit_threshold,
             "identityAuditMaxRetries": self.identity_audit_max_retries,
-            "jobTimeoutSeconds": self.job_timeout_seconds,
+            "stageTimeoutSeconds": self.job_timeout_seconds,
             "maxUploadBytes": self.max_upload_bytes,
             "keepFailedArtifacts": self.keep_failed_artifacts,
         }

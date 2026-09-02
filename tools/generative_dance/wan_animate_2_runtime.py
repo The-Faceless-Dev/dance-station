@@ -525,6 +525,24 @@ class GGUFLinear:
                     self.register_buffer("bias", store.materialize(bias_name), persistent=False)
                 else:
                     self.bias = None
+                self._lightx2v_adapter_names: list[tuple[str, str, float]] = []
+                self.register_buffer("_lightx2v_bias_delta", None, persistent=False)
+
+            def add_lightx2v_adapter(self, down: Any, up: Any, scale: float) -> None:
+                """Attach a low-rank adapter without materializing a Q6 base weight."""
+
+                index = len(self._lightx2v_adapter_names)
+                down_name = f"_lightx2v_down_{index}"
+                up_name = f"_lightx2v_up_{index}"
+                self.register_buffer(down_name, down, persistent=False)
+                self.register_buffer(up_name, up, persistent=False)
+                self._lightx2v_adapter_names.append((down_name, up_name, float(scale)))
+
+            def add_lightx2v_bias(self, value: Any) -> None:
+                if self._lightx2v_bias_delta is None:
+                    self._lightx2v_bias_delta = value
+                else:
+                    self._lightx2v_bias_delta.add_(value)
 
             def forward(self, input_tensor: Any) -> Any:
                 import torch
@@ -570,6 +588,23 @@ class GGUFLinear:
                 if bias is not None:
                     bias = bias.to(device=input_tensor.device, dtype=weight.dtype)
                 result = functional.linear(linear_input, weight, bias)
+                for down_name, up_name, scale in self._lightx2v_adapter_names:
+                    down = getattr(self, down_name)
+                    up = getattr(self, up_name)
+                    adapter_input = linear_input
+                    if adapter_input.dtype != down.dtype:
+                        adapter_input = adapter_input.to(dtype=down.dtype)
+                    adapter_result = functional.linear(
+                        functional.linear(adapter_input, down),
+                        up,
+                    )
+                    result = result + adapter_result.to(dtype=result.dtype) * scale
+                    del adapter_result
+                if self._lightx2v_bias_delta is not None:
+                    result = result + self._lightx2v_bias_delta.to(
+                        device=result.device,
+                        dtype=result.dtype,
+                    )
                 del linear_input, weight
                 return result
 
@@ -614,12 +649,184 @@ def _build_meta_transformer(transformer_class: type[Any], spec: WanAnimate2Trans
         return transformer_class(**spec.as_kwargs())
 
 
+def _normalize_lightx2v_target(name: str) -> str:
+    """Map the official LoRA names to the project runtime's block names."""
+
+    parts = name.split(".")
+    if parts and parts[0] == "diffusion_model":
+        parts = parts[1:]
+    if len(parts) >= 3 and parts[0] == "blocks" and parts[2] != "block":
+        parts.insert(2, "block")
+    return ".".join(parts)
+
+
+def _resolve_value(root: Any, name: str) -> Any:
+    value = root
+    for part in name.split("."):
+        value = value[int(part)] if part.isdigit() else getattr(value, part)
+    return value
+
+
+def _lightx2v_tensor_name(prefix: str, suffix: str) -> str:
+    return f"{prefix}.{suffix}"
+
+
+def _apply_lightx2v(
+    model: Any,
+    checkpoint: Path,
+    *,
+    strength: float,
+    device: str,
+    replaced_linears: dict[str, Any],
+) -> dict[str, Any]:
+    """Apply the official Wan-Animate-2 LightX2V adapter to the GGUF model.
+
+    The base model stays Q6 and lazy. Standard LoRA deltas are evaluated as
+    ``(x @ down.T) @ up.T`` in each target linear, while the small direct
+    ``diff``/``diff_b`` tensors are applied once during model loading. This is
+    equivalent to merging the adapter but avoids expanding the 14B Q6 model.
+    """
+
+    if not checkpoint.is_file():
+        raise WanAnimate2RuntimeError(
+            f"LightX2V is enabled but its checkpoint was not found: {checkpoint}"
+        )
+    if not device.startswith("cuda"):
+        raise WanAnimate2RuntimeError(
+            "LightX2V acceleration requires a CUDA device; refusing the CPU path"
+        )
+    try:
+        from safetensors import safe_open
+    except ImportError as exc:  # pragma: no cover - runtime environment only
+        raise WanAnimate2RuntimeError(
+            "LightX2V requires safetensors to be installed"
+        ) from exc
+
+    import torch
+
+    if strength <= 0 or strength > 2:
+        raise WanAnimate2RuntimeError(
+            f"LightX2V strength must be greater than 0 and at most 2; got {strength}"
+        )
+
+    adapter_count = 0
+    diff_count = 0
+    diff_bias_count = 0
+    loaded_keys: set[str] = set()
+    with safe_open(str(checkpoint), framework="pt", device="cpu") as reader:
+        keys = set(reader.keys())
+        for key in sorted(keys):
+            if not key.endswith(".lora_down.weight"):
+                continue
+            prefix = key[: -len(".lora_down.weight")]
+            up_key = _lightx2v_tensor_name(prefix, "lora_up.weight")
+            if up_key not in keys:
+                raise WanAnimate2RuntimeError(
+                    f"LightX2V adapter is incomplete: {key} has no {up_key}"
+                )
+            target = _normalize_lightx2v_target(prefix)
+            module = replaced_linears.get(target)
+            if module is None or not hasattr(module, "add_lightx2v_adapter"):
+                raise WanAnimate2RuntimeError(
+                    f"LightX2V target is not a loaded Wan linear: {prefix} -> {target}"
+                )
+            down = reader.get_tensor(key)
+            up = reader.get_tensor(up_key)
+            if down.ndim != 2 or up.ndim != 2 or down.shape[0] != up.shape[1]:
+                raise WanAnimate2RuntimeError(
+                    f"LightX2V adapter has invalid shapes for {prefix}: "
+                    f"down={tuple(down.shape)} up={tuple(up.shape)}"
+                )
+            if down.shape[1] != module.in_features or up.shape[0] != module.out_features:
+                raise WanAnimate2RuntimeError(
+                    f"LightX2V adapter shape mismatch for {prefix}: "
+                    f"down={tuple(down.shape)} up={tuple(up.shape)} "
+                    f"module=({module.out_features}, {module.in_features})"
+                )
+            module.add_lightx2v_adapter(
+                down.to(device=device, dtype=torch.bfloat16),
+                up.to(device=device, dtype=torch.bfloat16),
+                strength,
+            )
+            loaded_keys.update((key, up_key))
+            adapter_count += 1
+
+        with torch.no_grad():
+            for key in sorted(keys):
+                if key.endswith(".lora_down.weight") or key.endswith(".lora_up.weight"):
+                    continue
+                if key.endswith(".diff_b"):
+                    prefix = key[: -len(".diff_b")]
+                    target = _normalize_lightx2v_target(prefix)
+                    module = _resolve_value(model, target)
+                    value = reader.get_tensor(key).to(device=device, dtype=torch.bfloat16)
+                    if hasattr(module, "add_lightx2v_bias"):
+                        module.add_lightx2v_bias(value)
+                    else:
+                        bias = getattr(module, "bias", None)
+                        if bias is None or tuple(bias.shape) != tuple(value.shape):
+                            raise WanAnimate2RuntimeError(
+                                f"LightX2V bias target is not compatible: {prefix} -> {target}"
+                            )
+                        bias.add_(value.to(dtype=bias.dtype))
+                    loaded_keys.add(key)
+                    diff_bias_count += 1
+                    continue
+                if key.endswith(".diff"):
+                    prefix = key[: -len(".diff")]
+                    target = _normalize_lightx2v_target(prefix)
+                    value = reader.get_tensor(key).to(device=device, dtype=torch.bfloat16)
+                    parameter = None
+                    for parameter_name in (target, f"{target}.weight"):
+                        parameter = dict(model.named_parameters()).get(parameter_name)
+                        if parameter is not None:
+                            break
+                    if parameter is None or tuple(parameter.shape) != tuple(value.shape):
+                        raise WanAnimate2RuntimeError(
+                            f"LightX2V direct-diff target is not compatible: "
+                            f"{prefix} -> {target} shape={tuple(value.shape)}"
+                        )
+                    parameter.add_(value.to(dtype=parameter.dtype))
+                    loaded_keys.add(key)
+                    diff_count += 1
+
+        unhandled = sorted(keys - loaded_keys)
+        if unhandled:
+            raise WanAnimate2RuntimeError(
+                "LightX2V checkpoint contains unsupported keys: "
+                + ", ".join(unhandled[:8])
+                + (" ..." if len(unhandled) > 8 else "")
+            )
+
+    LOGGER.info(
+        "stage=lightx2v_ready checkpoint=%s strength=%.4f lora_adapters=%s direct_diffs=%s "
+        "direct_bias_diffs=%s device=%s",
+        checkpoint,
+        strength,
+        adapter_count,
+        diff_count,
+        diff_bias_count,
+        device,
+    )
+    return {
+        "enabled": True,
+        "checkpoint": str(checkpoint),
+        "strength": float(strength),
+        "adapterCount": adapter_count,
+        "directDiffCount": diff_count,
+        "directBiasDiffCount": diff_bias_count,
+        "device": device,
+    }
+
+
 def load_transformer(
     checkpoint: Path,
     official_source: Path,
     *,
     device: str = "cuda",
     spec: WanAnimate2TransformerSpec = WanAnimate2TransformerSpec(),
+    lightx2v_checkpoint: Path | None = None,
+    lightx2v_strength: float = 1.0,
 ) -> tuple[Any, GGUFWeightStore, dict[str, Any]]:
     """Load the official transformer with project-owned GGUF offload."""
 
@@ -633,6 +840,7 @@ def load_transformer(
     model = _build_meta_transformer(transformer_class, spec)
     validation = store.validate_against(dict(model.named_parameters()))
 
+    replaced_linears: dict[str, Any] = {}
     for module_name, module in list(model.named_modules()):
         if not isinstance(module, nn.Linear):
             continue
@@ -647,6 +855,7 @@ def load_transformer(
         ).as_module()
         parent, attribute = _resolve_parent(model, module_name)
         setattr(parent, attribute, replacement)
+        replaced_linears[module_name] = replacement
 
     for parameter_name, parameter in list(model.named_parameters()):
         if not parameter.is_meta:
@@ -656,6 +865,16 @@ def load_transformer(
     model = model.to(device=device).eval().requires_grad_(False)
     if any(parameter.is_meta for parameter in model.parameters()):
         raise WanAnimate2RuntimeError("Wan-Animate-2 model still contains meta parameters after loading")
+    if lightx2v_checkpoint is not None:
+        validation["lightx2v"] = _apply_lightx2v(
+            model,
+            lightx2v_checkpoint,
+            strength=lightx2v_strength,
+            device=device,
+            replaced_linears=replaced_linears,
+        )
+    else:
+        validation["lightx2v"] = {"enabled": False}
     return model, store, validation
 
 

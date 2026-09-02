@@ -129,6 +129,35 @@ def make_overlay_layer(repo_root: Path) -> tuple[bytes, str, str]:
     return compressed, raw_digest, compressed_digest
 
 
+def make_lightx2v_layer(checkpoint: Path) -> tuple[bytes, str, str]:
+    """Build a standalone adapter layer so later code overlays stay small."""
+
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"LightX2V checkpoint was not found: {checkpoint}")
+    raw_buffer = io.BytesIO()
+    archive_name = "models/wan-animate-2/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"
+    with tarfile.open(fileobj=raw_buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        for directory in ("models", "models/wan-animate-2"):
+            info = tarfile.TarInfo(directory)
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mtime = 0
+            info.mode = 0o755
+            info.type = tarfile.DIRTYPE
+            archive.addfile(info)
+        info = tarfile.TarInfo(archive_name)
+        info.uid = info.gid = 0
+        info.uname = info.gname = ""
+        info.mtime = 0
+        info.mode = 0o644
+        info.size = checkpoint.stat().st_size
+        with checkpoint.open("rb") as source:
+            archive.addfile(info, source)
+    raw = raw_buffer.getvalue()
+    compressed = gzip.compress(raw, compresslevel=6, mtime=0)
+    return compressed, hashlib.sha256(raw).hexdigest(), hashlib.sha256(compressed).hexdigest()
+
+
 def upload_blob(repo: str, token: str, digest: str, payload: bytes) -> None:
     base = f"https://ghcr.io/v2/{repo}"
     auth = {"Authorization": f"Bearer {token}"}
@@ -159,13 +188,17 @@ def upload_blob(repo: str, token: str, digest: str, payload: bytes) -> None:
 
 def publish(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = Path(args.repo_root).resolve()
-    layer, raw_digest, compressed_digest = make_overlay_layer(repo_root)
+    code_layer, code_raw_digest, code_compressed_digest = make_overlay_layer(repo_root)
+    lightx_layer, lightx_raw_digest, lightx_compressed_digest = make_lightx2v_layer(
+        Path(args.lightx2v_checkpoint).resolve()
+    )
     if args.dry_run:
         return {
             "dryRun": True,
-            "layerDigest": f"sha256:{compressed_digest}",
-            "layerDiffId": f"sha256:{raw_digest}",
-            "layerBytes": len(layer),
+            "codeLayerDigest": f"sha256:{code_compressed_digest}",
+            "lightx2vLayerDigest": f"sha256:{lightx_compressed_digest}",
+            "codeLayerBytes": len(code_layer),
+            "lightx2vLayerBytes": len(lightx_layer),
         }
 
     username = os.environ.get("REGISTRY_USERNAME")
@@ -196,11 +229,14 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
     )
     config = json.loads(config_body)
-    config.setdefault("rootfs", {}).setdefault("diff_ids", []).append(
-        f"sha256:{raw_digest}"
+    config.setdefault("rootfs", {}).setdefault("diff_ids", []).extend(
+        (f"sha256:{code_raw_digest}", f"sha256:{lightx_raw_digest}")
     )
-    config.setdefault("history", []).append(
-        {"created_by": "COPY payload/ /", "comment": "Wan Animate identity overlay"}
+    config.setdefault("history", []).extend(
+        [
+            {"created_by": "COPY payload/ /", "comment": "Wan Animate runtime overlay"},
+            {"created_by": "COPY lightx2v/ /", "comment": "Wan Animate LightX2V adapter"},
+        ]
     )
     image_config = config.setdefault("config", {})
     env = list(image_config.get("Env") or [])
@@ -231,6 +267,14 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "WAN_SDPA_BACKEND": "auto",
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
         "GENERATIVE_DANCE_WAN_REFERENCE_STRENGTH": "1.25",
+        "GENERATIVE_DANCE_WAN_STEPS": "4",
+        "GENERATIVE_DANCE_WAN_MIN_STEPS": "4",
+        "GENERATIVE_DANCE_WAN_LIGHTX2V_ENABLED": "1",
+        "GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT": "/models/wan-animate-2/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+        "GENERATIVE_DANCE_WAN_LIGHTX2V_STRENGTH": "1.0",
+        "WAN_LIGHTX2V_ENABLED": "1",
+        "WAN_LIGHTX2V_CHECKPOINT": "/models/wan-animate-2/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
+        "WAN_LIGHTX2V_STRENGTH": "1.0",
         "GENERATIVE_DANCE_STAGE_TIMEOUT_SECONDS": "7200",
         "VACE_STITCH_STAGE_TIMEOUT_SECONDS": "7200",
     }
@@ -245,7 +289,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     image_config["Env"] = env
     config_bytes = json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()
     config_digest = hashlib.sha256(config_bytes).hexdigest()
-    upload_blob(args.repo, token, f"sha256:{compressed_digest}", layer)
+    upload_blob(args.repo, token, f"sha256:{code_compressed_digest}", code_layer)
+    upload_blob(args.repo, token, f"sha256:{lightx_compressed_digest}", lightx_layer)
     upload_blob(args.repo, token, f"sha256:{config_digest}", config_bytes)
 
     base_media_type = base_manifest.get("mediaType", DOCKER_MANIFEST)
@@ -265,8 +310,13 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
             *base_manifest["layers"],
             {
                 "mediaType": base_layer_media_type,
-                "size": len(layer),
-                "digest": f"sha256:{compressed_digest}",
+                "size": len(code_layer),
+                "digest": f"sha256:{code_compressed_digest}",
+            },
+            {
+                "mediaType": base_layer_media_type,
+                "size": len(lightx_layer),
+                "digest": f"sha256:{lightx_compressed_digest}",
             },
         ],
     }
@@ -285,9 +335,11 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "tag": args.tag,
         "layers": len(manifest["layers"]),
         "compressedBytes": sum(layer["size"] for layer in manifest["layers"]),
-        "overlayBytes": len(layer),
+        "codeOverlayBytes": len(code_layer),
+        "lightx2vOverlayBytes": len(lightx_layer),
         "configDigest": f"sha256:{config_digest}",
-        "overlayDigest": f"sha256:{compressed_digest}",
+        "codeOverlayDigest": f"sha256:{code_compressed_digest}",
+        "lightx2vOverlayDigest": f"sha256:{lightx_compressed_digest}",
     }
 
 
@@ -297,6 +349,7 @@ def main() -> None:
     parser.add_argument("--repo", default="the-faceless-dev/faceless-wan-animate-worker")
     parser.add_argument("--base-tag", required=True)
     parser.add_argument("--tag", required=True)
+    parser.add_argument("--lightx2v-checkpoint", required=True)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     print(json.dumps(publish(args), indent=2, sort_keys=True))

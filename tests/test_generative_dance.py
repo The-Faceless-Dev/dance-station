@@ -82,6 +82,24 @@ def test_wan_overlay_requires_fused_5090_attention_and_raw_cache() -> None:
     assert '"WAN_REFERENCE_ATTENTION_BACKEND": "flash"' in source
     assert '"WAN_GGUF_GPU_RAW_CACHE": "1"' in source
     assert '"WAN_GGUF_DEQUANT_DTYPE": "bfloat16"' in source
+    assert '"GENERATIVE_DANCE_WAN_STEPS": "4"' in source
+    assert '"GENERATIVE_DANCE_WAN_MIN_STEPS": "4"' in source
+    assert '"GENERATIVE_DANCE_WAN_LIGHTX2V_ENABLED": "1"' in source
+    assert '"WAN_LIGHTX2V_CHECKPOINT": "/models/wan-animate-2/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"' in source
+
+
+def test_lightx2v_uses_the_official_four_step_schedule() -> None:
+    source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
+    assert "def _lightx2v_sampling_sigmas(sampling_steps: int)" in source
+    assert "if sampling_steps != 4" in source
+    assert "return np.asarray([1.0, 0.75, 0.5, 0.25]" in source
+
+
+def test_lightx2v_maps_official_names_to_the_runtime_transformer_names() -> None:
+    source = Path("tools/generative_dance/wan_animate_2_runtime.py").read_text(encoding="utf-8")
+    assert 'parts[0] == "diffusion_model"' in source
+    assert 'parts.insert(2, "block")' in source
+    assert 'replaced_linears.get(target)' in source
 
 
 def test_native_wan_runner_keeps_one_seed_across_temporal_windows() -> None:
@@ -148,6 +166,30 @@ def test_native_wan_command_passes_reference_strength(tmp_path: Path) -> None:
 
     assert "--reference-strength" in adapter.native_command
     assert "{reference_strength}" in adapter.native_command
+
+
+def test_native_wan_command_passes_lightx2v_checkpoint_and_strength(tmp_path: Path) -> None:
+    config = GenerativeDanceConfig(
+        artifact_root=tmp_path,
+        wan_backend="native",
+        wan_lightx2v_enabled=True,
+        wan_lightx2v_checkpoint=tmp_path / "lightx2v.safetensors",
+        wan_transformer_checkpoint=tmp_path / "model.gguf",
+        wan_official_source=tmp_path / "source",
+        wan_t5_checkpoint=tmp_path / "t5.pth",
+        wan_t5_tokenizer=tmp_path / "t5-tokenizer",
+        wan_clip_checkpoint=tmp_path / "clip.pth",
+        wan_clip_tokenizer=tmp_path / "clip-tokenizer",
+        wan_vae_checkpoint=tmp_path / "vae.pth",
+        wan_inference_steps=4,
+        wan_min_inference_steps=4,
+    )
+    adapter = WanAnimate2LiteAdapter(config)
+
+    assert "--lightx2v" in adapter.native_command
+    assert "{wan_lightx2v_checkpoint}" in adapter.native_command
+    assert "--lightx2v-strength" in adapter.native_command
+    assert "{wan_lightx2v_strength}" in adapter.native_command
 
 
 def test_identity_seed_is_stable_for_a_job_but_random_when_unconfigured() -> None:
