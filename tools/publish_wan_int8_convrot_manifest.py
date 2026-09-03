@@ -91,7 +91,9 @@ def _write_model_layer(checkpoint: Path, target: Any) -> _HashingWriter:
     archive_name = "models/wan-animate-2/wan-animate-2-14b-int8-convrot.safetensors"
     with gzip.GzipFile(fileobj=target, mode="wb", compresslevel=1, mtime=0) as gzip_file:
         raw_writer = _HashingWriter(gzip_file)
-        with tarfile.open(fileobj=raw_writer, mode="w|", format=tarfile.USTAR_FORMAT) as archive:
+        # USTAR cannot represent the 16+ GB checkpoint size. PAX keeps the
+        # layer portable while encoding large file sizes deterministically.
+        with tarfile.open(fileobj=raw_writer, mode="w|", format=tarfile.PAX_FORMAT) as archive:
             archive.addfile(_tar_info("models", mode=0o755, directory=True))
             archive.addfile(_tar_info("models/wan-animate-2", mode=0o755, directory=True))
             with checkpoint.open("rb") as source:
