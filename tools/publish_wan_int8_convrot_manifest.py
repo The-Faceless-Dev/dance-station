@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -104,98 +105,55 @@ def _write_model_layer(checkpoint: Path, target: Any) -> _HashingWriter:
     return raw_writer
 
 
-def make_model_layer(checkpoint: Path) -> tuple[str, str, int, int]:
-    """Measure the layer by streaming it to a digest sink, never to disk."""
+def make_model_layer(checkpoint: Path, output: Path) -> tuple[str, str, int, int]:
+    """Create the large layer on runner disk using bounded Python buffers."""
 
     if not checkpoint.is_file():
         raise FileNotFoundError(f"INT8 ConvRot checkpoint was not found: {checkpoint}")
-    compressed_writer = _HashingWriter(None)
-    raw_writer = _write_model_layer(checkpoint, compressed_writer)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with output.open("wb") as compressed_file:
+        compressed_writer = _HashingWriter(compressed_file)
+        raw_writer = _write_model_layer(checkpoint, compressed_writer)
     return raw_writer.digest.hexdigest(), compressed_writer.digest.hexdigest(), raw_writer.size, compressed_writer.size
 
 
-class _ResumableBlobWriter:
-    """Send a large registry blob in bounded PATCH requests."""
-
-    CHUNK_SIZE = 64 * 1024 * 1024
-
-    def __init__(self, location: str, token: str) -> None:
-        self.location = location
-        self.token = token
-        self.buffer = bytearray()
-        self.digest = hashlib.sha256()
-        self.size = 0
-
-    def write(self, value: bytes) -> int:
-        self.digest.update(value)
-        self.size += len(value)
-        self.buffer.extend(value)
-        if len(self.buffer) >= self.CHUNK_SIZE:
-            self._flush_chunk()
-        return len(value)
-
-    def flush(self) -> None:
-        # Gzip calls flush while the layer is being built. Keep the registry
-        # request boundaries large and flush explicitly after gzip closes.
-        return None
-
-    def _flush_chunk(self) -> None:
-        if not self.buffer:
-            return
-        payload = bytes(self.buffer)
-        status, headers, _ = registry_request(
-            "PATCH",
-            self.location,
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/octet-stream",
-                "Content-Length": str(len(payload)),
-            },
-            data=payload,
-        )
-        if status != 202:
-            raise RuntimeError(f"PATCH blob upload returned HTTP {status}")
-        if headers.get("Location"):
-            self.location = urllib.parse.urljoin("https://ghcr.io", headers["Location"])
-        self.buffer.clear()
-        print(f"model_blob_patch_complete bytes={self.size}", flush=True)
-
-    def finish(self) -> str:
-        self._flush_chunk()
-        digest = f"sha256:{self.digest.hexdigest()}"
-        print(f"model_blob_finalize digest={digest} bytes={self.size}", flush=True)
-        separator = "&" if "?" in self.location else "?"
-        final_url = f"{self.location}{separator}digest={urllib.parse.quote(digest)}"
-        status, _, _ = registry_request(
-            "PUT",
-            final_url,
-            headers={
-                "Authorization": f"Bearer {self.token}",
-                "Content-Type": "application/octet-stream",
-                "Content-Length": "0",
-            },
-            data=b"",
-        )
-        if status not in {201, 202}:
-            raise RuntimeError(f"PUT blob finalize returned HTTP {status}")
-        return digest
-
-
-def upload_model_layer(repo: str, token: str, checkpoint: Path) -> tuple[str, str, int, int]:
-    """Upload the checkpoint layer without materializing a second full file."""
+def upload_blob_file(repo: str, token: str, digest: str, payload: Path) -> None:
+    """Upload a large layer with one bounded-read monolithic PUT."""
 
     base = f"https://ghcr.io/v2/{repo}"
     auth = {"Authorization": f"Bearer {token}"}
-    _, response_headers, _ = registry_request("POST", f"{base}/blobs/uploads/", headers=auth)
+    try:
+        status, _, _ = registry_request("HEAD", f"{base}/blobs/{digest}", headers=auth)
+        if status == 200:
+            return
+    except RegistryError as exc:
+        if exc.status != 404:
+            raise
+    _, response_headers, _ = registry_request(
+        "POST", f"{base}/blobs/uploads/", headers=auth
+    )
     location = response_headers.get("Location")
     if not location:
         raise RuntimeError("GHCR did not return a blob upload location")
-    location = urllib.parse.urljoin("https://ghcr.io", location)
-    print(f"model_blob_upload_start checkpoint_bytes={checkpoint.stat().st_size}", flush=True)
-    upload = _ResumableBlobWriter(location, token)
-    raw_writer = _write_model_layer(checkpoint, upload)
-    compressed_digest = upload.finish()
-    return raw_writer.digest.hexdigest(), compressed_digest.removeprefix("sha256:"), raw_writer.size, upload.size
+    parsed = urllib.parse.urlsplit(urllib.parse.urljoin("https://ghcr.io", location))
+    request_path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    request_path += ("&" if "?" in request_path else "?") + "digest=" + urllib.parse.quote(digest)
+    connection = http.client.HTTPSConnection(parsed.netloc, timeout=900)
+    try:
+        connection.putrequest("PUT", request_path)
+        connection.putheader("Authorization", f"Bearer {token}")
+        connection.putheader("Content-Type", "application/octet-stream")
+        connection.putheader("Content-Length", str(payload.stat().st_size))
+        connection.endheaders()
+        with payload.open("rb") as source:
+            while chunk := source.read(8 * 1024 * 1024):
+                connection.send(chunk)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8", errors="replace")
+        if response.status not in {201, 202}:
+            raise RuntimeError(f"PUT {request_path} returned HTTP {response.status}: {body[:500]}")
+    finally:
+        connection.close()
 
 
 def publish(args: argparse.Namespace) -> dict[str, Any]:
@@ -205,10 +163,11 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     comfy_layer, comfy_raw_digest, comfy_compressed_digest = make_comfy_kitchen_layer(
         Path(args.comfy_kitchen_root).resolve()
     )
+    model_layer_path = Path(args.model_layer).resolve()
+    model_raw_digest, model_compressed_digest, model_raw_size, model_compressed_size = make_model_layer(
+        checkpoint, model_layer_path
+    )
     if args.dry_run:
-        model_raw_digest, model_compressed_digest, model_raw_size, model_compressed_size = make_model_layer(
-            checkpoint
-        )
         return {
             "dryRun": True,
             "codeLayerDigest": f"sha256:{code_compressed_digest}",
@@ -262,9 +221,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     image_config["Env"] = env
     upload_blob(args.repo, token, f"sha256:{code_compressed_digest}", code_layer)
     upload_blob(args.repo, token, f"sha256:{comfy_compressed_digest}", comfy_layer)
-    model_raw_digest, model_compressed_digest, model_raw_size, model_compressed_size = upload_model_layer(
-        args.repo, token, checkpoint
-    )
+    upload_blob_file(args.repo, token, f"sha256:{model_compressed_digest}", model_layer_path)
     config.setdefault("rootfs", {}).setdefault("diff_ids", []).extend(
         (
             f"sha256:{code_raw_digest}",
@@ -325,6 +282,7 @@ def main() -> None:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--comfy-kitchen-root", required=True)
+    parser.add_argument("--model-layer", default="/tmp/wan-int8-convrot-model.tar.gz")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     try:
