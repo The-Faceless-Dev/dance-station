@@ -87,13 +87,14 @@ jobs:
           publish_status=${PIPESTATUS[0]}
           set -e
           if [ "$publish_status" -ne 0 ]; then
-            echo "::error::ConvRot publisher failed; final diagnostics follow"
-            tail -n 4 /tmp/int8-publish.log | while IFS= read -r line; do
-              line=${line//'%'/'%25'}
-              line=${line//$'\r'/'%0D'}
-              line=${line//$'\n'/'%0A'}
-              echo "::error::$line"
-            done < /tmp/int8-publish.log
+            line=$(grep -F 'publisher_error=' /tmp/int8-publish.log | tail -n 1 || true)
+            if [ -z "$line" ]; then
+              line=$(tail -n 1 /tmp/int8-publish.log)
+            fi
+            line=${line//'%'/'%25'}
+            line=${line//$'\r'/'%0D'}
+            line=${line//$'\n'/'%0A'}
+            echo "::error::$line"
             exit "$publish_status"
           fi
           df -h /
