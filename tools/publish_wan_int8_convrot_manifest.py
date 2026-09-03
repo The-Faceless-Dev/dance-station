@@ -9,6 +9,7 @@ import hashlib
 import io
 import json
 import os
+import sys
 import tarfile
 import urllib.parse
 from pathlib import Path
@@ -155,10 +156,12 @@ class _ResumableBlobWriter:
         if headers.get("Location"):
             self.location = urllib.parse.urljoin("https://ghcr.io", headers["Location"])
         self.buffer.clear()
+        print(f"model_blob_patch_complete bytes={self.size}", flush=True)
 
     def finish(self) -> str:
         self._flush_chunk()
         digest = f"sha256:{self.digest.hexdigest()}"
+        print(f"model_blob_finalize digest={digest} bytes={self.size}", flush=True)
         separator = "&" if "?" in self.location else "?"
         final_url = f"{self.location}{separator}digest={urllib.parse.quote(digest)}"
         status, _, _ = registry_request(
@@ -186,6 +189,7 @@ def upload_model_layer(repo: str, token: str, checkpoint: Path) -> tuple[str, st
     if not location:
         raise RuntimeError("GHCR did not return a blob upload location")
     location = urllib.parse.urljoin("https://ghcr.io", location)
+    print(f"model_blob_upload_start checkpoint_bytes={checkpoint.stat().st_size}", flush=True)
     upload = _ResumableBlobWriter(location, token)
     raw_writer = _write_model_layer(checkpoint, upload)
     compressed_digest = upload.finish()
@@ -321,7 +325,11 @@ def main() -> None:
     parser.add_argument("--comfy-kitchen-root", required=True)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(publish(args), indent=2, sort_keys=True))
+    try:
+        print(json.dumps(publish(args), indent=2, sort_keys=True))
+    except Exception as exc:
+        print(f"publisher_error={type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        raise
 
 
 if __name__ == "__main__":
