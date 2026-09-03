@@ -2,6 +2,9 @@ name: Publish Wan Animate INT8 ConvRot experiment
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
 
 permissions:
   contents: read
