@@ -248,7 +248,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         history.append({"created_by": "COPY lightx2v/ /", "comment": "Wan Animate LightX2V adapter"})
     image_config = config.setdefault("config", {})
     env = list(image_config.get("Env") or [])
-    env_overrides = {} if args.code_only else {
+    env_overrides = {
         "HOME": "/home/wan",
         "XDG_CACHE_HOME": "/home/wan/.cache",
         "TRITON_CACHE_DIR": "/home/wan/.cache/triton",
@@ -291,14 +291,15 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "GENERATIVE_DANCE_STAGE_TIMEOUT_SECONDS": "7200",
         "VACE_STITCH_STAGE_TIMEOUT_SECONDS": "7200",
     }
-    keys = set(env_overrides) | {
-        "GENERATIVE_DANCE_JOB_TIMEOUT_SECONDS",
-        "VACE_STITCH_JOB_TIMEOUT_SECONDS",
-        "GENERATIVE_DANCE_WAN_RENDER_TIMEOUT_SECONDS",
-        "VACE_STITCH_RUNTIME_TIMEOUT_SECONDS",
-    }
-    env = [value for value in env if value.split("=", 1)[0] not in keys]
-    env.extend(f"{key}={value}" for key, value in env_overrides.items())
+    if not args.code_only:
+        keys = set(env_overrides) | {
+            "GENERATIVE_DANCE_JOB_TIMEOUT_SECONDS",
+            "VACE_STITCH_JOB_TIMEOUT_SECONDS",
+            "GENERATIVE_DANCE_WAN_RENDER_TIMEOUT_SECONDS",
+            "VACE_STITCH_RUNTIME_TIMEOUT_SECONDS",
+        }
+        env = [value for value in env if value.split("=", 1)[0] not in keys]
+        env.extend(f"{key}={value}" for key, value in env_overrides.items())
     image_config["Env"] = env
     config_bytes = json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()
     config_digest = hashlib.sha256(config_bytes).hexdigest()

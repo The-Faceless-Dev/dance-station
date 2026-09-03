@@ -10,7 +10,7 @@ permissions:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
   BASE_TAG: wan-int8-convrot-5090-20260903-r6
-  TAG: wan-int8-convrot-5090-20260903-r7
+  TAG: wan-int8-convrot-5090-20260903-r8
 
 jobs:
   publish:
