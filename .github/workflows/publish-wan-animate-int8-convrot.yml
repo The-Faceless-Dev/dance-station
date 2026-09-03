@@ -15,6 +15,10 @@ on:
         description: "Existing tag to republish with duplicate layers removed (cleanup-only run)"
         required: false
         default: ""
+      remove_digests:
+        description: "Comma-separated layer digests to remove during cleanup-only run"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -110,12 +114,21 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
           SOURCE_TAG: ${{ inputs.dedupe_source }}
           TARGET_TAG: ${{ inputs.tag }}
+          REMOVE_DIGESTS: ${{ inputs.remove_digests }}
         run: |
           set -euo pipefail
-          python3 tools/clean_wan_image_manifest.py \
+          cleanup_args=( \
             --repo "${IMAGE#ghcr.io/}" \
             --source-tag "${SOURCE_TAG}" \
-            --target-tag "${TARGET_TAG}"
+            --target-tag "${TARGET_TAG}" \
+          )
+          if [ -n "$REMOVE_DIGESTS" ]; then
+            IFS=',' read -r -a remove_digests <<< "$REMOVE_DIGESTS"
+            for digest in "${remove_digests[@]}"; do
+              cleanup_args+=(--remove-digest "$digest")
+            done
+          fi
+          python3 tools/clean_wan_image_manifest.py "${cleanup_args[@]}"
 
       - name: Publish separate registry tag
         if: ${{ inputs.dedupe_source == '' }}

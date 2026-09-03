@@ -22,6 +22,12 @@ def main() -> None:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--source-tag", required=True)
     parser.add_argument("--target-tag", required=True)
+    parser.add_argument(
+        "--remove-digest",
+        action="append",
+        default=[],
+        help="Remove this content-addressed layer digest in addition to duplicate layers",
+    )
     args = parser.parse_args()
 
     username = os.environ.get("REGISTRY_USERNAME")
@@ -51,6 +57,10 @@ def main() -> None:
         )
 
     seen: set[str] = set()
+    remove_digests = {
+        value if value.startswith("sha256:") else f"sha256:{value}"
+        for value in args.remove_digest
+    }
     kept_layers = []
     kept_diff_ids = []
     kept_history = []
@@ -66,6 +76,9 @@ def main() -> None:
         diff_id = diff_ids[layer_index]
         layer_index += 1
         digest = str(layer["digest"])
+        if digest in remove_digests:
+            removed.append(digest)
+            continue
         if digest in seen:
             removed.append(digest)
             continue
@@ -76,7 +89,9 @@ def main() -> None:
     if layer_index != len(layers):
         raise RuntimeError("image history has fewer non-empty entries than layers")
     if not removed:
-        raise RuntimeError(f"source {args.source_tag} contains no duplicate layers")
+        raise RuntimeError(
+            f"source {args.source_tag} contains none of the requested duplicate or removable layers"
+        )
 
     manifest["layers"] = kept_layers
     config.setdefault("rootfs", {})["diff_ids"] = kept_diff_ids
