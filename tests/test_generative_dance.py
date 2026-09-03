@@ -90,9 +90,33 @@ def test_wan_overlay_requires_fused_5090_attention_and_raw_cache() -> None:
 
 def test_lightx2v_uses_the_official_four_step_schedule() -> None:
     source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
-    assert "def _lightx2v_sampling_sigmas(sampling_steps: int)" in source
+    assert "def _lightx2v_sampling_sigmas(" in source
     assert "if sampling_steps != 4" in source
-    assert "return np.asarray([1.0, 0.75, 0.5, 0.25]" in source
+    assert "denoising_step_list = np.asarray([1000, 750, 500, 250]" in source
+    assert "linear_sigmas = np.linspace(1.0, 0.0, 1001" in source
+    assert "sample_shift * raw_sigmas / (1.0 + (sample_shift - 1.0) * raw_sigmas)" in source
+
+
+def test_native_wan_runner_encodes_t5_once_per_source_segment() -> None:
+    source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
+    segment_start = source.index("def render_segment(")
+    segment_source = source[segment_start:]
+    window_start = source.index("def _render_window(")
+    window_end = source.index("def render_segment(", window_start)
+    window_source = source[window_start:window_end]
+
+    assert "scope=source_segment" in segment_source
+    assert "segment_t5_context = _encode_t5(runtime, prompt)" in segment_source
+    assert '"t5PromptEncodeCount": 1' in segment_source
+    assert "prompt_context=segment_t5_context" in segment_source
+    assert "_encode_t5(runtime, prompt)" not in window_source
+
+
+def test_lightx2v_direct_deltas_use_adapter_strength() -> None:
+    source = Path("tools/generative_dance/wan_animate_2_runtime.py").read_text(encoding="utf-8")
+    assert "module.add_lightx2v_bias(value, strength)" in source
+    assert "bias.add_(value.to(dtype=bias.dtype) * strength)" in source
+    assert "parameter.add_(value.to(dtype=parameter.dtype) * strength)" in source
 
 
 def test_lightx2v_maps_official_names_to_the_runtime_transformer_names() -> None:

@@ -538,7 +538,8 @@ class GGUFLinear:
                 self.register_buffer(up_name, up, persistent=False)
                 self._lightx2v_adapter_names.append((down_name, up_name, float(scale)))
 
-            def add_lightx2v_bias(self, value: Any) -> None:
+            def add_lightx2v_bias(self, value: Any, scale: float = 1.0) -> None:
+                value = value * float(scale)
                 if self._lightx2v_bias_delta is None:
                     self._lightx2v_bias_delta = value
                 else:
@@ -761,14 +762,14 @@ def _apply_lightx2v(
                     module = _resolve_value(model, target)
                     value = reader.get_tensor(key).to(device=device, dtype=torch.bfloat16)
                     if hasattr(module, "add_lightx2v_bias"):
-                        module.add_lightx2v_bias(value)
+                        module.add_lightx2v_bias(value, strength)
                     else:
                         bias = getattr(module, "bias", None)
                         if bias is None or tuple(bias.shape) != tuple(value.shape):
                             raise WanAnimate2RuntimeError(
                                 f"LightX2V bias target is not compatible: {prefix} -> {target}"
                             )
-                        bias.add_(value.to(dtype=bias.dtype))
+                        bias.add_(value.to(dtype=bias.dtype) * strength)
                     loaded_keys.add(key)
                     diff_bias_count += 1
                     continue
@@ -786,7 +787,7 @@ def _apply_lightx2v(
                             f"LightX2V direct-diff target is not compatible: "
                             f"{prefix} -> {target} shape={tuple(value.shape)}"
                         )
-                    parameter.add_(value.to(dtype=parameter.dtype))
+                    parameter.add_(value.to(dtype=parameter.dtype) * strength)
                     loaded_keys.add(key)
                     diff_count += 1
 

@@ -127,12 +127,27 @@ def _sampling_sigmas(sampling_steps: int, shift: float) -> np.ndarray:
     return shift * sigma / (1 + (shift - 1) * sigma)
 
 
-def _lightx2v_sampling_sigmas(sampling_steps: int) -> np.ndarray:
-    """Return the official [1000, 750, 500, 250] four-step schedule."""
+def _lightx2v_sampling_sigmas(
+    sampling_steps: int,
+    *,
+    sample_shift: float = 5.0,
+) -> np.ndarray:
+    """Convert LightX2V denoising indices into shifted flow sigmas.
+
+    LightX2V configures the four-step schedule as indices ``[1000, 750, 500,
+    250]``. Those indices are sampled from a 1000-step linear schedule and
+    then passed through Wan's ``sample_shift`` transform. They are not the
+    final sigma values themselves.
+    """
 
     if sampling_steps != 4:
         raise ValueError("LightX2V Wan-Animate-2 sampling requires exactly 4 steps")
-    return np.asarray([1.0, 0.75, 0.5, 0.25], dtype=np.float32)
+    if sample_shift <= 0:
+        raise ValueError("LightX2V sample_shift must be positive")
+    denoising_step_list = np.asarray([1000, 750, 500, 250], dtype=np.int32)
+    linear_sigmas = np.linspace(1.0, 0.0, 1001, dtype=np.float32)[:-1]
+    raw_sigmas = linear_sigmas[1000 - denoising_step_list]
+    return sample_shift * raw_sigmas / (1.0 + (sample_shift - 1.0) * raw_sigmas)
 
 
 def _retrieve_sigmas(scheduler: Any, *, sigmas: np.ndarray, device: Any) -> Any:
@@ -1331,6 +1346,7 @@ def _render_window(
     steps: int,
     seed: int,
     reference_strength: float = 1.0,
+    prompt_context: Any,
     continuation_frames: list[np.ndarray] | None = None,
 ) -> dict[str, Any]:
     """Render one short segment using Wan's temporal continuation contract."""
@@ -1444,7 +1460,7 @@ def _render_window(
     )
     lightx2v_enabled = bool(runtime.lightx2v.get("enabled"))
     sigmas = (
-        _lightx2v_sampling_sigmas(steps)
+        _lightx2v_sampling_sigmas(steps, sample_shift=5.0)
         if lightx2v_enabled
         else _sampling_sigmas(steps, 5.0)
     )
@@ -1524,10 +1540,8 @@ def _render_window(
         finally:
             _release_conditioner(clip, label="clip", device=device)
 
-        t5_device = (os.getenv("WAN_T5_DEVICE", "auto").strip().lower())
-        LOGGER.info("stage=t5_prompt_encode requested_device=%s", t5_device)
-        with _timed_stage(timings, "t5_prompt_encode", device):
-            context = _encode_t5(runtime, prompt)
+        context = prompt_context
+        LOGGER.info("stage=t5_prompt_context_reused scope=source_segment")
         context_ref = context
 
         LOGGER.info("stage=condition_encode")
@@ -1702,6 +1716,7 @@ def _render_window(
         "frameCount": len(frames),
         "steps": steps,
         "lightx2v": runtime.lightx2v,
+        "t5PromptContextReused": True,
         "referenceStrength": reference_strength,
         "continuationUsed": bool(continuation_frames),
         "continuationFrames": len(continuation_frames or []),
@@ -1905,6 +1920,20 @@ def render_segment(
             effective_continuation,
             len(continuity_frames),
         )
+    segment_t5_context: Any | None = None
+    t5_encode_started = time.perf_counter()
+    t5_device = os.getenv("WAN_T5_DEVICE", "auto").strip().lower()
+    LOGGER.info(
+        "stage=t5_prompt_encode scope=source_segment requested_device=%s prompt_chars=%s",
+        t5_device,
+        len(prompt),
+    )
+    segment_t5_context = _encode_t5(runtime, prompt)
+    t5_encode_seconds = time.perf_counter() - t5_encode_started
+    LOGGER.info(
+        "stage=t5_prompt_encode_complete scope=source_segment count=1 wall_seconds=%.6f",
+        t5_encode_seconds,
+    )
     try:
         while start < len(all_frames):
             end = min(len(all_frames), start + max_clip_len)
@@ -1941,6 +1970,7 @@ def render_segment(
                 steps=steps,
                 seed=effective_seed,
                 reference_strength=reference_strength,
+                prompt_context=segment_t5_context,
                 continuation_frames=continuity_frames,
             )
             # Keep one immutable stdout/stderr pair per temporal window. The
@@ -1997,6 +2027,9 @@ def render_segment(
         for path in window_dir.glob("*"):
             path.unlink(missing_ok=True)
         window_dir.rmdir()
+        if segment_t5_context is not None:
+            del segment_t5_context
+            gc.collect()
 
     if len(stitched) < len(all_frames):
         if not stitched:
@@ -2038,6 +2071,7 @@ def render_segment(
         "sourceFrameCount": len(all_frames),
         "steps": steps,
         "lightx2v": runtime.lightx2v,
+        "lightx2vSampleShift": 5.0 if runtime.lightx2v.get("enabled") else None,
         "temporalWindow": max_clip_len,
         "temporalOverlap": overlap,
         "windowCount": len(window_reports),
@@ -2060,6 +2094,11 @@ def render_segment(
                 6,
             ),
             "outputVideoWriteSeconds": round(output_write_seconds, 6),
+            "t5PromptEncodeCount": 1,
+            "t5PromptEncodeSeconds": round(t5_encode_seconds, 6),
+            "t5PromptEncodeDevice": t5_device,
+            "t5PromptCacheScope": "source-segment",
+            "t5PromptContextReused": True,
         },
     }
     output.with_suffix(".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
