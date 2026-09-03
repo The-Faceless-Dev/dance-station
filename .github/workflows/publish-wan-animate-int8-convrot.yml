@@ -2,6 +2,15 @@ name: Publish Wan Animate INT8 ConvRot experiment
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "New image tag"
+        required: true
+        default: wan-int8-convrot-5090-20260902-r2
+      reuse_model_from:
+        description: "Existing tag containing the published INT8 checkpoint layer"
+        required: false
+        default: wan-int8-convrot-5090-20260902-r1
 
 permissions:
   contents: read
@@ -10,7 +19,6 @@ permissions:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
   BASE_TAG: wan-q6-vast-direct-20260902-r5
-  TAG: wan-int8-convrot-5090-20260902-r1
   MODEL_URL: https://huggingface.co/Comfy-Org/Wan-Animate-2/resolve/main/diffusion_models/wan_animate_2_int8_convrot.safetensors
   MODEL_SHA256: 0580ecdd65e47e97c30df9670d13a6c4a131d26de5a1faf2ccc78392d5167584
 
@@ -38,10 +46,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Download official INT8 ConvRot checkpoint
+      - name: Download official INT8 ConvRot checkpoint when no published layer is available
         shell: bash
+        env:
+          REUSE_MODEL_FROM: ${{ inputs.reuse_model_from }}
         run: |
           set -euo pipefail
+          if [ -n "$REUSE_MODEL_FROM" ]; then
+            echo "Reusing checkpoint layer from $REUSE_MODEL_FROM; no model download required."
+            exit 0
+          fi
           curl --fail --location --retry 8 --retry-delay 30 --retry-all-errors \
             --output /tmp/wan_animate_2_int8_convrot.safetensors "${MODEL_URL}"
           echo "${MODEL_SHA256}  /tmp/wan_animate_2_int8_convrot.safetensors" | sha256sum -c -
@@ -51,7 +65,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -m pip download --no-deps --only-binary=:all: --dest /tmp/comfy-wheel comfy-kitchen==0.2.26
+          # The PyTorch 2.8 runtime image uses CPython 3.11. Do not let the
+          # hosted runner's interpreter select the cp312-abi3 wheel: that
+          # wheel imports on the runner but fails in the worker with an
+          # undefined Python C-API symbol.
+          python3 -m pip download --no-deps --only-binary=:all: \
+            --dest /tmp/comfy-wheel \
+            --platform manylinux_2_24_x86_64 \
+            --python-version 3.11 \
+            --implementation cp \
+            --abi cp311 \
+            comfy-kitchen==0.2.26
+          wheel_name=$(basename "$(find /tmp/comfy-wheel -maxdepth 1 -type f -name '*.whl' -print -quit)")
+          case "$wheel_name" in
+            comfy_kitchen-0.2.26-cp311-cp311-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl) ;;
+            *) echo "Unexpected comfy-kitchen wheel: $wheel_name" >&2; exit 1 ;;
+          esac
           python3 - <<'PY'
           import glob
           import pathlib
@@ -72,15 +101,23 @@ jobs:
         env:
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          REUSE_MODEL_FROM: ${{ inputs.reuse_model_from }}
         run: |
           set -euo pipefail
           set +e
-          python3 tools/publish_wan_int8_convrot_manifest.py \
-            --repo "${IMAGE#ghcr.io/}" \
-            --base-tag "${BASE_TAG}" \
-            --tag "${TAG}" \
-            --checkpoint /tmp/wan_animate_2_int8_convrot.safetensors \
-            --comfy-kitchen-root /tmp/comfy-kitchen-root 2>&1 | tee /tmp/int8-publish.log
+          publisher_args=(
+            --repo "${IMAGE#ghcr.io/}"
+            --base-tag "${BASE_TAG}"
+            --tag "${TAG}"
+            --comfy-kitchen-root /tmp/comfy-kitchen-root
+          )
+          if [ -n "$REUSE_MODEL_FROM" ]; then
+            publisher_args+=(--reuse-model-from "$REUSE_MODEL_FROM")
+          else
+            publisher_args+=(--checkpoint /tmp/wan_animate_2_int8_convrot.safetensors)
+          fi
+          python3 tools/publish_wan_int8_convrot_manifest.py "${publisher_args[@]}" 2>&1 | tee /tmp/int8-publish.log
           publish_status=${PIPESTATUS[0]}
           set -e
           if [ "$publish_status" -ne 0 ]; then

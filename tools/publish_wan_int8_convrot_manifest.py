@@ -157,18 +157,60 @@ def upload_blob_file(repo: str, token: str, digest: str, payload: Path) -> None:
         connection.close()
 
 
+def _get_image_manifest(repo: str, token: str, tag: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Read an image manifest and its config without downloading layer data."""
+
+    base_url = f"https://ghcr.io/v2/{repo}"
+    auth = {"Authorization": f"Bearer {token}", "Accept": MANIFEST_ACCEPT}
+    _, _, manifest_body = registry_request("GET", f"{base_url}/manifests/{tag}", headers=auth)
+    manifest = json.loads(manifest_body)
+    _, _, config_body = registry_request(
+        "GET",
+        f"{base_url}/blobs/{manifest['config']['digest']}",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    return manifest, json.loads(config_body)
+
+
+def _reuse_model_layer(repo: str, token: str, tag: str) -> dict[str, Any]:
+    """Resolve the INT8 checkpoint layer from an already-published image tag."""
+
+    manifest, config = _get_image_manifest(repo, token, tag)
+    layers = manifest.get("layers") or []
+    diff_ids = (config.get("rootfs") or {}).get("diff_ids") or []
+    history = config.get("history") or []
+    if not layers or len(layers) != len(diff_ids):
+        raise RuntimeError(f"reuse source {tag} has inconsistent layer metadata")
+    last_history = history[-1] if history else {}
+    history_text = " ".join(str(last_history.get(key, "")) for key in ("created_by", "comment"))
+    if "int8-convrot" not in history_text.lower() or "checkpoint" not in history_text.lower():
+        raise RuntimeError(f"reuse source {tag} does not end with the expected INT8 ConvRot checkpoint layer")
+    layer = layers[-1]
+    if int(layer.get("size", 0)) < 10 * 1024 * 1024 * 1024:
+        raise RuntimeError(f"reuse source {tag} checkpoint layer is unexpectedly small: {layer.get('size')}")
+    return {
+        "rawDigest": diff_ids[-1],
+        "compressedDigest": layer["digest"],
+        "compressedSize": int(layer["size"]),
+        "sourceTag": tag,
+    }
+
+
 def publish(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = Path(args.repo_root).resolve()
-    checkpoint = Path(args.checkpoint).resolve()
     code_layer, code_raw_digest, code_compressed_digest = make_overlay_layer(repo_root)
     comfy_layer, comfy_raw_digest, comfy_compressed_digest = make_comfy_kitchen_layer(
         Path(args.comfy_kitchen_root).resolve()
     )
-    model_layer_path = Path(args.model_layer).resolve()
-    model_raw_digest, model_compressed_digest, model_raw_size, model_compressed_size = make_model_layer(
-        checkpoint, model_layer_path
-    )
     if args.dry_run:
+        if args.reuse_model_from:
+            raise RuntimeError("--reuse-model-from is not supported with --dry-run")
+        if not args.checkpoint:
+            raise RuntimeError("--checkpoint is required unless --reuse-model-from is used")
+        model_layer_path = Path(args.model_layer).resolve()
+        model_raw_digest, model_compressed_digest, model_raw_size, model_compressed_size = make_model_layer(
+            Path(args.checkpoint).resolve(), model_layer_path
+        )
         return {
             "dryRun": True,
             "codeLayerDigest": f"sha256:{code_compressed_digest}",
@@ -196,6 +238,20 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
     )
     config = json.loads(config_body)
+    if bool(args.checkpoint) == bool(args.reuse_model_from):
+        raise RuntimeError("provide exactly one of --checkpoint or --reuse-model-from")
+    model_layer_path: Path | None = None
+    if args.reuse_model_from:
+        reused_model = _reuse_model_layer(args.repo, token, args.reuse_model_from)
+        model_raw_digest = reused_model["rawDigest"].removeprefix("sha256:")
+        model_compressed_digest = reused_model["compressedDigest"].removeprefix("sha256:")
+        model_compressed_size = reused_model["compressedSize"]
+        model_raw_size = None
+    else:
+        model_layer_path = Path(args.model_layer).resolve()
+        model_raw_digest, model_compressed_digest, model_raw_size, model_compressed_size = make_model_layer(
+            Path(args.checkpoint).resolve(), model_layer_path
+        )
     image_config = config.setdefault("config", {})
     env_overrides = {
         "PYTHONPATH": "/app/vendor:/app/src:/opt/wan-animate-2:/opt/wan-vace:/opt/wan-vace/vace:/opt/wan21",
@@ -222,7 +278,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     image_config["Env"] = env
     upload_blob(args.repo, token, f"sha256:{code_compressed_digest}", code_layer)
     upload_blob(args.repo, token, f"sha256:{comfy_compressed_digest}", comfy_layer)
-    upload_blob_file(args.repo, token, f"sha256:{model_compressed_digest}", model_layer_path)
+    if model_layer_path is not None:
+        upload_blob_file(args.repo, token, f"sha256:{model_compressed_digest}", model_layer_path)
     config.setdefault("rootfs", {}).setdefault("diff_ids", []).extend(
         (
             f"sha256:{code_raw_digest}",
@@ -270,6 +327,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "layers": len(manifest["layers"]),
         "modelCompressedBytes": model_compressed_size,
         "modelLayerDigest": f"sha256:{model_compressed_digest}",
+        "reusedModelFrom": args.reuse_model_from,
         "comfyKitchenLayerDigest": f"sha256:{comfy_compressed_digest}",
         "configDigest": f"sha256:{config_digest}",
     }
@@ -281,7 +339,8 @@ def main() -> None:
     parser.add_argument("--repo", default="the-faceless-dev/faceless-wan-animate-worker")
     parser.add_argument("--base-tag", required=True)
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--checkpoint", required=True)
+    parser.add_argument("--checkpoint")
+    parser.add_argument("--reuse-model-from")
     parser.add_argument("--comfy-kitchen-root", required=True)
     parser.add_argument("--model-layer", default="/tmp/wan-int8-convrot-model.tar.gz")
     parser.add_argument("--dry-run", action="store_true")
