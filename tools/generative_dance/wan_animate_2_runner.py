@@ -31,7 +31,11 @@ from typing import Any
 import cv2
 import numpy as np
 
-from wan_animate_2_runtime import load_transformer, prepare_runtime_cache_dirs
+from wan_animate_2_runtime import (
+    WanAnimate2TransformerSpec,
+    load_transformer,
+    prepare_runtime_cache_dirs,
+)
 
 
 LOGGER = logging.getLogger("wan-animate-2")
@@ -132,19 +136,34 @@ def _lightx2v_sampling_sigmas(
     *,
     sample_shift: float = 5.0,
 ) -> np.ndarray:
-    """Convert LightX2V denoising indices into shifted flow sigmas.
+    """Convert the selected LightX2V denoising indices into flow sigmas.
 
-    LightX2V configures the four-step schedule as indices ``[1000, 750, 500,
-    250]``. Those indices are sampled from a 1000-step linear schedule and
-    then passed through Wan's ``sample_shift`` transform. They are not the
-    final sigma values themselves.
+    The existing Q6 profile uses the four-step adapter schedule. The
+    non-distilled INT8 ConvRot experiment uses the six-step schedule from the
+    reference setup. The indices are sampled from Wan's 1000-step schedule
+    and then passed through the ``sample_shift`` transform.
     """
 
-    if sampling_steps != 4:
-        raise ValueError("LightX2V Wan-Animate-2 sampling requires exactly 4 steps")
+    checkpoint_format = os.getenv("GENERATIVE_DANCE_WAN_CHECKPOINT_FORMAT", "gguf").strip().lower()
+    schedules = {
+        "gguf": {4: [1000, 750, 500, 250]},
+        "int8_convrot": {6: [1000, 833, 666, 500, 333, 166]},
+    }
+    try:
+        denoising_step_list = np.asarray(
+            schedules[checkpoint_format][sampling_steps], dtype=np.int32
+        )
+    except KeyError as exc:
+        expected = ", ".join(
+            f"{model_format}={sorted(values)}"
+            for model_format, values in schedules.items()
+        )
+        raise ValueError(
+            "LightX2V Wan-Animate-2 sampling steps do not match the checkpoint "
+            f"profile: format={checkpoint_format!r} steps={sampling_steps}; expected {expected}"
+        ) from exc
     if sample_shift <= 0:
         raise ValueError("LightX2V sample_shift must be positive")
-    denoising_step_list = np.asarray([1000, 750, 500, 250], dtype=np.int32)
     linear_sigmas = np.linspace(1.0, 0.0, 1001, dtype=np.float32)[:-1]
     raw_sigmas = linear_sigmas[1000 - denoising_step_list]
     return sample_shift * raw_sigmas / (1.0 + (sample_shift - 1.0) * raw_sigmas)
@@ -819,6 +838,7 @@ class LoadedRuntime:
     clip_tokenizer: Path
     t5_text_length: int
     lightx2v: dict[str, Any]
+    model_format: str = "gguf"
 
 
 def _add_source(source: Path) -> None:
@@ -911,6 +931,7 @@ def _cuda_runtime_report(runtime: Any) -> dict[str, Any]:
         "cudaAvailable": bool(torch.cuda.is_available()),
         "device": str(runtime.device),
         "computeDtype": str(runtime.compute_dtype),
+        "modelFormat": getattr(runtime, "model_format", "gguf"),
         "modelDevice": _device_of(runtime.model),
         "vaeDevice": _device_of(runtime.vae),
         "sdpaBackend": _sdpa_backend_name(),
@@ -1101,6 +1122,9 @@ def load_runtime(
         paths.transformer,
         paths.source,
         device=str(device),
+        spec=WanAnimate2TransformerSpec(
+            log_scale=float(os.getenv("WAN_ANIMATE_LOG_SCALE", "-1.3"))
+        ),
         lightx2v_checkpoint=lightx2v_checkpoint,
         lightx2v_strength=lightx2v_strength,
     )
@@ -1110,7 +1134,7 @@ def load_runtime(
         "stage=transformer_ready seconds=%.2f tensors=%s raw_model_type=%s",
         time.perf_counter() - started,
         validation["tensorCount"],
-        store.metadata.get("general.architecture"),
+        validation.get("modelFormat") or store.metadata.get("general.architecture"),
     )
     _log_memory("transformer_ready", device)
 
@@ -1141,6 +1165,7 @@ def load_runtime(
         clip_tokenizer=paths.clip_tokenizer,
         t5_text_length=text_length,
         lightx2v=validation.get("lightx2v", {"enabled": False}),
+        model_format=str(validation.get("modelFormat", "gguf")),
     )
 
 
@@ -1449,10 +1474,8 @@ def _render_window(
         _device_of(model),
         _device_of(vae),
     )
-    # The released distilled profile explicitly uses Euler flow sampling.
-    # Keep the shifted sigma schedule from the official Wan implementation,
-    # but use the matching Euler update instead of the base-model multistep
-    # solver.
+    # Both profiles use Wan's flow scheduler here. The experiment changes the
+    # checkpoint, adapter, and six-step schedule without changing continuation.
     scheduler = FlowMatchEulerDiscreteScheduler(
         num_train_timesteps=1000,
         shift=1,
@@ -1466,7 +1489,13 @@ def _render_window(
     )
     LOGGER.info(
         "stage=scheduler_ready profile=%s steps=%s timesteps=%s",
-        "lightx2v-4step" if lightx2v_enabled else "wan-flow-shift",
+        (
+            "lightx2v-int8-convrot-6step"
+            if lightx2v_enabled and os.getenv("GENERATIVE_DANCE_WAN_CHECKPOINT_FORMAT", "gguf").strip().lower() == "int8_convrot"
+            else "lightx2v-4step"
+            if lightx2v_enabled
+            else "wan-flow-shift"
+        ),
         steps,
         [round(float(value) * 1000) for value in sigmas],
     )
@@ -1720,7 +1749,7 @@ def _render_window(
         "referenceStrength": reference_strength,
         "continuationUsed": bool(continuation_frames),
         "continuationFrames": len(continuation_frames or []),
-        "backend": "autotransition-wan-animate-2-gguf",
+        "backend": f"autotransition-wan-animate-2-{runtime.model_format}",
         "diagnostics": {
             "enabled": os.getenv("WAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"},
             "timings": timings,
@@ -2083,7 +2112,7 @@ def render_segment(
         "temporalContextFrames": temporal_context_frames,
         "initialContinuation": effective_continuation is not None,
         "windows": window_reports,
-        "backend": "autotransition-wan-animate-2-gguf",
+        "backend": f"autotransition-wan-animate-2-{runtime.model_format}",
         "diagnostics": {
             "enabled": os.getenv("WAN_DIAGNOSTICS", "0").strip().lower() in {"1", "true", "yes", "on"},
             "runtime": runtime_report,
@@ -2114,7 +2143,7 @@ def render_segment(
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Wan-Animate-2 through the project-owned GGUF runtime")
+    parser = argparse.ArgumentParser(description="Run Wan-Animate-2 through the project-owned runtime")
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--official-source", type=Path, required=True)
     parser.add_argument("--t5", type=Path, required=True)
@@ -2159,7 +2188,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--lightx2v",
         type=Path,
-        help="official Wan-Animate-2 LightX2V LoRA; enables strict four-step sampling",
+        help="official Wan-Animate-2 LightX2V LoRA; step count is selected by checkpoint profile",
     )
     parser.add_argument("--lightx2v-strength", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=0)
@@ -2187,9 +2216,22 @@ def main() -> int:
         if args.lightx2v is not None:
             if not args.lightx2v.is_file():
                 _parser().error(f"--lightx2v checkpoint was not found: {args.lightx2v}")
-            if args.steps != 4:
-                _parser().error("--lightx2v requires --steps 4")
-            LOGGER.info("preflight=lightx2v checkpoint=%s strength=%.4f steps=4", args.lightx2v, args.lightx2v_strength)
+            checkpoint_format = os.getenv(
+                "GENERATIVE_DANCE_WAN_CHECKPOINT_FORMAT",
+                "int8_convrot" if args.model.suffix.lower() in {".safetensors", ".safetensor"} else "gguf",
+            ).strip().lower()
+            required_steps = 6 if checkpoint_format == "int8_convrot" else 4
+            if args.steps != required_steps:
+                _parser().error(
+                    f"--lightx2v requires --steps {required_steps} for {checkpoint_format}"
+                )
+            LOGGER.info(
+                "preflight=lightx2v checkpoint=%s strength=%.4f steps=%s format=%s",
+                args.lightx2v,
+                args.lightx2v_strength,
+                required_steps,
+                checkpoint_format,
+            )
         return 0
     if not args.load and not (args.reference_image and args.driver_video and args.output):
         _parser().error("rendering requires --reference-image, --driver-video, and --output")

@@ -141,12 +141,17 @@ class WanAnimate2LiteAdapter:
                     "modelRevision": self.config.wan_model_revision,
                 },
             )
-        if self.config.wan_lightx2v_enabled and effective_steps != 4:
+        required_lightx_steps = 6 if self.config.wan_checkpoint_format == "int8_convrot" else 4
+        if self.config.wan_lightx2v_enabled and effective_steps != required_lightx_steps:
             raise AvatarAdapterError(
                 "wan_lightx2v_invalid_steps",
-                "The Wan-Animate-2 LightX2V profile requires exactly 4 inference steps",
+                (
+                    "The Wan-Animate-2 LightX2V profile requires exactly "
+                    f"{required_lightx_steps} inference steps for "
+                    f"{self.config.wan_checkpoint_format}"
+                ),
                 retryable=False,
-                details={"requestedSteps": effective_steps, "requiredSteps": 4},
+                details={"requestedSteps": effective_steps, "requiredSteps": required_lightx_steps},
             )
         output_dir.mkdir(parents=True, exist_ok=True)
         output = output_dir / "render.mp4"

@@ -1,0 +1,84 @@
+name: Publish Wan Animate INT8 ConvRot experiment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
+  BASE_TAG: wan-q6-vast-direct-20260902-r5
+  TAG: wan-int8-convrot-5090-20260902-r1
+  MODEL_URL: https://huggingface.co/Comfy-Org/Wan-Animate-2/resolve/main/diffusion_models/wan_animate_2_int8_convrot.safetensors
+  MODEL_SHA256: 0580ecdd65e47e97c30df9670d13a6c4a131d26de5a1faf2ccc78392d5167584
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Reclaim runner disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/powershell /usr/local/share/chromium /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          docker system prune --all --force --volumes
+          df -h /
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Download official INT8 ConvRot checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 8 --retry-delay 30 --retry-all-errors \
+            --output /tmp/wan_animate_2_int8_convrot.safetensors "${MODEL_URL}"
+          echo "${MODEL_SHA256}  /tmp/wan_animate_2_int8_convrot.safetensors" | sha256sum -c -
+          stat --printf='checkpoint_bytes=%s\n' /tmp/wan_animate_2_int8_convrot.safetensors
+
+      - name: Prepare Linux comfy-kitchen package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip download --no-deps --only-binary=:all: --dest /tmp/comfy-wheel comfy-kitchen==0.2.26
+          python3 - <<'PY'
+          import glob
+          import pathlib
+          import zipfile
+          target = pathlib.Path('/tmp/comfy-kitchen-root')
+          target.mkdir()
+          wheel = glob.glob('/tmp/comfy-wheel/*.whl')
+          if len(wheel) != 1:
+              raise SystemExit(f'expected one comfy-kitchen wheel, got {wheel}')
+          with zipfile.ZipFile(wheel[0]) as archive:
+              for name in archive.namelist():
+                  if name.startswith('comfy_kitchen/'):
+                      archive.extract(name, target)
+          PY
+
+      - name: Publish separate registry tag
+        shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 tools/publish_wan_int8_convrot_manifest.py \
+            --repo "${IMAGE#ghcr.io/}" \
+            --base-tag "${BASE_TAG}" \
+            --tag "${TAG}" \
+            --checkpoint /tmp/wan_animate_2_int8_convrot.safetensors \
+            --comfy-kitchen-root /tmp/comfy-kitchen-root \
+            --model-layer /tmp/wan-int8-convrot-model.tar.gz
+          df -h /

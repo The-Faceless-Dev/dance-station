@@ -1,9 +1,10 @@
-"""Project-owned Wan-Animate-2 GGUF runtime primitives.
+"""Project-owned Wan-Animate-2 runtime primitives.
 
 The web application and composition code do not import this module. It is an
 inference-side adapter that loads the official Wan-Animate-2 transformer with
-quantized weights kept memory-mapped on CPU. Each quantized linear layer is
-dequantized only for the duration of its forward pass.
+quantized weights kept in the format selected by the worker profile. Q6 GGUF
+layers are dequantized on demand; the official INT8 ConvRot checkpoint uses
+the fused ``comfy-kitchen`` CUDA kernel without a CPU fallback.
 
 The official Wan-Animate-2 source tree is supplied separately with
 ``--official-source`` (or ``WAN_ANIMATE_2_SOURCE``). Keeping that boundary
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import logging
 import os
 import sys
@@ -494,6 +496,308 @@ class GGUFWeightStore:
         }
 
 
+def _raw_safetensors_name(model_name: str) -> str:
+    """Map the instantiated model name back to the official checkpoint name."""
+
+    parts = model_name.split(".")
+    if len(parts) >= 4 and parts[0] == "blocks" and parts[1].isdigit() and parts[2] == "block":
+        parts.pop(2)
+    return ".".join(parts)
+
+
+class SafeTensorWeightStore:
+    """Read the official INT8 ConvRot checkpoint without an eager fp16 copy."""
+
+    def __init__(self, path: Path) -> None:
+        try:
+            from safetensors import safe_open
+        except ImportError as exc:  # pragma: no cover - runtime environment only
+            raise WanAnimate2RuntimeError(
+                "safetensors support is missing; install the Wan-Animate runtime dependencies"
+            ) from exc
+
+        self.path = path.expanduser().resolve()
+        if not self.path.is_file():
+            raise WanAnimate2RuntimeError(f"Wan-Animate-2 safetensors checkpoint not found: {self.path}")
+        self.reader = safe_open(str(self.path), framework="pt", device="cpu")
+        self.metadata = dict(self.reader.metadata() or {})
+        self._keys = set(self.reader.keys())
+
+    def __contains__(self, name: str) -> bool:
+        return name in self._keys
+
+    def __len__(self) -> int:
+        return sum(
+            not name.endswith((".weight_scale", ".comfy_quant"))
+            for name in self._keys
+        )
+
+    def keys(self) -> set[str]:
+        return set(self._keys)
+
+    def tensor(self, name: str) -> Any:
+        try:
+            return self.reader.get_tensor(name)
+        except Exception as exc:
+            raise WanAnimate2RuntimeError(
+                f"Wan-Animate-2 safetensors tensor is missing or unreadable: {name}"
+            ) from exc
+
+    def shape(self, name: str) -> tuple[int, ...]:
+        return tuple(int(value) for value in self.reader.get_slice(name).get_shape())
+
+    def quantization(self, weight_name: str) -> dict[str, Any] | None:
+        if not weight_name.endswith(".weight"):
+            raise WanAnimate2RuntimeError(
+                f"INT8 ConvRot weight name must end in .weight: {weight_name}"
+            )
+        marker_name = f"{weight_name[:-len('.weight')]}.comfy_quant"
+        if marker_name not in self:
+            return None
+        raw = self.tensor(marker_name).detach().cpu().numpy().tobytes()
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise WanAnimate2RuntimeError(
+                f"invalid ConvRot quantization metadata for {weight_name}"
+            ) from exc
+        if not isinstance(value, dict):
+            raise WanAnimate2RuntimeError(
+                f"ConvRot quantization metadata for {weight_name} is not an object"
+            )
+        return value
+
+    def materialize(self, name: str, *, device: str, dtype: Any) -> Any:
+        import torch
+
+        value = self.tensor(name)
+        if value.dtype.is_floating_point and dtype is not None:
+            value = value.to(dtype=dtype)
+        return value.to(device=device, non_blocking=True).contiguous()
+
+    def validate_against(self, expected_parameters: dict[str, Any]) -> dict[str, Any]:
+        """Validate the official state-dict names and shapes before loading."""
+
+        expected_raw = {
+            _raw_safetensors_name(name): parameter
+            for name, parameter in expected_parameters.items()
+        }
+        actual = {
+            name
+            for name in self._keys
+            if not name.endswith((".weight_scale", ".comfy_quant"))
+        }
+        missing = sorted(set(expected_raw) - actual)
+        extra = sorted(actual - set(expected_raw))
+        mismatches = [
+            {
+                "name": model_name,
+                "checkpointName": raw_name,
+                "expected": tuple(int(value) for value in parameter.shape),
+                "actual": self.shape(raw_name),
+            }
+            for model_name, (raw_name, parameter) in sorted(
+                ((name, (_raw_safetensors_name(name), parameter)) for name, parameter in expected_parameters.items()),
+                key=lambda item: item[0],
+            )
+            if raw_name in actual
+            and tuple(int(value) for value in parameter.shape) != self.shape(raw_name)
+        ]
+        if missing or extra or mismatches:
+            raise WanAnimate2RuntimeError(
+                "Wan-Animate-2 INT8 ConvRot does not match the official transformer: "
+                f"missing={len(missing)} extra={len(extra)} shape_mismatches={len(mismatches)}"
+            )
+        quantized = sum(
+            name.endswith(".weight")
+            and f"{name[:-len('.weight')]}.comfy_quant" in self
+            for name in actual
+        )
+        return {
+            "tensorCount": len(self),
+            "parameterCount": len(expected_parameters),
+            "quantizedLinearCount": quantized,
+            "modelFormat": "int8_convrot",
+            "missing": missing,
+            "extra": extra,
+            "shapeMismatches": mismatches,
+            "metadata": self.metadata,
+        }
+
+
+def _validate_convrot_cuda(device: str) -> dict[str, Any]:
+    """Require the fused CUDA ConvRot path before allocating the model."""
+
+    if not device.startswith("cuda"):
+        raise WanAnimate2RuntimeError(
+            "the INT8 ConvRot Wan-Animate profile requires CUDA; CPU execution is disabled"
+        )
+    try:
+        import torch
+        import comfy_kitchen
+    except ImportError as exc:  # pragma: no cover - runtime environment only
+        raise WanAnimate2RuntimeError(
+            "the INT8 ConvRot profile requires the comfy-kitchen CUDA runtime"
+        ) from exc
+    if not torch.cuda.is_available():
+        raise WanAnimate2RuntimeError("the INT8 ConvRot profile requires an available CUDA device")
+    backends = comfy_kitchen.list_backends()
+    cuda_status = backends.get("cuda") or {}
+    if not cuda_status.get("available"):
+        raise WanAnimate2RuntimeError(
+            "comfy-kitchen CUDA backend is unavailable; refusing the eager/CPU fallback: "
+            f"{cuda_status}"
+        )
+    try:
+        comfy_kitchen.set_backend_priority(["cuda"])
+        with comfy_kitchen.use_backend("cuda"):
+            probe_input = torch.zeros((2, 256), device=device, dtype=torch.bfloat16)
+            probe_weight = torch.zeros((1, 256), device=device, dtype=torch.int8)
+            probe_scale = torch.ones((1, 1), device=device, dtype=torch.float32)
+            probe_output = comfy_kitchen.int8_linear(
+                probe_input,
+                probe_weight,
+                probe_scale,
+                out_dtype=torch.bfloat16,
+                convrot=True,
+                convrot_groupsize=256,
+            )
+            torch.cuda.synchronize(device)
+            if tuple(probe_output.shape) != (2, 1):
+                raise RuntimeError(f"unexpected ConvRot probe shape: {tuple(probe_output.shape)}")
+            del probe_input, probe_weight, probe_scale, probe_output
+    except Exception as exc:
+        raise WanAnimate2RuntimeError(
+            "comfy-kitchen CUDA ConvRot probe failed; refusing a slower fallback"
+        ) from exc
+    LOGGER.info("stage=convrot_cuda_ready backend=cuda probe=passed device=%s", device)
+    return {"backend": "cuda", "probe": "passed", "backends": backends}
+
+
+def _make_adapter_linear(weight: Any, bias: Any, *, device: str) -> Any:
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as functional
+
+    class AdapterLinear(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.in_features = int(weight.shape[1])
+            self.out_features = int(weight.shape[0])
+            self.weight = nn.Parameter(weight, requires_grad=False)
+            self.bias = nn.Parameter(bias, requires_grad=False) if bias is not None else None
+            self._lightx2v_adapter_names: list[tuple[str, str, float]] = []
+            self.register_buffer("_lightx2v_bias_delta", None, persistent=False)
+
+        def add_lightx2v_adapter(self, down: Any, up: Any, scale: float) -> None:
+            index = len(self._lightx2v_adapter_names)
+            down_name = f"_lightx2v_down_{index}"
+            up_name = f"_lightx2v_up_{index}"
+            self.register_buffer(down_name, down, persistent=False)
+            self.register_buffer(up_name, up, persistent=False)
+            self._lightx2v_adapter_names.append((down_name, up_name, float(scale)))
+
+        def add_lightx2v_bias(self, value: Any, scale: float = 1.0) -> None:
+            value = value * float(scale)
+            if self._lightx2v_bias_delta is None:
+                self._lightx2v_bias_delta = value
+            else:
+                self._lightx2v_bias_delta.add_(value)
+
+        def forward(self, input_tensor: Any) -> Any:
+            input_value = input_tensor.to(dtype=self.weight.dtype)
+            result = functional.linear(input_value, self.weight, self.bias)
+            for down_name, up_name, scale in self._lightx2v_adapter_names:
+                down = getattr(self, down_name)
+                up = getattr(self, up_name)
+                adapter_result = functional.linear(functional.linear(input_value, down), up)
+                result = result + adapter_result.to(dtype=result.dtype) * scale
+            if self._lightx2v_bias_delta is not None:
+                result = result + self._lightx2v_bias_delta.to(
+                    device=result.device, dtype=result.dtype
+                )
+            return result
+
+    return AdapterLinear()
+
+
+def _make_convrot_linear(
+    qweight: Any,
+    weight_scale: Any,
+    bias: Any,
+    *,
+    device: str,
+    convrot_groupsize: int,
+) -> Any:
+    import torch
+    import torch.nn as nn
+
+    class ConvRotLinear(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.in_features = int(qweight.shape[1])
+            self.out_features = int(qweight.shape[0])
+            self.register_buffer("qweight", qweight.contiguous(), persistent=False)
+            self.register_buffer("weight_scale", weight_scale.float().contiguous(), persistent=False)
+            self.register_buffer(
+                "bias",
+                bias.contiguous() if bias is not None else None,
+                persistent=False,
+            )
+            self.convrot_groupsize = int(convrot_groupsize)
+            self._lightx2v_adapter_names: list[tuple[str, str, float]] = []
+            self.register_buffer("_lightx2v_bias_delta", None, persistent=False)
+
+        def add_lightx2v_adapter(self, down: Any, up: Any, scale: float) -> None:
+            index = len(self._lightx2v_adapter_names)
+            down_name = f"_lightx2v_down_{index}"
+            up_name = f"_lightx2v_up_{index}"
+            self.register_buffer(down_name, down, persistent=False)
+            self.register_buffer(up_name, up, persistent=False)
+            self._lightx2v_adapter_names.append((down_name, up_name, float(scale)))
+
+        def add_lightx2v_bias(self, value: Any, scale: float = 1.0) -> None:
+            value = value * float(scale)
+            if self._lightx2v_bias_delta is None:
+                self._lightx2v_bias_delta = value
+            else:
+                self._lightx2v_bias_delta.add_(value)
+
+        def forward(self, input_tensor: Any) -> Any:
+            import comfy_kitchen
+
+            compute_dtype = (
+                torch.bfloat16
+                if input_tensor.is_cuda and input_tensor.dtype == torch.float32
+                else input_tensor.dtype
+            )
+            linear_input = input_tensor.to(dtype=compute_dtype)
+            result = comfy_kitchen.int8_linear(
+                linear_input,
+                self.qweight,
+                self.weight_scale,
+                self.bias,
+                out_dtype=compute_dtype,
+                convrot=True,
+                convrot_groupsize=self.convrot_groupsize,
+            )
+            for down_name, up_name, scale in self._lightx2v_adapter_names:
+                down = getattr(self, down_name)
+                up = getattr(self, up_name)
+                adapter_input = linear_input.to(dtype=down.dtype)
+                adapter_result = torch.nn.functional.linear(
+                    torch.nn.functional.linear(adapter_input, down), up
+                )
+                result = result + adapter_result.to(dtype=result.dtype) * scale
+            if self._lightx2v_bias_delta is not None:
+                result = result + self._lightx2v_bias_delta.to(
+                    device=result.device, dtype=result.dtype
+                )
+            return result
+
+    return ConvRotLinear()
+
+
 class GGUFLinear:
     """Lazy linear operator that dequantizes a single GGUF weight on demand."""
 
@@ -680,12 +984,12 @@ def _apply_lightx2v(
     device: str,
     replaced_linears: dict[str, Any],
 ) -> dict[str, Any]:
-    """Apply the official Wan-Animate-2 LightX2V adapter to the GGUF model.
+    """Apply the official Wan-Animate-2 LightX2V adapter to a loaded model.
 
-    The base model stays Q6 and lazy. Standard LoRA deltas are evaluated as
-    ``(x @ down.T) @ up.T`` in each target linear, while the small direct
-    ``diff``/``diff_b`` tensors are applied once during model loading. This is
-    equivalent to merging the adapter but avoids expanding the 14B Q6 model.
+    Standard LoRA deltas are evaluated as ``(x @ down.T) @ up.T`` in each
+    target linear, while the small direct ``diff``/``diff_b`` tensors are
+    applied once during model loading. The same adapter contract is used for
+    both the existing Q6 runtime and the native INT8 ConvRot runtime.
     """
 
     if not checkpoint.is_file():
@@ -825,16 +1129,28 @@ def load_transformer(
     official_source: Path,
     *,
     device: str = "cuda",
-    spec: WanAnimate2TransformerSpec = WanAnimate2TransformerSpec(),
+    spec: WanAnimate2TransformerSpec | None = None,
     lightx2v_checkpoint: Path | None = None,
     lightx2v_strength: float = 1.0,
-) -> tuple[Any, GGUFWeightStore, dict[str, Any]]:
-    """Load the official transformer with project-owned GGUF offload."""
+) -> tuple[Any, Any, dict[str, Any]]:
+    """Load the official transformer using the checkpoint's explicit format."""
 
     import torch
     import torch.nn as nn
 
     prepare_runtime_cache_dirs()
+    spec = spec or WanAnimate2TransformerSpec(
+        log_scale=float(os.getenv("WAN_ANIMATE_LOG_SCALE", "-1.3"))
+    )
+    if checkpoint.suffix.lower() in {".safetensors", ".safetensor"}:
+        return _load_int8_convrot_transformer(
+            checkpoint,
+            official_source,
+            device=device,
+            spec=spec,
+            lightx2v_checkpoint=lightx2v_checkpoint,
+            lightx2v_strength=lightx2v_strength,
+        )
     store = GGUFWeightStore(checkpoint, model_type="animate2")
     store.configure_gpu_raw_cache(device)
     transformer_class = _official_module(official_source)
@@ -879,19 +1195,149 @@ def load_transformer(
     return model, store, validation
 
 
+def _load_int8_convrot_transformer(
+    checkpoint: Path,
+    official_source: Path,
+    *,
+    device: str,
+    spec: WanAnimate2TransformerSpec,
+    lightx2v_checkpoint: Path | None,
+    lightx2v_strength: float,
+) -> tuple[Any, SafeTensorWeightStore, dict[str, Any]]:
+    """Load Comfy's official INT8 ConvRot layout through comfy-kitchen only."""
+
+    import torch
+    import torch.nn as nn
+
+    kernel_report = _validate_convrot_cuda(device)
+    store = SafeTensorWeightStore(checkpoint)
+    transformer_class = _official_module(official_source)
+    with torch.device("meta"):
+        model = transformer_class(**spec.as_kwargs())
+    validation = store.validate_against(dict(model.named_parameters()))
+    validation["convrotKernel"] = kernel_report
+
+    replaced_linears: dict[str, Any] = {}
+    loaded_quantized = 0
+    loaded_full_precision = 0
+    for module_name, module in list(model.named_modules()):
+        if not isinstance(module, nn.Linear):
+            continue
+        weight_name = f"{module_name}.weight" if module_name else "weight"
+        bias_name = f"{module_name}.bias" if module_name and module.bias is not None else None
+        raw_weight_name = _raw_safetensors_name(weight_name)
+        quantization = store.quantization(raw_weight_name)
+        if quantization is not None:
+            if quantization.get("format") != "int8_tensorwise":
+                raise WanAnimate2RuntimeError(
+                    f"unsupported INT8 quantization format for {raw_weight_name}: {quantization}"
+                )
+            if quantization.get("convrot") is not True:
+                raise WanAnimate2RuntimeError(
+                    f"INT8 checkpoint is not ConvRot-enabled for {raw_weight_name}"
+                )
+            group_size = int(quantization.get("convrot_groupsize", 0))
+            if group_size != 256:
+                raise WanAnimate2RuntimeError(
+                    f"unsupported ConvRot group size for {raw_weight_name}: {group_size}"
+                )
+            scale_name = f"{raw_weight_name[:-len('.weight')]}.weight_scale"
+            if scale_name not in store:
+                raise WanAnimate2RuntimeError(
+                    f"INT8 ConvRot weight has no scale tensor: {raw_weight_name}"
+                )
+            bias = (
+                store.materialize(_raw_safetensors_name(bias_name), device=device, dtype=torch.bfloat16)
+                if bias_name is not None
+                else None
+            )
+            replacement = _make_convrot_linear(
+                store.materialize(raw_weight_name, device=device, dtype=torch.int8),
+                store.materialize(scale_name, device=device, dtype=torch.float32),
+                bias,
+                device=device,
+                convrot_groupsize=group_size,
+            )
+            loaded_quantized += 1
+        else:
+            weight = store.materialize(raw_weight_name, device=device, dtype=torch.bfloat16)
+            bias = (
+                store.materialize(_raw_safetensors_name(bias_name), device=device, dtype=torch.bfloat16)
+                if bias_name is not None
+                else None
+            )
+            replacement = _make_adapter_linear(weight, bias, device=device)
+            loaded_full_precision += 1
+        parent, attribute = _resolve_parent(model, module_name)
+        setattr(parent, attribute, replacement)
+        replaced_linears[module_name] = replacement
+
+    for parameter_name, parameter in list(model.named_parameters()):
+        if not parameter.is_meta:
+            continue
+        raw_name = _raw_safetensors_name(parameter_name)
+        _replace_parameter(
+            model,
+            parameter_name,
+            store.materialize(raw_name, device=device, dtype=torch.bfloat16),
+        )
+
+    model = model.to(device=device).eval().requires_grad_(False)
+    if any(parameter.is_meta for parameter in model.parameters()):
+        raise WanAnimate2RuntimeError(
+            "Wan-Animate-2 INT8 ConvRot model still contains meta parameters after loading"
+        )
+    validation.update(
+        {
+            "quantizedLinearCount": loaded_quantized,
+            "fullPrecisionLinearCount": loaded_full_precision,
+        }
+    )
+    if lightx2v_checkpoint is not None:
+        validation["lightx2v"] = _apply_lightx2v(
+            model,
+            lightx2v_checkpoint,
+            strength=lightx2v_strength,
+            device=device,
+            replaced_linears=replaced_linears,
+        )
+    else:
+        validation["lightx2v"] = {"enabled": False}
+    LOGGER.info(
+        "stage=int8_convrot_transformer_ready checkpoint=%s quantized_linears=%s "
+        "full_precision_linears=%s device=%s",
+        checkpoint,
+        loaded_quantized,
+        loaded_full_precision,
+        device,
+    )
+    return model, store, validation
+
+
 def inspect_checkpoint(checkpoint: Path, official_source: Path) -> dict[str, Any]:
-    """Validate the Q3/Q8 tensor contract without allocating model weights."""
+    """Validate a GGUF or INT8 ConvRot tensor contract without loading weights."""
 
     import torch
 
-    store = GGUFWeightStore(checkpoint, model_type="animate2")
+    is_safetensors = checkpoint.suffix.lower() in {".safetensors", ".safetensor"}
+    store = (
+        SafeTensorWeightStore(checkpoint)
+        if is_safetensors
+        else GGUFWeightStore(checkpoint, model_type="animate2")
+    )
     transformer_class = _official_module(official_source)
-    model = _build_meta_transformer(transformer_class, WanAnimate2TransformerSpec())
+    model = _build_meta_transformer(
+        transformer_class,
+        WanAnimate2TransformerSpec(
+            log_scale=float(os.getenv("WAN_ANIMATE_LOG_SCALE", "-1.3"))
+        ),
+    )
     validation = store.validate_against(dict(model.named_parameters()))
     validation.update(
         {
             "checkpoint": str(checkpoint.expanduser().resolve()),
             "modelType": "animate2",
+            "modelFormat": "int8_convrot" if is_safetensors else "gguf",
             "metadata": store.metadata,
             "cudaAvailable": torch.cuda.is_available(),
         }

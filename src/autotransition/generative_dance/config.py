@@ -58,6 +58,7 @@ class GenerativeDanceConfig:
     wan_cwd: Path | None = None
     wan_backend: str = "command"
     wan_model_revision: str = "Wan-Animate-2-Lite"
+    wan_checkpoint_format: str = "gguf"
     wan_config_file: Path | None = None
     wan_transformer_checkpoint: Path | None = None
     wan_official_source: Path | None = None
@@ -154,6 +155,7 @@ class GenerativeDanceConfig:
             else None,
             wan_backend=os.getenv("GENERATIVE_DANCE_WAN_BACKEND", "command"),
             wan_model_revision=os.getenv("GENERATIVE_DANCE_WAN_MODEL", "Wan-Animate-2-Lite"),
+            wan_checkpoint_format=os.getenv("GENERATIVE_DANCE_WAN_CHECKPOINT_FORMAT", "gguf").strip().lower(),
             wan_config_file=Path(os.environ["GENERATIVE_DANCE_WAN_CONFIG"]).expanduser()
             if os.getenv("GENERATIVE_DANCE_WAN_CONFIG")
             else None,
@@ -220,6 +222,10 @@ class GenerativeDanceConfig:
             raise ValueError("generative dance max upload size must be positive")
         if self.wan_backend not in {"command", "native"}:
             raise ValueError("generative dance Wan backend must be command or native")
+        if self.wan_checkpoint_format not in {"gguf", "int8_convrot"}:
+            raise ValueError(
+                "generative dance Wan checkpoint format must be gguf or int8_convrot"
+            )
         if self.wan_lightx2v_enabled and self.wan_lightx2v_checkpoint is None:
             raise ValueError(
                 "LightX2V is enabled but GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT is missing"
@@ -258,10 +264,17 @@ class GenerativeDanceConfig:
             raise ValueError(
                 "generative dance Wan default inference steps cannot be below the configured minimum"
             )
-        if self.wan_lightx2v_enabled and self.wan_inference_steps != 4:
-            raise ValueError("LightX2V Wan-Animate-2 acceleration requires exactly 4 inference steps")
-        if self.wan_lightx2v_enabled and self.wan_min_inference_steps != 4:
-            raise ValueError("LightX2V Wan-Animate-2 acceleration requires a 4-step minimum")
+        required_lightx_steps = 6 if self.wan_checkpoint_format == "int8_convrot" else 4
+        if self.wan_lightx2v_enabled and self.wan_inference_steps != required_lightx_steps:
+            raise ValueError(
+                "LightX2V Wan-Animate-2 acceleration requires exactly "
+                f"{required_lightx_steps} inference steps for {self.wan_checkpoint_format}"
+            )
+        if self.wan_lightx2v_enabled and self.wan_min_inference_steps != required_lightx_steps:
+            raise ValueError(
+                "LightX2V Wan-Animate-2 acceleration requires a "
+                f"{required_lightx_steps}-step minimum for {self.wan_checkpoint_format}"
+            )
         if self.matte_input_size < 64:
             raise ValueError("generative dance matte input size must be at least 64")
         if not 0 <= self.matte_alpha_threshold <= 1:
@@ -313,6 +326,7 @@ class GenerativeDanceConfig:
             "retainMatteArtifacts": self.retain_matte_artifacts,
             "wanCommandConfigured": bool(self.wan_command),
             "wanBackend": self.wan_backend,
+            "wanCheckpointFormat": self.wan_checkpoint_format,
             "wanConfigFile": str(self.wan_config_file) if self.wan_config_file else None,
             "wanTransformerConfigured": bool(self.wan_transformer_checkpoint),
             "wanOfficialSourceConfigured": bool(self.wan_official_source),

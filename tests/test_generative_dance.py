@@ -91,8 +91,8 @@ def test_wan_overlay_requires_fused_5090_attention_and_raw_cache() -> None:
 def test_lightx2v_uses_the_official_four_step_schedule() -> None:
     source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
     assert "def _lightx2v_sampling_sigmas(" in source
-    assert "if sampling_steps != 4" in source
-    assert "denoising_step_list = np.asarray([1000, 750, 500, 250]" in source
+    assert '"gguf": {4: [1000, 750, 500, 250]}' in source
+    assert '"int8_convrot": {6: [1000, 833, 666, 500, 333, 166]}' in source
     assert "linear_sigmas = np.linspace(1.0, 0.0, 1001" in source
     assert "sample_shift * raw_sigmas / (1.0 + (sample_shift - 1.0) * raw_sigmas)" in source
 
@@ -124,6 +124,18 @@ def test_lightx2v_maps_official_names_to_the_runtime_transformer_names() -> None
     assert 'parts[0] == "diffusion_model"' in source
     assert 'parts.insert(2, "block")' in source
     assert 'replaced_linears.get(target)' in source
+
+
+def test_int8_convrot_profile_accepts_the_six_step_lightx2v_setup() -> None:
+    config = GenerativeDanceConfig(
+        wan_checkpoint_format="int8_convrot",
+        wan_lightx2v_enabled=True,
+        wan_lightx2v_checkpoint=Path("lightx2v.safetensors"),
+        wan_inference_steps=6,
+        wan_min_inference_steps=6,
+    )
+
+    config.validate()
 
 
 def test_native_wan_runner_keeps_one_seed_across_temporal_windows() -> None:
