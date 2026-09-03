@@ -635,6 +635,7 @@ def _validate_convrot_cuda(device: str) -> dict[str, Any]:
     try:
         import torch
         import comfy_kitchen
+        from comfy_kitchen.backends import cuda as comfy_cuda
     except ImportError as exc:  # pragma: no cover - runtime environment only
         raise WanAnimate2RuntimeError(
             "the INT8 ConvRot profile requires the comfy-kitchen CUDA runtime"
@@ -654,7 +655,11 @@ def _validate_convrot_cuda(device: str) -> dict[str, Any]:
             probe_input = torch.zeros((2, 256), device=device, dtype=torch.bfloat16)
             probe_weight = torch.zeros((1, 256), device=device, dtype=torch.int8)
             probe_scale = torch.ones((1, 1), device=device, dtype=torch.float32)
-            probe_output = comfy_kitchen.int8_linear(
+            # comfy-kitchen only registers the public dispatcher entry when
+            # its optional cuBLASLt capability is present. The CUDA module's
+            # implementation is still available for the ConvRot kernels and
+            # must be called directly; never fall back to eager/CPU execution.
+            probe_output = comfy_cuda.int8_linear(
                 probe_input,
                 probe_weight,
                 probe_scale,
@@ -670,8 +675,18 @@ def _validate_convrot_cuda(device: str) -> dict[str, Any]:
         raise WanAnimate2RuntimeError(
             "comfy-kitchen CUDA ConvRot probe failed; refusing a slower fallback"
         ) from exc
-    LOGGER.info("stage=convrot_cuda_ready backend=cuda probe=passed device=%s", device)
-    return {"backend": "cuda", "probe": "passed", "backends": backends}
+    LOGGER.info(
+        "stage=convrot_cuda_ready backend=cuda implementation=cuda.int8_linear "
+        "probe=passed device=%s dispatcher=%s",
+        device,
+        cuda_status,
+    )
+    return {
+        "backend": "cuda",
+        "implementation": "cuda.int8_linear",
+        "probe": "passed",
+        "backends": backends,
+    }
 
 
 def _make_adapter_linear(weight: Any, bias: Any, *, device: str) -> Any:
@@ -764,7 +779,7 @@ def _make_convrot_linear(
                 self._lightx2v_bias_delta.add_(value)
 
         def forward(self, input_tensor: Any) -> Any:
-            import comfy_kitchen
+            from comfy_kitchen.backends import cuda as comfy_cuda
 
             compute_dtype = (
                 torch.bfloat16
@@ -772,7 +787,10 @@ def _make_convrot_linear(
                 else input_tensor.dtype
             )
             linear_input = input_tensor.to(dtype=compute_dtype)
-            result = comfy_kitchen.int8_linear(
+            # Use the CUDA implementation directly. The public comfy-kitchen
+            # dispatcher omits int8_linear when optional cuBLASLt is absent,
+            # although this CUDA implementation remains usable for ConvRot.
+            result = comfy_cuda.int8_linear(
                 linear_input,
                 self.qweight,
                 self.weight_scale,
