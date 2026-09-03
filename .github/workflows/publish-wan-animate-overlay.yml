@@ -1,15 +1,7 @@
-name: Publish Wan Animate Overlay
+name: Publish Wan Animate Code Overlay
 
 on:
   workflow_dispatch:
-  push:
-    paths:
-      - .github/workflows/publish-wan-animate-overlay.yml
-      - containers/wan-animate-worker/Dockerfile.identity-5090
-      - src/autotransition/generative_dance/**
-      - tools/generative_dance/wan_animate_2_runner.py
-      - tools/generative_dance/wan_animate_2_runtime.py
-      - tools/publish_wan_overlay_manifest.py
 
 permissions:
   contents: read
@@ -17,10 +9,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: wan-q6-vast-direct-20260902-r3
-  TAG: wan-q6-vast-direct-20260902-r5
-  LIGHTX2V_URL: https://huggingface.co/Comfy-Org/Wan-Animate-2/resolve/main/loras/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors
-  LIGHTX2V_SHA256: 85c4a61c30e0497aa44b91d93a893b624708461a56fe5485183b28fa07e2dfb3
+  BASE_TAG: wan-int8-convrot-5090-20260903-r6
+  TAG: wan-int8-convrot-5090-20260903-r7
 
 jobs:
   publish:
@@ -36,14 +26,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Fetch the official Wan-Animate-2 LightX2V adapter
-        shell: bash
-        run: |
-          set -euo pipefail
-          curl --fail --location --retry 5 --retry-delay 10 \
-            --output /tmp/lightx2v.safetensors "${LIGHTX2V_URL}"
-          echo "${LIGHTX2V_SHA256}  /tmp/lightx2v.safetensors" | sha256sum -c -
-
       - name: Compose and publish registry overlay
         shell: bash
         env:
@@ -55,4 +37,4 @@ jobs:
             --repo "${IMAGE#ghcr.io/}" \
             --base-tag "${BASE_TAG}" \
             --tag "${TAG}" \
-            --lightx2v-checkpoint /tmp/lightx2v.safetensors
+            --code-only

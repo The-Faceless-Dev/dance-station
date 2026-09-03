@@ -625,8 +625,14 @@ class SafeTensorWeightStore:
         }
 
 
-def _validate_convrot_cuda(device: str) -> dict[str, Any]:
-    """Require the fused CUDA ConvRot path before allocating the model."""
+def _validate_convrot_backend(device: str) -> dict[str, Any]:
+    """Require the fast GPU ConvRot backend before allocating the model.
+
+    The native CUDA backend in comfy-kitchen 0.2.26 is tied to its optional
+    CUDA 13 cuBLASLt package. Triton provides the same ConvRot int8 path on
+    the target Blackwell GPU without that dependency. Keep this strict: a
+    missing Triton backend is a startup error rather than a CPU fallback.
+    """
 
     if not device.startswith("cuda"):
         raise WanAnimate2RuntimeError(
@@ -635,31 +641,26 @@ def _validate_convrot_cuda(device: str) -> dict[str, Any]:
     try:
         import torch
         import comfy_kitchen
-        from comfy_kitchen.backends import cuda as comfy_cuda
     except ImportError as exc:  # pragma: no cover - runtime environment only
         raise WanAnimate2RuntimeError(
-            "the INT8 ConvRot profile requires the comfy-kitchen CUDA runtime"
+            "the INT8 ConvRot profile requires the comfy-kitchen Triton runtime"
         ) from exc
     if not torch.cuda.is_available():
         raise WanAnimate2RuntimeError("the INT8 ConvRot profile requires an available CUDA device")
     backends = comfy_kitchen.list_backends()
-    cuda_status = backends.get("cuda") or {}
-    if not cuda_status.get("available"):
+    triton_status = backends.get("triton") or {}
+    if not triton_status.get("available"):
         raise WanAnimate2RuntimeError(
-            "comfy-kitchen CUDA backend is unavailable; refusing the eager/CPU fallback: "
-            f"{cuda_status}"
+            "comfy-kitchen Triton backend is unavailable; refusing the CUDA/cuBLASLt and CPU fallbacks: "
+            f"{triton_status}"
         )
     try:
-        comfy_kitchen.set_backend_priority(["cuda"])
-        with comfy_kitchen.use_backend("cuda"):
+        comfy_kitchen.set_backend_priority(["triton"])
+        with comfy_kitchen.use_backend("triton"):
             probe_input = torch.zeros((2, 256), device=device, dtype=torch.bfloat16)
             probe_weight = torch.zeros((1, 256), device=device, dtype=torch.int8)
             probe_scale = torch.ones((1, 1), device=device, dtype=torch.float32)
-            # comfy-kitchen only registers the public dispatcher entry when
-            # its optional cuBLASLt capability is present. The CUDA module's
-            # implementation is still available for the ConvRot kernels and
-            # must be called directly; never fall back to eager/CPU execution.
-            probe_output = comfy_cuda.int8_linear(
+            probe_output = comfy_kitchen.int8_linear(
                 probe_input,
                 probe_weight,
                 probe_scale,
@@ -673,17 +674,17 @@ def _validate_convrot_cuda(device: str) -> dict[str, Any]:
             del probe_input, probe_weight, probe_scale, probe_output
     except Exception as exc:
         raise WanAnimate2RuntimeError(
-            "comfy-kitchen CUDA ConvRot probe failed; refusing a slower fallback"
+            "comfy-kitchen Triton ConvRot probe failed; refusing the CUDA/cuBLASLt and CPU fallbacks"
         ) from exc
     LOGGER.info(
-        "stage=convrot_cuda_ready backend=cuda implementation=cuda.int8_linear "
+        "stage=convrot_ready backend=triton implementation=triton.int8_linear "
         "probe=passed device=%s dispatcher=%s",
         device,
-        cuda_status,
+        triton_status,
     )
     return {
-        "backend": "cuda",
-        "implementation": "cuda.int8_linear",
+        "backend": "triton",
+        "implementation": "triton.int8_linear",
         "probe": "passed",
         "backends": backends,
     }
@@ -779,7 +780,7 @@ def _make_convrot_linear(
                 self._lightx2v_bias_delta.add_(value)
 
         def forward(self, input_tensor: Any) -> Any:
-            from comfy_kitchen.backends import cuda as comfy_cuda
+            import comfy_kitchen
 
             compute_dtype = (
                 torch.bfloat16
@@ -787,10 +788,10 @@ def _make_convrot_linear(
                 else input_tensor.dtype
             )
             linear_input = input_tensor.to(dtype=compute_dtype)
-            # Use the CUDA implementation directly. The public comfy-kitchen
-            # dispatcher omits int8_linear when optional cuBLASLt is absent,
-            # although this CUDA implementation remains usable for ConvRot.
-            result = comfy_cuda.int8_linear(
+            # The loader's strict backend probe sets the process-wide priority
+            # to Triton. Calling the public API here preserves that selection
+            # and prevents an implicit CUDA/cuBLASLt or CPU fallback.
+            result = comfy_kitchen.int8_linear(
                 linear_input,
                 self.qweight,
                 self.weight_scale,
@@ -1227,7 +1228,7 @@ def _load_int8_convrot_transformer(
     import torch
     import torch.nn as nn
 
-    kernel_report = _validate_convrot_cuda(device)
+    kernel_report = _validate_convrot_backend(device)
     store = SafeTensorWeightStore(checkpoint)
     transformer_class = _official_module(official_source)
     with torch.device("meta"):

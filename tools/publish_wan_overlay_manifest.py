@@ -189,17 +189,27 @@ def upload_blob(repo: str, token: str, digest: str, payload: bytes) -> None:
 def publish(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = Path(args.repo_root).resolve()
     code_layer, code_raw_digest, code_compressed_digest = make_overlay_layer(repo_root)
-    lightx_layer, lightx_raw_digest, lightx_compressed_digest = make_lightx2v_layer(
-        Path(args.lightx2v_checkpoint).resolve()
-    )
+    lightx_layer = None
+    lightx_raw_digest = None
+    lightx_compressed_digest = None
+    if not args.code_only:
+        lightx_layer, lightx_raw_digest, lightx_compressed_digest = make_lightx2v_layer(
+            Path(args.lightx2v_checkpoint).resolve()
+        )
     if args.dry_run:
-        return {
+        result = {
             "dryRun": True,
             "codeLayerDigest": f"sha256:{code_compressed_digest}",
-            "lightx2vLayerDigest": f"sha256:{lightx_compressed_digest}",
             "codeLayerBytes": len(code_layer),
-            "lightx2vLayerBytes": len(lightx_layer),
         }
+        if lightx_layer is not None:
+            result.update(
+                {
+                    "lightx2vLayerDigest": f"sha256:{lightx_compressed_digest}",
+                    "lightx2vLayerBytes": len(lightx_layer),
+                }
+            )
+        return result
 
     username = os.environ.get("REGISTRY_USERNAME")
     password = os.environ.get("REGISTRY_TOKEN")
@@ -229,18 +239,16 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
     )
     config = json.loads(config_body)
-    config.setdefault("rootfs", {}).setdefault("diff_ids", []).extend(
-        (f"sha256:{code_raw_digest}", f"sha256:{lightx_raw_digest}")
-    )
-    config.setdefault("history", []).extend(
-        [
-            {"created_by": "COPY payload/ /", "comment": "Wan Animate runtime overlay"},
-            {"created_by": "COPY lightx2v/ /", "comment": "Wan Animate LightX2V adapter"},
-        ]
-    )
+    diff_ids = config.setdefault("rootfs", {}).setdefault("diff_ids", [])
+    history = config.setdefault("history", [])
+    diff_ids.append(f"sha256:{code_raw_digest}")
+    history.append({"created_by": "COPY payload/ /", "comment": "Wan Animate runtime overlay"})
+    if lightx_layer is not None:
+        diff_ids.append(f"sha256:{lightx_raw_digest}")
+        history.append({"created_by": "COPY lightx2v/ /", "comment": "Wan Animate LightX2V adapter"})
     image_config = config.setdefault("config", {})
     env = list(image_config.get("Env") or [])
-    env_overrides = {
+    env_overrides = {} if args.code_only else {
         "HOME": "/home/wan",
         "XDG_CACHE_HOME": "/home/wan/.cache",
         "TRITON_CACHE_DIR": "/home/wan/.cache/triton",
@@ -295,7 +303,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     config_bytes = json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()
     config_digest = hashlib.sha256(config_bytes).hexdigest()
     upload_blob(args.repo, token, f"sha256:{code_compressed_digest}", code_layer)
-    upload_blob(args.repo, token, f"sha256:{lightx_compressed_digest}", lightx_layer)
+    if lightx_layer is not None:
+        upload_blob(args.repo, token, f"sha256:{lightx_compressed_digest}", lightx_layer)
     upload_blob(args.repo, token, f"sha256:{config_digest}", config_bytes)
 
     base_media_type = base_manifest.get("mediaType", DOCKER_MANIFEST)
@@ -303,6 +312,21 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         base_manifest.get("layers", [{}])[0].get("mediaType")
         or (OCI_LAYER if base_media_type == OCI_MANIFEST else DOCKER_LAYER)
     )
+    new_layers = [
+        {
+            "mediaType": base_layer_media_type,
+            "size": len(code_layer),
+            "digest": f"sha256:{code_compressed_digest}",
+        }
+    ]
+    if lightx_layer is not None:
+        new_layers.append(
+            {
+                "mediaType": base_layer_media_type,
+                "size": len(lightx_layer),
+                "digest": f"sha256:{lightx_compressed_digest}",
+            }
+        )
     manifest = {
         "schemaVersion": 2,
         "mediaType": base_media_type,
@@ -313,16 +337,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         },
         "layers": [
             *base_manifest["layers"],
-            {
-                "mediaType": base_layer_media_type,
-                "size": len(code_layer),
-                "digest": f"sha256:{code_compressed_digest}",
-            },
-            {
-                "mediaType": base_layer_media_type,
-                "size": len(lightx_layer),
-                "digest": f"sha256:{lightx_compressed_digest}",
-            },
+            *new_layers,
         ],
     }
     manifest_bytes = json.dumps(manifest, separators=(",", ":")).encode()
@@ -336,16 +351,22 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         },
         data=manifest_bytes,
     )
-    return {
+    result = {
         "tag": args.tag,
         "layers": len(manifest["layers"]),
         "compressedBytes": sum(layer["size"] for layer in manifest["layers"]),
         "codeOverlayBytes": len(code_layer),
-        "lightx2vOverlayBytes": len(lightx_layer),
         "configDigest": f"sha256:{config_digest}",
         "codeOverlayDigest": f"sha256:{code_compressed_digest}",
-        "lightx2vOverlayDigest": f"sha256:{lightx_compressed_digest}",
     }
+    if lightx_layer is not None:
+        result.update(
+            {
+                "lightx2vOverlayBytes": len(lightx_layer),
+                "lightx2vOverlayDigest": f"sha256:{lightx_compressed_digest}",
+            }
+        )
+    return result
 
 
 def main() -> None:
@@ -354,9 +375,16 @@ def main() -> None:
     parser.add_argument("--repo", default="the-faceless-dev/faceless-wan-animate-worker")
     parser.add_argument("--base-tag", required=True)
     parser.add_argument("--tag", required=True)
-    parser.add_argument("--lightx2v-checkpoint", required=True)
+    parser.add_argument("--lightx2v-checkpoint")
+    parser.add_argument(
+        "--code-only",
+        action="store_true",
+        help="Append only the small runtime code layer; inherit all model and adapter layers",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    if not args.code_only and not args.lightx2v_checkpoint:
+        parser.error("--lightx2v-checkpoint is required unless --code-only is used")
     print(json.dumps(publish(args), indent=2, sort_keys=True))
 
 
