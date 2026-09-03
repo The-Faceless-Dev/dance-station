@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
-import http.client
 import io
 import json
 import os
@@ -29,7 +28,7 @@ from publish_wan_overlay_manifest import (
 
 
 class _HashingWriter:
-    def __init__(self, target: Any) -> None:
+    def __init__(self, target: Any | None) -> None:
         self.target = target
         self.digest = hashlib.sha256()
         self.size = 0
@@ -37,13 +36,16 @@ class _HashingWriter:
     def write(self, value: bytes) -> int:
         self.digest.update(value)
         self.size += len(value)
+        if self.target is None:
+            return len(value)
         return self.target.write(value)
 
     def tell(self) -> int:
         return self.size
 
     def flush(self) -> None:
-        self.target.flush()
+        if self.target is not None:
+            self.target.flush()
 
 
 def _tar_info(name: str, *, mode: int, size: int = 0, directory: bool = False) -> tarfile.TarInfo:
@@ -82,83 +84,125 @@ def make_comfy_kitchen_layer(package_root: Path) -> tuple[bytes, str, str]:
     return compressed, hashlib.sha256(raw).hexdigest(), hashlib.sha256(compressed).hexdigest()
 
 
-def make_model_layer(checkpoint: Path, output: Path) -> tuple[str, str, int, int]:
-    """Stream the 16.7GB checkpoint into a tar.gz layer without a RAM copy."""
+def _write_model_layer(checkpoint: Path, target: Any) -> _HashingWriter:
+    """Write a deterministic model layer to a streaming gzip target."""
+
+    archive_name = "models/wan-animate-2/wan-animate-2-14b-int8-convrot.safetensors"
+    with gzip.GzipFile(fileobj=target, mode="wb", compresslevel=1, mtime=0) as gzip_file:
+        raw_writer = _HashingWriter(gzip_file)
+        with tarfile.open(fileobj=raw_writer, mode="w|", format=tarfile.USTAR_FORMAT) as archive:
+            archive.addfile(_tar_info("models", mode=0o755, directory=True))
+            archive.addfile(_tar_info("models/wan-animate-2", mode=0o755, directory=True))
+            with checkpoint.open("rb") as source:
+                archive.addfile(
+                    _tar_info(archive_name, mode=0o644, size=checkpoint.stat().st_size),
+                    source,
+                )
+    return raw_writer
+
+
+def make_model_layer(checkpoint: Path) -> tuple[str, str, int, int]:
+    """Measure the layer by streaming it to a digest sink, never to disk."""
 
     if not checkpoint.is_file():
         raise FileNotFoundError(f"INT8 ConvRot checkpoint was not found: {checkpoint}")
-    archive_name = "models/wan-animate-2/wan-animate-2-14b-int8-convrot.safetensors"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with output.open("wb") as compressed_file:
-        with gzip.GzipFile(fileobj=compressed_file, mode="wb", compresslevel=1, mtime=0) as gzip_file:
-            raw_writer = _HashingWriter(gzip_file)
-            with tarfile.open(fileobj=raw_writer, mode="w|", format=tarfile.USTAR_FORMAT) as archive:
-                archive.addfile(_tar_info("models", mode=0o755, directory=True))
-                archive.addfile(_tar_info("models/wan-animate-2", mode=0o755, directory=True))
-                with checkpoint.open("rb") as source:
-                    archive.addfile(
-                        _tar_info(archive_name, mode=0o644, size=checkpoint.stat().st_size),
-                        source,
-                    )
-            raw_digest = raw_writer.digest.hexdigest()
-    compressed_digest = hashlib.sha256()
-    compressed_size = 0
-    with output.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
-            compressed_digest.update(chunk)
-            compressed_size += len(chunk)
-    return raw_digest, compressed_digest.hexdigest(), raw_writer.size, compressed_size
+    compressed_writer = _HashingWriter(None)
+    raw_writer = _write_model_layer(checkpoint, compressed_writer)
+    return raw_writer.digest.hexdigest(), compressed_writer.digest.hexdigest(), raw_writer.size, compressed_writer.size
 
 
-def upload_blob_file(repo: str, token: str, digest: str, payload: Path) -> None:
-    """Upload a large layer using a streaming HTTP request."""
+class _ResumableBlobWriter:
+    """Send a large registry blob in bounded PATCH requests."""
+
+    CHUNK_SIZE = 64 * 1024 * 1024
+
+    def __init__(self, location: str, token: str) -> None:
+        self.location = location
+        self.token = token
+        self.buffer = bytearray()
+        self.digest = hashlib.sha256()
+        self.size = 0
+
+    def write(self, value: bytes) -> int:
+        self.digest.update(value)
+        self.size += len(value)
+        self.buffer.extend(value)
+        if len(self.buffer) >= self.CHUNK_SIZE:
+            self._flush_chunk()
+        return len(value)
+
+    def flush(self) -> None:
+        # Gzip calls flush while the layer is being built. Keep the registry
+        # request boundaries large and flush explicitly after gzip closes.
+        return None
+
+    def _flush_chunk(self) -> None:
+        if not self.buffer:
+            return
+        payload = bytes(self.buffer)
+        status, headers, _ = registry_request(
+            "PATCH",
+            self.location,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/octet-stream",
+                "Content-Length": str(len(payload)),
+            },
+            data=payload,
+        )
+        if status != 202:
+            raise RuntimeError(f"PATCH blob upload returned HTTP {status}")
+        if headers.get("Location"):
+            self.location = urllib.parse.urljoin("https://ghcr.io", headers["Location"])
+        self.buffer.clear()
+
+    def finish(self) -> str:
+        self._flush_chunk()
+        digest = f"sha256:{self.digest.hexdigest()}"
+        separator = "&" if "?" in self.location else "?"
+        final_url = f"{self.location}{separator}digest={urllib.parse.quote(digest)}"
+        status, _, _ = registry_request(
+            "PUT",
+            final_url,
+            headers={
+                "Authorization": f"Bearer {self.token}",
+                "Content-Type": "application/octet-stream",
+                "Content-Length": "0",
+            },
+            data=b"",
+        )
+        if status not in {201, 202}:
+            raise RuntimeError(f"PUT blob finalize returned HTTP {status}")
+        return digest
+
+
+def upload_model_layer(repo: str, token: str, checkpoint: Path) -> tuple[str, str, int, int]:
+    """Upload the checkpoint layer without materializing a second full file."""
 
     base = f"https://ghcr.io/v2/{repo}"
     auth = {"Authorization": f"Bearer {token}"}
-    try:
-        status, _, _ = registry_request("HEAD", f"{base}/blobs/{digest}", headers=auth)
-        if status == 200:
-            return
-    except Exception as exc:
-        if getattr(exc, "status", None) != 404:
-            raise
     _, response_headers, _ = registry_request("POST", f"{base}/blobs/uploads/", headers=auth)
     location = response_headers.get("Location")
     if not location:
         raise RuntimeError("GHCR did not return a blob upload location")
-    parsed = urllib.parse.urlsplit(urllib.parse.urljoin("https://ghcr.io", location))
-    request_path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
-    request_path += ("&" if "?" in request_path else "?") + "digest=" + urllib.parse.quote(digest)
-    connection = http.client.HTTPSConnection(parsed.netloc, timeout=300)
-    try:
-        connection.putrequest("PUT", request_path)
-        connection.putheader("Authorization", f"Bearer {token}")
-        connection.putheader("Content-Type", "application/octet-stream")
-        connection.putheader("Content-Length", str(payload.stat().st_size))
-        connection.endheaders()
-        with payload.open("rb") as source:
-            while chunk := source.read(8 * 1024 * 1024):
-                connection.send(chunk)
-        response = connection.getresponse()
-        body = response.read().decode("utf-8", errors="replace")
-        if response.status not in {201, 202}:
-            raise RuntimeError(f"PUT {request_path} returned HTTP {response.status}: {body[:500]}")
-    finally:
-        connection.close()
+    location = urllib.parse.urljoin("https://ghcr.io", location)
+    upload = _ResumableBlobWriter(location, token)
+    raw_writer = _write_model_layer(checkpoint, upload)
+    compressed_digest = upload.finish()
+    return raw_writer.digest.hexdigest(), compressed_digest.removeprefix("sha256:"), raw_writer.size, upload.size
 
 
 def publish(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = Path(args.repo_root).resolve()
     checkpoint = Path(args.checkpoint).resolve()
-    model_layer_path = Path(args.model_layer).resolve()
     code_layer, code_raw_digest, code_compressed_digest = make_overlay_layer(repo_root)
     comfy_layer, comfy_raw_digest, comfy_compressed_digest = make_comfy_kitchen_layer(
         Path(args.comfy_kitchen_root).resolve()
     )
-    model_raw_digest, model_compressed_digest, model_raw_size, model_compressed_size = make_model_layer(
-        checkpoint, model_layer_path
-    )
     if args.dry_run:
+        model_raw_digest, model_compressed_digest, model_raw_size, model_compressed_size = make_model_layer(
+            checkpoint
+        )
         return {
             "dryRun": True,
             "codeLayerDigest": f"sha256:{code_compressed_digest}",
@@ -186,20 +230,6 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
     )
     config = json.loads(config_body)
-    config.setdefault("rootfs", {}).setdefault("diff_ids", []).extend(
-        (
-            f"sha256:{code_raw_digest}",
-            f"sha256:{comfy_raw_digest}",
-            f"sha256:{model_raw_digest}",
-        )
-    )
-    config.setdefault("history", []).extend(
-        [
-            {"created_by": "COPY runtime-overlay /", "comment": "Wan INT8 ConvRot runtime"},
-            {"created_by": "COPY comfy-kitchen /", "comment": "Fused CUDA ConvRot kernel"},
-            {"created_by": "COPY wan-animate-2-14b-int8-convrot.safetensors /", "comment": "Official non-distilled checkpoint"},
-        ]
-    )
     image_config = config.setdefault("config", {})
     env_overrides = {
         "PYTHONPATH": "/app/vendor:/app/src:/opt/wan-animate-2:/opt/wan-vace:/opt/wan-vace/vace:/opt/wan21",
@@ -224,11 +254,27 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     env = [value for value in image_config.get("Env") or [] if value.split("=", 1)[0] not in keys]
     env.extend(f"{key}={value}" for key, value in env_overrides.items())
     image_config["Env"] = env
-    config_bytes = json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()
-    config_digest = hashlib.sha256(config_bytes).hexdigest()
     upload_blob(args.repo, token, f"sha256:{code_compressed_digest}", code_layer)
     upload_blob(args.repo, token, f"sha256:{comfy_compressed_digest}", comfy_layer)
-    upload_blob_file(args.repo, token, f"sha256:{model_compressed_digest}", model_layer_path)
+    model_raw_digest, model_compressed_digest, model_raw_size, model_compressed_size = upload_model_layer(
+        args.repo, token, checkpoint
+    )
+    config.setdefault("rootfs", {}).setdefault("diff_ids", []).extend(
+        (
+            f"sha256:{code_raw_digest}",
+            f"sha256:{comfy_raw_digest}",
+            f"sha256:{model_raw_digest}",
+        )
+    )
+    config.setdefault("history", []).extend(
+        [
+            {"created_by": "COPY runtime-overlay /", "comment": "Wan INT8 ConvRot runtime"},
+            {"created_by": "COPY comfy-kitchen /", "comment": "Fused CUDA ConvRot kernel"},
+            {"created_by": "COPY wan-animate-2-14b-int8-convrot.safetensors /", "comment": "Official non-distilled checkpoint"},
+        ]
+    )
+    config_bytes = json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()
+    config_digest = hashlib.sha256(config_bytes).hexdigest()
     upload_blob(args.repo, token, f"sha256:{config_digest}", config_bytes)
     base_layer_media_type = base_manifest.get("layers", [{}])[0].get("mediaType") or (
         OCI_LAYER if base_media_type == OCI_MANIFEST else DOCKER_LAYER
@@ -273,7 +319,6 @@ def main() -> None:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--comfy-kitchen-root", required=True)
-    parser.add_argument("--model-layer", default="/tmp/wan-int8-convrot-model.tar.gz")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     print(json.dumps(publish(args), indent=2, sort_keys=True))
