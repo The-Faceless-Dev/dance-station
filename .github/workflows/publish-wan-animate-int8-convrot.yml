@@ -77,11 +77,23 @@ jobs:
           REGISTRY_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          set +e
           python3 tools/publish_wan_int8_convrot_manifest.py \
             --repo "${IMAGE#ghcr.io/}" \
             --base-tag "${BASE_TAG}" \
             --tag "${TAG}" \
             --checkpoint /tmp/wan_animate_2_int8_convrot.safetensors \
             --comfy-kitchen-root /tmp/comfy-kitchen-root \
-            --model-layer /tmp/wan-int8-convrot-model.tar.gz
+            --model-layer /tmp/wan-int8-convrot-model.tar.gz 2>&1 | tee /tmp/int8-publish.log
+          publish_status=${PIPESTATUS[0]}
+          set -e
+          if [ "$publish_status" -ne 0 ]; then
+            while IFS= read -r line; do
+              line=${line//'%'/'%25'}
+              line=${line//$'\r'/'%0D'}
+              line=${line//$'\n'/'%0A'}
+              echo "::error::$line"
+            done < /tmp/int8-publish.log
+            exit "$publish_status"
+          fi
           df -h /
