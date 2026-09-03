@@ -22,6 +22,7 @@ from publish_wan_overlay_manifest import (
     MANIFEST_ACCEPT,
     OCI_LAYER,
     OCI_MANIFEST,
+    RegistryError,
     get_registry_token,
     make_overlay_layer,
     registry_request,
