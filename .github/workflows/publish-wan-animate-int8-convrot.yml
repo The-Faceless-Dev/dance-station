@@ -11,6 +11,10 @@ on:
         description: "Existing tag containing the published INT8 checkpoint layer"
         required: false
         default: wan-int8-convrot-5090-20260902-r1
+      dedupe_source:
+        description: "Existing tag to republish with duplicate layers removed (cleanup-only run)"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -47,6 +51,7 @@ jobs:
           password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Download official INT8 ConvRot checkpoint when no published layer is available
+        if: ${{ inputs.dedupe_source == '' }}
         shell: bash
         env:
           REUSE_MODEL_FROM: ${{ inputs.reuse_model_from }}
@@ -62,6 +67,7 @@ jobs:
           stat --printf='checkpoint_bytes=%s\n' /tmp/wan_animate_2_int8_convrot.safetensors
 
       - name: Prepare Linux comfy-kitchen package
+        if: ${{ inputs.dedupe_source == '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +102,23 @@ jobs:
                       archive.extract(name, target)
           PY
 
+      - name: Remove duplicate layers from an existing public tag
+        if: ${{ inputs.dedupe_source != '' }}
+        shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+          SOURCE_TAG: ${{ inputs.dedupe_source }}
+          TARGET_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 tools/clean_wan_image_manifest.py \
+            --repo "${IMAGE#ghcr.io/}" \
+            --source-tag "${SOURCE_TAG}" \
+            --target-tag "${TARGET_TAG}"
+
       - name: Publish separate registry tag
+        if: ${{ inputs.dedupe_source == '' }}
         shell: bash
         env:
           REGISTRY_USERNAME: ${{ github.actor }}
