@@ -2,6 +2,9 @@ name: Publish Wan Q6 Memory Diagnostics
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
 
 permissions:
   contents: read
