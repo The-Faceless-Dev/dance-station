@@ -76,6 +76,14 @@ def _add_file(archive: tarfile.TarFile, archive_name: str, source: Path) -> None
         archive.addfile(info, handle)
 
 
+def _add_symlink(archive: tarfile.TarFile, archive_name: str, target: str) -> None:
+    info = _tar_info(archive_name)
+    info.type = tarfile.SYMTYPE
+    info.linkname = target
+    info.size = 0
+    archive.addfile(info)
+
+
 def make_code_layer(repo_root: Path) -> tuple[bytes, str, str]:
     entries: list[tuple[str, Path]] = []
 
@@ -110,6 +118,20 @@ def make_code_layer(repo_root: Path) -> tuple[bytes, str, str]:
             archive.addfile(_tar_info(directory, mode=0o755, directory=True))
         for archive_name, path in sorted(entries):
             _add_file(archive, archive_name, path)
+        # The memory-optimized Animate base keeps the shared companions under
+        # /Wan-AI. Replace the older VACE aliases so its T5 and VAE lookups
+        # resolve without duplicating the multi-gigabyte companion files.
+        _add_symlink(
+            archive,
+            "models/wan-vace-14b/models_t5_umt5-xxl-enc-bf16.pth",
+            "../../Wan-AI/models_t5_umt5-xxl-enc-bf16.pth",
+        )
+        _add_symlink(archive, "models/wan-vace-14b/Wan2.1_VAE.pth", "../../Wan-AI/vae.pth")
+        _add_symlink(
+            archive,
+            "models/wan-vace-14b/google/umt5-xxl",
+            "../../../Wan-AI/umt5-xxl",
+        )
 
     raw = raw_buffer.getvalue()
     compressed = gzip.compress(raw, compresslevel=9, mtime=0)

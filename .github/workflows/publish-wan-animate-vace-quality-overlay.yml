@@ -13,7 +13,7 @@ permissions:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
   BASE_TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-r1
-  TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r2
+  TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r3
   QUALITY_REPO: the-faceless-dev/faceless-wan-vace-stitch-worker
   QUALITY_TAG: vace13b-20260829-quality-rife9
 
