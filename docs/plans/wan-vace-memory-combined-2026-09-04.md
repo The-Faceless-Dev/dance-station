@@ -18,6 +18,7 @@ Publish a combined Wan Animate plus VACE image for the Vast two-window validatio
 ## Affected Files
 
 - `.github/workflows/publish-wan-animate-vace-vast.yml`
+- `.github/workflows/publish-wan-animate-vace-final-quality.yml`
 - `containers/wan-animate-worker/Dockerfile.vace-vast-final`
 - `docs/plans/wan-vace-memory-combined-2026-09-04.md`
 
