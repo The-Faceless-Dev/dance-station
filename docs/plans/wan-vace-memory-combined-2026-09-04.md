@@ -9,7 +9,8 @@ Publish a combined Wan Animate plus VACE image for the Vast two-window validatio
 - Rebase the existing VACE overlay workflow on `wan-q6-vast-direct-20260904-block-offload-r2`.
 - Keep the VACE checkpoint and pinned VACE/Wan2.1 sources in the overlay layer.
 - Add the optional Real-ESRGAN and RIFE payloads to a final combined image by
-  reusing the existing public quality-stage image as a source-only build stage.
+  reusing only the existing public quality-stage registry layers; do not unpack
+  the large Animate and VACE images on a hosted build runner.
 - Preserve CPU reference-cache storage, transformer block offload, VAE offload, raw GGUF cache disabled, and required fast attention settings from r2.
 - Run one request containing two 3-second Animate segments, one inter-segment VACE bridge, and one VACE loop bridge.
 - Validate the returned MP4, job metadata, per-stage diagnostics, timings, and downloaded artifacts.
@@ -18,8 +19,7 @@ Publish a combined Wan Animate plus VACE image for the Vast two-window validatio
 ## Affected Files
 
 - `.github/workflows/publish-wan-animate-vace-vast.yml`
-- `.github/workflows/publish-wan-animate-vace-final-quality.yml`
-- `containers/wan-animate-worker/Dockerfile.vace-vast-final`
+- `tools/publish_wan_quality_overlay.py`
 - `docs/plans/wan-vace-memory-combined-2026-09-04.md`
 
 ## Risks

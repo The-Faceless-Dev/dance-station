@@ -1,0 +1,38 @@
+name: Publish Wan Animate VACE Quality Overlay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
+  BASE_TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-r1
+  TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r2
+  QUALITY_REPO: the-faceless-dev/faceless-wan-vace-stitch-worker
+  QUALITY_TAG: vace13b-20260829-quality-rife9
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Publish registry-only quality overlay
+        shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python tools/publish_wan_quality_overlay.py \
+            --repo-root . \
+            --repo "${IMAGE#ghcr.io/}" \
+            --base-tag "${BASE_TAG}" \
+            --tag "${TAG}" \
+            --quality-repo "${QUALITY_REPO}" \
+            --quality-tag "${QUALITY_TAG}"
