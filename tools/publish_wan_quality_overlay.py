@@ -56,6 +56,8 @@ QUALITY_ENV = {
     ),
 }
 
+VACE_VAE_ARCHIVE_PATH = "models/wan-vace-14b/Wan2.1_VAE.pth"
+
 
 def _tar_info(name: str, *, mode: int = 0o644, directory: bool = False) -> tarfile.TarInfo:
     info = tarfile.TarInfo(name)
@@ -82,6 +84,28 @@ def _add_symlink(archive: tarfile.TarFile, archive_name: str, target: str) -> No
     info.linkname = target
     info.size = 0
     archive.addfile(info)
+
+
+def _add_whiteout(archive: tarfile.TarFile, archive_name: str) -> None:
+    parent, _, name = archive_name.rpartition("/")
+    info = _tar_info(f"{parent}/.wh.{name}" if parent else f".wh.{name}")
+    info.size = 0
+    archive.addfile(info)
+
+
+def _make_file_layer(source: Path, archive_name: str) -> tuple[bytes, str, str]:
+    if not source.is_file() or source.stat().st_size == 0:
+        raise FileNotFoundError(f"required model file was not found: {source}")
+    raw_buffer = io.BytesIO()
+    with tarfile.open(fileobj=raw_buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        # r1 contains an obsolete symlink at this path. Explicitly white it
+        # out before adding the real VACE checkpoint so extraction cannot
+        # follow the old link.
+        _add_whiteout(archive, archive_name)
+        _add_file(archive, archive_name, source)
+    raw = raw_buffer.getvalue()
+    compressed = gzip.compress(raw, compresslevel=1, mtime=0)
+    return compressed, hashlib.sha256(raw).hexdigest(), hashlib.sha256(compressed).hexdigest()
 
 
 def make_code_layer(repo_root: Path) -> tuple[bytes, str, str]:
@@ -118,15 +142,14 @@ def make_code_layer(repo_root: Path) -> tuple[bytes, str, str]:
             archive.addfile(_tar_info(directory, mode=0o755, directory=True))
         for archive_name, path in sorted(entries):
             _add_file(archive, archive_name, path)
-        # The memory-optimized Animate base keeps the shared companions under
-        # /Wan-AI. Replace the older VACE aliases so its T5 and VAE lookups
-        # resolve without duplicating the multi-gigabyte companion files.
+        # The memory-optimized Animate base keeps the shared T5/tokenizer under
+        # /Wan-AI. Keep those aliases, but do not alias VACE's VAE: VACE's
+        # Wan2.1_VAE.pth is a distinct checkpoint format from Animate's VAE.
         _add_symlink(
             archive,
             "models/wan-vace-14b/models_t5_umt5-xxl-enc-bf16.pth",
             "../../Wan-AI/models_t5_umt5-xxl-enc-bf16.pth",
         )
-        _add_symlink(archive, "models/wan-vace-14b/Wan2.1_VAE.pth", "../../Wan-AI/vae.pth")
         _add_symlink(
             archive,
             "models/wan-vace-14b/google/umt5-xxl",
@@ -236,6 +259,11 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         upload_blob(target_repo, target_token, descriptor["digest"], payload)
     upload_blob(target_repo, target_token, f"sha256:{code_digest}", code_layer)
 
+    vae_layer, vae_raw_digest, vae_digest = _make_file_layer(
+        Path(args.vace_vae_path).resolve(), VACE_VAE_ARCHIVE_PATH
+    )
+    upload_blob(target_repo, target_token, f"sha256:{vae_digest}", vae_layer)
+
     rootfs = target_config.setdefault("rootfs", {})
     diff_ids = rootfs.setdefault("diff_ids", [])
     history = target_config.setdefault("history", [])
@@ -247,6 +275,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         })
     diff_ids.append(f"sha256:{code_raw_digest}")
     history.append({"created_by": "COPY current VACE quality runners and runtime /"})
+    diff_ids.append(f"sha256:{vae_raw_digest}")
+    history.append({"created_by": f"COPY {VACE_VAE_ARCHIVE_PATH} /"})
     _update_env(target_config)
     config_bytes = json.dumps(target_config, separators=(",", ":"), ensure_ascii=False).encode()
     config_digest = f"sha256:{hashlib.sha256(config_bytes).hexdigest()}"
@@ -260,6 +290,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         for item in selected_layers
     ]
     new_layers.append({"mediaType": layer_media_type, "size": len(code_layer), "digest": f"sha256:{code_digest}"})
+    new_layers.append({"mediaType": layer_media_type, "size": len(vae_layer), "digest": f"sha256:{vae_digest}"})
     manifest = {
         "schemaVersion": 2,
         "mediaType": target_manifest["mediaType"],
@@ -286,6 +317,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "qualityLayerDigests": [item["digest"] for item in selected_layers],
         "qualityLayerBytes": sum(item["size"] for item in selected_layers),
         "codeLayerBytes": len(code_layer),
+        "vaceVaeLayerBytes": len(vae_layer),
+        "vaceVaeLayerDigest": f"sha256:{vae_digest}",
         "configDigest": config_digest,
     }
 
@@ -298,6 +331,7 @@ def main() -> None:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--quality-repo", default="the-faceless-dev/faceless-wan-vace-stitch-worker")
     parser.add_argument("--quality-tag", default="vace13b-20260829-quality-rife9")
+    parser.add_argument("--vace-vae-path", required=True)
     args = parser.parse_args()
     print(json.dumps(publish(args), indent=2, sort_keys=True))
 
