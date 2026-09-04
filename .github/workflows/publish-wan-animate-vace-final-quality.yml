@@ -2,6 +2,9 @@ name: Publish Wan Animate VACE Final Quality Image
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
 
 permissions:
   contents: read
