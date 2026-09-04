@@ -873,6 +873,31 @@ def _log_memory(stage: str, device: Any) -> None:
     )
 
 
+def _vae_offload_enabled() -> bool:
+    return _env_flag("WAN_VAE_OFFLOAD")
+
+
+def _move_vae(vae: Any, target_device: Any, *, stage: str) -> None:
+    """Move the VAE weights and its device hint together between encode/decode phases."""
+
+    import torch
+
+    target = torch.device(target_device)
+    module = getattr(vae, "model", None)
+    mover = getattr(vae, "to", None)
+    if callable(mover):
+        mover(target)
+    elif module is not None and callable(getattr(module, "to", None)):
+        module.to(target)
+    else:
+        raise RuntimeError("Wan VAE does not expose a movable model")
+    if hasattr(vae, "device"):
+        vae.device = target
+    if target.type == "cpu" and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    LOGGER.info("stage=%s vae_device=%s", stage, target)
+
+
 def _memory_snapshot(device: Any) -> dict[str, float | None]:
     """Return comparable memory values for the retained inference report."""
 
@@ -1076,6 +1101,7 @@ def _cuda_runtime_report(runtime: Any) -> dict[str, Any]:
         "modelFormat": getattr(runtime, "model_format", "gguf"),
         "modelDevice": _device_of(runtime.model),
         "vaeDevice": _device_of(runtime.vae),
+        "vaeOffload": os.getenv("WAN_VAE_OFFLOAD", "0"),
         "sdpaBackend": _sdpa_backend_name(),
         "referenceSdpaBackend": _reference_sdpa_backend_name(),
         "referenceAttentionBackend": os.getenv("WAN_REFERENCE_ATTENTION_BACKEND", "sdpa"),
@@ -1301,6 +1327,8 @@ def load_runtime(
         dtype=dtype,
     )
     LOGGER.info("stage=vae_ready seconds=%.2f", time.perf_counter() - started)
+    if _vae_offload_enabled():
+        _move_vae(vae, torch.device("cpu"), stage="vae_offloaded_runtime_idle")
     _log_memory("runtime_ready", device)
     LOGGER.info(
         "stage=conditioning_deferred t5=%s clip=%s policy=load-encode-release",
@@ -1660,6 +1688,9 @@ def _render_window(
         else nullcontext()
     )
     with torch.inference_mode(), autocast_context:
+        if _vae_offload_enabled():
+            _move_vae(vae, device, stage="vae_loaded_for_encode")
+            _log_memory("vae_loaded_for_encode_memory", device)
         LOGGER.info("stage=vae_reference_encode")
         with _timed_stage(timings, "vae_reference_encode", device):
             ref_latents = torch.stack(vae.encode(ref_pixel_values))
@@ -1749,6 +1780,10 @@ def _render_window(
         grid_sizes_ref = torch.stack(
             [torch.tensor([condition_lat_t, condition_lat_h // 2, condition_lat_w // 2], dtype=torch.long)]
         ).to(device=device)
+
+        if _vae_offload_enabled():
+            _move_vae(vae, torch.device("cpu"), stage="vae_offloaded_before_transformer")
+            _log_memory("vae_offloaded_before_transformer_memory", device)
 
         max_seq_len = int(np.ceil(np.prod(target_shape) / 4))
         max_seq_len_ref = int(np.ceil(np.prod(condition_latents.shape[2:]) / 4))
@@ -1851,6 +1886,9 @@ def _render_window(
             int(latents[0].shape[1]),
             int(generated_latents.shape[1]),
         )
+        if _vae_offload_enabled():
+            _move_vae(vae, device, stage="vae_loaded_for_decode")
+            _log_memory("vae_loaded_for_decode_memory", device)
         with _timed_stage(timings, "vae_decode", device):
             decoded = torch.stack(vae.decode([generated_latents.to(dtype=torch.float32)]))
         _require_finite_tensor("decoded_frames", decoded)
@@ -1858,6 +1896,9 @@ def _render_window(
         _require_finite_tensor("decoded_pixel_values", frame_values)
         with _timed_stage(timings, "decoded_frame_device_to_host", device):
             frame_values = frame_values.clamp(0, 255).cpu().numpy()
+        if _vae_offload_enabled():
+            _move_vae(vae, torch.device("cpu"), stage="vae_offloaded_after_decode")
+            _log_memory("vae_offloaded_after_decode_memory", device)
         if not np.isfinite(frame_values).all():
             raise RuntimeError("Wan-Animate-2 produced non-finite pixel values after VAE decode")
         frames = frame_values.astype(np.uint8)
