@@ -9,8 +9,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: wan-q6-vast-direct-20260901-r6
-  TAG: wan-q6-vast-direct-20260901-vace14b-r1
+  BASE_TAG: wan-q6-vast-direct-20260904-block-offload-r2
+  TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-r1
   VACE_COMMIT: 48eb44f1c4be87cc65a98bff985a26976841e9f3
   WAN21_COMMIT: 9737cba9c1c3c4d04b33fcad41c111989865d315
   VACE_CHECKPOINT_URL: https://huggingface.co/spacepxl/Wan2.1_VACE_14B_fp8_scaled/resolve/main/wan2.1_vace_14B_fp8_scaled.safetensors
