@@ -947,7 +947,17 @@ def _cuda_memory_diagnostic(stage: str, device: Any, **fields: Any) -> None:
 
     import torch
 
-    if not _memory_diagnostics_enabled() or not torch.cuda.is_available():
+    if not _memory_diagnostics_enabled():
+        return
+    device_type = getattr(device, "type", str(device))
+    if not torch.cuda.is_available() or device_type != "cuda":
+        extras = " ".join(f"{key}={value}" for key, value in fields.items())
+        LOGGER.info(
+            "memory_diag stage=%s device=%s cuda_metrics=unavailable %s",
+            stage,
+            device,
+            extras,
+        )
         return
     allocated = torch.cuda.memory_allocated(device) / 1024**2
     reserved = torch.cuda.memory_reserved(device) / 1024**2
