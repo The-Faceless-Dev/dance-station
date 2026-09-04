@@ -1017,6 +1017,7 @@ def _install_reference_memory_diagnostics(model: Any) -> None:
         def after_block(
             current_module: Any,
             inputs: tuple[Any, ...],
+            kwargs: dict[str, Any],
             output: Any,
             *,
             name: str = module_name,
