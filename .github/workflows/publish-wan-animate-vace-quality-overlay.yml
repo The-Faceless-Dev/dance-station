@@ -1,6 +1,9 @@
 name: Publish Wan Animate VACE Quality Overlay
 
 on:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
   workflow_dispatch:
 
 permissions:
