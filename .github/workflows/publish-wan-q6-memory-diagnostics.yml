@@ -13,7 +13,7 @@ permissions:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
   BASE_TAG: wan-q6-vast-direct-20260902-r4
-  TAG: wan-q6-vast-direct-20260904-memory-diagnostics-vae-offload
+  TAG: wan-q6-vast-direct-20260904-block-offload-r1
 
 jobs:
   publish:

@@ -5,11 +5,11 @@ launcher. It uses the official Wan-Animate-2 model implementation as the
 architecture reference, the project-owned GGUF loader for the transformer, and
 the official .pth companion models directly.
 
-The default profile keeps T5 and CLIP on CPU, where they are used for their
-short conditioning passes, and keeps the quantized transformer plus VAE on the
-selected CUDA device. That is the memory policy needed for the local RTX 3080
-profile and can be changed for a larger production GPU without changing the
-request or artifact contract.
+The default profile keeps T5 and CLIP on CPU, streams transformer blocks and
+the reference cache through host memory, and keeps active transformer/VAE work
+on the selected CUDA device. That is the memory policy needed for long windows
+on the local RTX 3080 and production GPU profiles without changing the request
+or artifact contract.
 """
 
 from __future__ import annotations
@@ -977,6 +977,24 @@ def _reference_cache_memory(cache: dict[int, Any]) -> int:
     )
 
 
+def _reference_cache_device(device: Any) -> Any:
+    """Resolve where completed reference tensors live between block calls."""
+
+    import torch
+
+    configured = os.getenv("WAN_REFERENCE_CACHE_DEVICE", "cpu").strip().lower()
+    if configured in {"", "auto"}:
+        configured = "cpu" if getattr(device, "type", str(device)) == "cuda" else "cpu"
+    if configured == "cpu":
+        return torch.device("cpu")
+    if configured == "cuda" and getattr(device, "type", str(device)) == "cuda":
+        return device
+    raise RuntimeError(
+        "WAN_REFERENCE_CACHE_DEVICE must be cpu or cuda; "
+        f"got {configured!r} for compute device {device}"
+    )
+
+
 def _install_reference_memory_diagnostics(model: Any) -> None:
     """Install opt-in hooks around the reference pass and top-level blocks."""
 
@@ -1102,6 +1120,9 @@ def _cuda_runtime_report(runtime: Any) -> dict[str, Any]:
         "modelDevice": _device_of(runtime.model),
         "vaeDevice": _device_of(runtime.vae),
         "vaeOffload": os.getenv("WAN_VAE_OFFLOAD", "0"),
+        "transformerBlockOffload": os.getenv("WAN_TRANSFORMER_BLOCK_OFFLOAD", "1"),
+        "referenceCacheDevice": os.getenv("WAN_REFERENCE_CACHE_DEVICE", "cpu"),
+        "referenceCachePinned": os.getenv("WAN_REFERENCE_CACHE_PIN_MEMORY", "1"),
         "sdpaBackend": _sdpa_backend_name(),
         "referenceSdpaBackend": _reference_sdpa_backend_name(),
         "referenceAttentionBackend": os.getenv("WAN_REFERENCE_ATTENTION_BACKEND", "sdpa"),
@@ -1170,18 +1191,49 @@ def _timed_stage(timings: dict[str, dict[str, Any]], label: str, device: Any):
 
 
 class _TypedReferenceCache(dict[int, Any]):
-    """Store reference K/V tensors in inference dtype as each block returns."""
+    """Store reference K/V tensors and optionally stage one layer on CUDA."""
 
-    def __init__(self, dtype: Any, *, label: str = "cache") -> None:
+    def __init__(
+        self,
+        dtype: Any,
+        *,
+        label: str = "cache",
+        storage_device: Any = None,
+        compute_device: Any = None,
+    ) -> None:
+        import torch
+
         super().__init__()
         self.dtype = dtype
         self.label = label
         self.converted = 0
+        self.storage_device = torch.device(storage_device) if storage_device is not None else None
+        self.compute_device = torch.device(compute_device) if compute_device is not None else None
+        self._active: dict[int, Any] = {}
+        self._host_pinned = _env_flag("WAN_REFERENCE_CACHE_PIN_MEMORY", default=True)
+
+    @property
+    def host_backed(self) -> bool:
+        return self.storage_device is not None and self.storage_device.type == "cpu"
 
     def __setitem__(self, index: int, value: Any) -> None:
+        import torch
+
         if value.dtype != self.dtype:
             value = value.to(dtype=self.dtype)
             self.converted += 1
+        if self.storage_device is not None and value.device != self.storage_device:
+            value = value.detach().to(
+                device=self.storage_device,
+                non_blocking=False,
+            ).contiguous()
+            if (
+                self.host_backed
+                and self._host_pinned
+                and torch.cuda.is_available()
+                and not value.is_pinned()
+            ):
+                value = value.pin_memory()
         super().__setitem__(index, value)
         if _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE:
             _cuda_memory_diagnostic(
@@ -1191,7 +1243,150 @@ class _TypedReferenceCache(dict[int, Any]):
                 layer=index,
                 layers=len(self),
                 cache_mib=round(_reference_cache_memory(self) / 1024**2, 1),
+                storage_device=self.storage_device,
             )
+
+    def __getitem__(self, index: int) -> Any:
+        if (
+            not self.host_backed
+            or self.compute_device is None
+            or self.compute_device.type != "cuda"
+        ):
+            return super().__getitem__(index)
+        staged = self._active.get(index)
+        if staged is not None:
+            return staged
+        stored = super().__getitem__(index)
+        staged = stored.to(
+            device=self.compute_device,
+            non_blocking=bool(stored.is_pinned()),
+        )
+        self._active[index] = staged
+        if _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE:
+            _cuda_memory_diagnostic(
+                "reference_cache_stage_cuda",
+                self.compute_device,
+                cache=self.label,
+                layer=index,
+                cache_mib=round(_reference_cache_memory(self) / 1024**2, 1),
+                staged_mib=round(staged.numel() * staged.element_size() / 1024**2, 1),
+            )
+        return staged
+
+    def release(self, index: int) -> None:
+        """Release the active CUDA copy while retaining the host tensor."""
+
+        staged = self._active.pop(index, None)
+        if staged is None:
+            return
+        del staged
+        if _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE and self.compute_device is not None:
+            _cuda_memory_diagnostic(
+                "reference_cache_release_cuda",
+                self.compute_device,
+                cache=self.label,
+                layer=index,
+                cache_mib=round(_reference_cache_memory(self) / 1024**2, 1),
+            )
+
+    def release_all(self) -> None:
+        for index in tuple(self._active):
+            self.release(index)
+
+
+def _cache_pair_from_block_inputs(inputs: tuple[Any, ...]) -> tuple[int, Any, Any] | None:
+    """Read the official block call's index and K/V cache arguments."""
+
+    if len(inputs) < 4 or not isinstance(inputs[1], int):
+        return None
+    return inputs[1], inputs[2], inputs[3]
+
+
+class _BlockResidencyManager:
+    """Keep one Wan block on CUDA while the other blocks stay on the host."""
+
+    def __init__(self, model: Any, device: Any) -> None:
+        import torch
+
+        self.device = torch.device(device)
+        self.blocks = list(getattr(model, "blocks", ()))
+        self.handles: list[Any] = []
+        if self.device.type != "cuda" or not self.blocks:
+            return
+
+        # The loader initially materializes non-linear block state on CUDA.
+        # Move it out before the first long reference pass; the hooks below
+        # bring only the active block back for its actual computation.
+        for block in self.blocks:
+            block.to(device="cpu")
+
+        for block_index, block in enumerate(self.blocks):
+            self.handles.append(
+                block.register_forward_pre_hook(
+                    lambda current, inputs, index=block_index: self._before(
+                        current, inputs, index
+                    )
+                )
+            )
+            self.handles.append(
+                block.register_forward_hook(
+                    lambda current, inputs, output, index=block_index: self._after(
+                        current, inputs, index
+                    )
+                )
+            )
+        LOGGER.info(
+            "stage=transformer_block_offload_ready blocks=%s compute_device=%s "
+            "inactive_device=cpu cache_device=%s",
+            len(self.blocks),
+            self.device,
+            os.getenv("WAN_REFERENCE_CACHE_DEVICE", "cpu"),
+        )
+
+    def _before(self, block: Any, inputs: tuple[Any, ...], index: int) -> None:
+        block.to(device=self.device, non_blocking=False)
+        _cuda_memory_diagnostic(
+            "transformer_block_to_cuda",
+            self.device,
+            block=index,
+        )
+
+    def _after(self, block: Any, inputs: tuple[Any, ...], index: int) -> None:
+        cache_pair = _cache_pair_from_block_inputs(inputs)
+        if cache_pair is not None:
+            cache_index, cache_k, cache_v = cache_pair
+            for cache in (cache_k, cache_v):
+                release = getattr(cache, "release", None)
+                if callable(release):
+                    release(cache_index)
+        block.to(device="cpu", non_blocking=False)
+        _cuda_memory_diagnostic(
+            "transformer_block_to_cpu",
+            self.device,
+            block=index,
+        )
+
+    def close(self) -> None:
+        """Remove hooks and leave blocks on the host after the runtime exits."""
+
+        for handle in self.handles:
+            handle.remove()
+        self.handles.clear()
+        for block in self.blocks:
+            block.to(device="cpu")
+
+
+def _install_block_residency_manager(model: Any, device: Any) -> None:
+    """Install CUDA block streaming for the native Wan transformer."""
+
+    if not _env_flag("WAN_TRANSFORMER_BLOCK_OFFLOAD", default=True):
+        LOGGER.info("stage=transformer_block_offload disabled")
+        return
+    manager = _BlockResidencyManager(model, device)
+    if manager.blocks and manager.device.type == "cuda":
+        # Keep hook handles reachable for the life of the model. The manager
+        # intentionally does not retain the parent model, avoiding a cycle.
+        model._autotransition_block_residency = manager
 
 
 def _normalize_reference_cache(cache: dict[int, Any], dtype: Any) -> int:
@@ -1309,6 +1504,7 @@ def load_runtime(
     _install_reference_attention_fallback(model)
     _install_reference_memory_diagnostics(model)
     _install_flex_attention_fallback(model)
+    _install_block_residency_manager(model, device)
     LOGGER.info(
         "stage=transformer_ready seconds=%.2f tensors=%s raw_model_type=%s",
         time.perf_counter() - started,
@@ -1806,9 +2002,18 @@ def _render_window(
             "origin_area": [width, height],
         }
         LOGGER.info("stage=reference_transformer_pass")
-        cache_k = _TypedReferenceCache(compute_dtype)
+        cache_device = _reference_cache_device(device)
+        cache_k = _TypedReferenceCache(
+            compute_dtype,
+            storage_device=cache_device,
+            compute_device=device,
+        )
         cache_k.label = "k"
-        cache_v = _TypedReferenceCache(compute_dtype)
+        cache_v = _TypedReferenceCache(
+            compute_dtype,
+            storage_device=cache_device,
+            compute_device=device,
+        )
         cache_v.label = "v"
         with _timed_stage(timings, "reference_transformer_pass", device):
             model(
@@ -1838,6 +2043,18 @@ def _render_window(
             cache_dtypes,
             converted_cache_values,
             compute_dtype,
+        )
+        LOGGER.info(
+            "stage=reference_cache_storage device=%s host_backed=%s host_bytes=%.2fGiB "
+            "active_cuda_bytes=%.2fGiB",
+            cache_device,
+            cache_k.host_backed,
+            cache_bytes / 1024**3,
+            sum(
+                int(value.numel()) * int(value.element_size())
+                for cache in (cache_k, cache_v)
+                for value in cache._active.values()
+            ) / 1024**3,
         )
         _log_memory("reference_pass_complete", device)
         with _ScaledReferenceValues(cache_v, reference_strength):

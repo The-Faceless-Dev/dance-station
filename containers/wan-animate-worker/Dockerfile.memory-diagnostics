@@ -1,5 +1,11 @@
 ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-vast-direct-20260902-r4
 FROM ${BASE_IMAGE}
 
-# Diagnostic-only overlay. It changes no model layers or runtime defaults.
+# Code-only memory overlay. It inherits every model layer from the known-good
+# Q6 Vast image and changes only the runner plus the long-window memory policy.
+ENV WAN_GGUF_GPU_RAW_CACHE=0 \
+    WAN_TRANSFORMER_BLOCK_OFFLOAD=1 \
+    WAN_REFERENCE_CACHE_DEVICE=cpu \
+    WAN_REFERENCE_CACHE_PIN_MEMORY=1 \
+    WAN_VAE_OFFLOAD=1
 COPY tools/generative_dance/wan_animate_2_runner.py /app/tools/generative_dance/wan_animate_2_runner.py

@@ -69,8 +69,20 @@ def test_native_wan_runtime_has_explicit_cuda_dequant_dtype_policy() -> None:
     assert "result.dtype != weight.dtype" not in source
     assert "reference_cache_ready" in runner_source
     assert "class _TypedReferenceCache" in runner_source
-    assert "cache_k = _TypedReferenceCache(compute_dtype)" in runner_source
+    assert "cache_k = _TypedReferenceCache(" in runner_source
+    assert "storage_device=cache_device" in runner_source
     assert "_normalize_reference_cache" in runner_source
+
+
+def test_native_wan_runner_streams_reference_cache_and_transformer_blocks() -> None:
+    source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
+
+    assert 'os.getenv("WAN_REFERENCE_CACHE_DEVICE", "cpu")' in source
+    assert "class _BlockResidencyManager" in source
+    assert "WAN_TRANSFORMER_BLOCK_OFFLOAD" in source
+    assert "reference_cache_stage_cuda" in source
+    assert "reference_cache_release_cuda" in source
+    assert "transformer_block_offload_ready" in source
 
 
 def test_wan_overlay_requires_fused_5090_attention_and_raw_cache() -> None:
@@ -183,6 +195,76 @@ def test_native_wan_command_passes_configured_temporal_window(tmp_path: Path) ->
     assert "--temporal-context-frames" in adapter.native_command
     assert "{temporal_context_frames}" in adapter.native_command
     assert "--continuation-frames" not in adapter.native_command
+
+
+def test_native_wan_command_accepts_request_temporal_window(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    config = GenerativeDanceConfig(
+        artifact_root=tmp_path,
+        wan_backend="native",
+        wan_temporal_window=81,
+        wan_temporal_context_frames=5,
+        wan_transformer_checkpoint=tmp_path / "model.gguf",
+        wan_official_source=tmp_path / "source",
+        wan_t5_checkpoint=tmp_path / "t5.pth",
+        wan_t5_tokenizer=tmp_path / "t5-tokenizer",
+        wan_clip_checkpoint=tmp_path / "clip.pth",
+        wan_clip_tokenizer=tmp_path / "clip-tokenizer",
+        wan_vae_checkpoint=tmp_path / "vae.pth",
+    )
+    adapter = WanAnimate2LiteAdapter(config)
+
+    captured: dict[str, object] = {}
+
+    def fake_run(command: tuple[str, ...], **kwargs: object) -> None:
+        captured.update(kwargs)
+        values = kwargs["values"]
+        assert isinstance(values, dict)
+        output = Path(str(values["output"]))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"not-a-real-video")
+
+    monkeypatch.setattr("autotransition.generative_dance.wan_animate.run_adapter_command", fake_run)
+    monkeypatch.setattr(
+        "autotransition.generative_dance.wan_animate.probe_video",
+        lambda path: VideoProbe(path, 640, 800, 24.0, 1.0, 24, "yuv420p"),
+    )
+    reference = AvatarReference(
+        id="reference-1",
+        description="test reference",
+        prompt="test prompt",
+        source_image=tmp_path / "source.png",
+        normalized_image=tmp_path / "normalized.png",
+        matte_image=None,
+        canvas=config.canvas,
+        metadata_path=tmp_path / "reference.json",
+    )
+    boundary = BoundaryState(0.0, (0.5, 0.5), (0.1, 0.1, 0.9, 0.9))
+    driver = DanceDriver(
+        id="driver-1",
+        label="test driver",
+        source_video=tmp_path / "source.mp4",
+        normalized_video=tmp_path / "normalized.mp4",
+        duration_seconds=1.0,
+        canvas=config.canvas,
+        start_boundary=boundary,
+        end_boundary=boundary,
+        metadata_path=tmp_path / "driver.json",
+    )
+
+    adapter.render(
+        segment_id="segment-1",
+        reference=reference,
+        driver=driver,
+        output_dir=tmp_path / "render",
+        temporal_window=40,
+    )
+
+    values = captured["values"]
+    assert isinstance(values, dict)
+    assert values["temporal_window"] == 40
 
 
 def test_native_wan_command_passes_reference_strength(tmp_path: Path) -> None:
