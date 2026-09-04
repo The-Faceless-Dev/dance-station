@@ -1,0 +1,40 @@
+name: Publish Wan Q6 Memory Diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
+  BASE_TAG: wan-q6-vast-direct-20260902-r4
+  TAG: wan-q6-vast-direct-20260904-memory-diagnostics
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish diagnostic overlay
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/wan-animate-worker/Dockerfile.memory-diagnostics
+          build-args: |
+            BASE_IMAGE=${{ env.IMAGE }}:${{ env.BASE_TAG }}
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          provenance: false
+          sbom: false

@@ -40,6 +40,7 @@ from wan_animate_2_runtime import (
 
 LOGGER = logging.getLogger("wan-animate-2")
 _REFERENCE_ATTENTION_ACTIVE = False
+_REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE = False
 
 
 def _sdpa_backend_context(torch: Any, backend_name: str | None = None) -> Any:
@@ -138,10 +139,9 @@ def _lightx2v_sampling_sigmas(
 ) -> np.ndarray:
     """Convert the selected LightX2V denoising indices into flow sigmas.
 
-    The existing Q6 profile uses the four-step adapter schedule. The
-    non-distilled INT8 ConvRot experiment uses the six-step schedule from the
-    reference setup. The indices are sampled from Wan's 1000-step schedule
-    and then passed through the ``sample_shift`` transform.
+    Known checkpoint profiles keep their tuned schedules. Other positive step
+    counts use an evenly spaced Wan flow schedule so the caller can tune the
+    tradeoff between quality and runtime without changing the worker.
     """
 
     checkpoint_format = os.getenv("GENERATIVE_DANCE_WAN_CHECKPOINT_FORMAT", "gguf").strip().lower()
@@ -149,23 +149,16 @@ def _lightx2v_sampling_sigmas(
         "gguf": {4: [1000, 750, 500, 250]},
         "int8_convrot": {6: [1000, 833, 666, 500, 333, 166]},
     }
-    try:
-        denoising_step_list = np.asarray(
-            schedules[checkpoint_format][sampling_steps], dtype=np.int32
-        )
-    except KeyError as exc:
-        expected = ", ".join(
-            f"{model_format}={sorted(values)}"
-            for model_format, values in schedules.items()
-        )
-        raise ValueError(
-            "LightX2V Wan-Animate-2 sampling steps do not match the checkpoint "
-            f"profile: format={checkpoint_format!r} steps={sampling_steps}; expected {expected}"
-        ) from exc
+    if sampling_steps < 1:
+        raise ValueError("LightX2V sampling steps must be positive")
     if sample_shift <= 0:
         raise ValueError("LightX2V sample_shift must be positive")
-    linear_sigmas = np.linspace(1.0, 0.0, 1001, dtype=np.float32)[:-1]
-    raw_sigmas = linear_sigmas[1000 - denoising_step_list]
+    denoising_step_list = schedules.get(checkpoint_format, {}).get(sampling_steps)
+    if denoising_step_list is None:
+        raw_sigmas = np.linspace(1.0, 0.0, sampling_steps + 1, dtype=np.float32)[:-1]
+    else:
+        linear_sigmas = np.linspace(1.0, 0.0, 1001, dtype=np.float32)[:-1]
+        raw_sigmas = linear_sigmas[1000 - np.asarray(denoising_step_list, dtype=np.int32)]
     return sample_shift * raw_sigmas / (1.0 + (sample_shift - 1.0) * raw_sigmas)
 
 
@@ -900,6 +893,154 @@ def _memory_snapshot(device: Any) -> dict[str, float | None]:
     }
 
 
+def _memory_diagnostics_enabled() -> bool:
+    return _env_flag("WAN_MEMORY_DIAGNOSTICS")
+
+
+def _first_tensor(value: Any) -> Any | None:
+    """Find a tensor in a hook argument without traversing arbitrary objects."""
+
+    import torch
+
+    if torch.is_tensor(value):
+        return value
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            tensor = _first_tensor(item)
+            if tensor is not None:
+                return tensor
+    if isinstance(value, dict):
+        for item in value.values():
+            tensor = _first_tensor(item)
+            if tensor is not None:
+                return tensor
+    return None
+
+
+def _cuda_memory_diagnostic(stage: str, device: Any, **fields: Any) -> None:
+    """Log memory plus the stage-specific facts needed to explain an OOM."""
+
+    import torch
+
+    if not _memory_diagnostics_enabled() or not torch.cuda.is_available():
+        return
+    allocated = torch.cuda.memory_allocated(device) / 1024**2
+    reserved = torch.cuda.memory_reserved(device) / 1024**2
+    peak_allocated = torch.cuda.max_memory_allocated(device) / 1024**2
+    peak_reserved = torch.cuda.max_memory_reserved(device) / 1024**2
+    free, total = torch.cuda.mem_get_info(device=device)
+    extras = " ".join(f"{key}={value}" for key, value in fields.items())
+    LOGGER.info(
+        "memory_diag stage=%s allocated_mb=%.1f reserved_mb=%.1f free_mb=%.1f "
+        "total_mb=%.1f peak_allocated_mb=%.1f peak_reserved_mb=%.1f %s",
+        stage,
+        allocated,
+        reserved,
+        free / 1024**2,
+        total / 1024**2,
+        peak_allocated,
+        peak_reserved,
+        extras,
+    )
+
+
+def _reference_cache_memory(cache: dict[int, Any]) -> int:
+    return sum(
+        int(value.numel()) * int(value.element_size())
+        for value in cache.values()
+        if hasattr(value, "numel") and hasattr(value, "element_size")
+    )
+
+
+def _install_reference_memory_diagnostics(model: Any) -> None:
+    """Install opt-in hooks around the reference pass and top-level blocks."""
+
+    if not _memory_diagnostics_enabled():
+        return
+
+    import re
+
+    transformer_type = type(model)
+    original_forward_ref = transformer_type.forward_ref
+    if not getattr(original_forward_ref, "_autotransition_memory_diagnostic", False):
+        def forward_ref_with_memory_diagnostics(self: Any, *args: Any, **kwargs: Any) -> Any:
+            global _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE
+
+            previous = _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE
+            _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE = True
+            tensor = _first_tensor(args)
+            if tensor is None:
+                tensor = _first_tensor(kwargs)
+            device = getattr(tensor, "device", "cuda")
+            _cuda_memory_diagnostic("reference_pass_enter", device)
+            try:
+                return original_forward_ref(self, *args, **kwargs)
+            except Exception as error:
+                _cuda_memory_diagnostic(
+                    "reference_pass_exception",
+                    device,
+                    error_type=type(error).__name__,
+                )
+                raise
+            finally:
+                _cuda_memory_diagnostic("reference_pass_exit", device)
+                _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE = previous
+
+        forward_ref_with_memory_diagnostics._autotransition_memory_diagnostic = True
+        transformer_type.forward_ref = forward_ref_with_memory_diagnostics
+
+    hooked = 0
+    for module_name, module in model.named_modules():
+        if not re.fullmatch(r"(?:.+\.)?blocks\.\d+", module_name):
+            continue
+
+        def before_block(
+            current_module: Any,
+            inputs: tuple[Any, ...],
+            kwargs: dict[str, Any],
+            *,
+            name: str = module_name,
+        ) -> None:
+            if not _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE:
+                return
+            tensor = _first_tensor(inputs)
+            if tensor is None:
+                tensor = _first_tensor(kwargs)
+            device = getattr(tensor, "device", "cuda")
+            _cuda_memory_diagnostic(
+                "reference_block_pre",
+                device,
+                block=name,
+                method=kwargs.get("method", "unknown"),
+            )
+
+        def after_block(
+            current_module: Any,
+            inputs: tuple[Any, ...],
+            output: Any,
+            *,
+            name: str = module_name,
+        ) -> None:
+            if not _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE:
+                return
+            tensor = _first_tensor(output)
+            if tensor is None:
+                tensor = _first_tensor(inputs)
+            device = getattr(tensor, "device", "cuda")
+            _cuda_memory_diagnostic(
+                "reference_block_post",
+                device,
+                block=name,
+                output_shape=getattr(tensor, "shape", "unknown"),
+            )
+
+        module.register_forward_pre_hook(before_block, with_kwargs=True)
+        module.register_forward_hook(after_block, with_kwargs=True)
+        hooked += 1
+
+    LOGGER.info("memory_diag installed=true reference_blocks=%s", hooked)
+
+
 def _device_of(value: Any) -> str | None:
     """Read a module/tensor device without assuming a concrete model class."""
 
@@ -1004,9 +1145,10 @@ def _timed_stage(timings: dict[str, dict[str, Any]], label: str, device: Any):
 class _TypedReferenceCache(dict[int, Any]):
     """Store reference K/V tensors in inference dtype as each block returns."""
 
-    def __init__(self, dtype: Any) -> None:
+    def __init__(self, dtype: Any, *, label: str = "cache") -> None:
         super().__init__()
         self.dtype = dtype
+        self.label = label
         self.converted = 0
 
     def __setitem__(self, index: int, value: Any) -> None:
@@ -1014,6 +1156,15 @@ class _TypedReferenceCache(dict[int, Any]):
             value = value.to(dtype=self.dtype)
             self.converted += 1
         super().__setitem__(index, value)
+        if _REFERENCE_MEMORY_DIAGNOSTICS_ACTIVE:
+            _cuda_memory_diagnostic(
+                "reference_cache_set",
+                value.device,
+                cache=self.label,
+                layer=index,
+                layers=len(self),
+                cache_mib=round(_reference_cache_memory(self) / 1024**2, 1),
+            )
 
 
 def _normalize_reference_cache(cache: dict[int, Any], dtype: Any) -> int:
@@ -1129,6 +1280,7 @@ def load_runtime(
         lightx2v_strength=lightx2v_strength,
     )
     _install_reference_attention_fallback(model)
+    _install_reference_memory_diagnostics(model)
     _install_flex_attention_fallback(model)
     LOGGER.info(
         "stage=transformer_ready seconds=%.2f tensors=%s raw_model_type=%s",
@@ -1619,7 +1771,9 @@ def _render_window(
         }
         LOGGER.info("stage=reference_transformer_pass")
         cache_k = _TypedReferenceCache(compute_dtype)
+        cache_k.label = "k"
         cache_v = _TypedReferenceCache(compute_dtype)
+        cache_v.label = "v"
         with _timed_stage(timings, "reference_transformer_pass", device):
             model(
                 condition_latents,

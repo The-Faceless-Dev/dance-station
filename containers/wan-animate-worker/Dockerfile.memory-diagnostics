@@ -1,0 +1,5 @@
+ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:wan-q6-vast-direct-20260902-r4
+FROM ${BASE_IMAGE}
+
+# Diagnostic-only overlay. It changes no model layers or runtime defaults.
+COPY tools/generative_dance/wan_animate_2_runner.py /app/tools/generative_dance/wan_animate_2_runner.py
