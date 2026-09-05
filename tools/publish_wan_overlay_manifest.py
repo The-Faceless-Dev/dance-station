@@ -14,6 +14,7 @@ import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +159,47 @@ def make_lightx2v_layer(checkpoint: Path) -> tuple[bytes, str, str]:
     return compressed, hashlib.sha256(raw).hexdigest(), hashlib.sha256(compressed).hexdigest()
 
 
+def make_scipy_layer(wheel: Path) -> tuple[bytes, str, str]:
+    """Add the Linux CPython SciPy wheel without rebuilding the model image."""
+
+    if not wheel.is_file():
+        raise FileNotFoundError(f"SciPy wheel was not found: {wheel}")
+    prefix = "opt/conda/lib/python3.11/site-packages"
+    raw_buffer = io.BytesIO()
+    directories: set[str] = set()
+    with zipfile.ZipFile(wheel) as archive, tarfile.open(fileobj=raw_buffer, mode="w", format=tarfile.USTAR_FORMAT) as output:
+        for member in sorted(archive.infolist(), key=lambda item: item.filename):
+            if member.is_dir():
+                continue
+            archive_name = f"{prefix}/{member.filename}"
+            parent = archive_name.rpartition("/")[0]
+            parts = parent.split("/")
+            for index in range(1, len(parts) + 1):
+                directory = "/".join(parts[:index])
+                if directory in directories:
+                    continue
+                directories.add(directory)
+                info = tarfile.TarInfo(directory)
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                info.mtime = 0
+                info.mode = 0o755
+                info.type = tarfile.DIRTYPE
+                info.size = 0
+                output.addfile(info)
+            data = archive.read(member)
+            info = tarfile.TarInfo(archive_name)
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            info.mtime = 0
+            info.mode = 0o755 if member.filename.endswith((".so", ".so.1")) else 0o644
+            info.size = len(data)
+            output.addfile(info, io.BytesIO(data))
+    raw = raw_buffer.getvalue()
+    compressed = gzip.compress(raw, compresslevel=9, mtime=0)
+    return compressed, hashlib.sha256(raw).hexdigest(), hashlib.sha256(compressed).hexdigest()
+
+
 def upload_blob(repo: str, token: str, digest: str, payload: bytes) -> None:
     base = f"https://ghcr.io/v2/{repo}"
     auth = {"Authorization": f"Bearer {token}"}
@@ -196,6 +238,13 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         lightx_layer, lightx_raw_digest, lightx_compressed_digest = make_lightx2v_layer(
             Path(args.lightx2v_checkpoint).resolve()
         )
+    scipy_layer = None
+    scipy_raw_digest = None
+    scipy_compressed_digest = None
+    if args.scipy_wheel:
+        scipy_layer, scipy_raw_digest, scipy_compressed_digest = make_scipy_layer(
+            Path(args.scipy_wheel).resolve()
+        )
     if args.dry_run:
         result = {
             "dryRun": True,
@@ -207,6 +256,13 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
                 {
                     "lightx2vLayerDigest": f"sha256:{lightx_compressed_digest}",
                     "lightx2vLayerBytes": len(lightx_layer),
+                }
+            )
+        if scipy_layer is not None:
+            result.update(
+                {
+                    "scipyLayerDigest": f"sha256:{scipy_compressed_digest}",
+                    "scipyLayerBytes": len(scipy_layer),
                 }
             )
         return result
@@ -246,6 +302,9 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     if lightx_layer is not None:
         diff_ids.append(f"sha256:{lightx_raw_digest}")
         history.append({"created_by": "COPY lightx2v/ /", "comment": "Wan Animate LightX2V adapter"})
+    if scipy_layer is not None:
+        diff_ids.append(f"sha256:{scipy_raw_digest}")
+        history.append({"created_by": "COPY scipy wheel /", "comment": "SciPy runtime dependency for Real-ESRGAN"})
     image_config = config.setdefault("config", {})
     env = list(image_config.get("Env") or [])
     env_overrides = {
@@ -306,6 +365,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     upload_blob(args.repo, token, f"sha256:{code_compressed_digest}", code_layer)
     if lightx_layer is not None:
         upload_blob(args.repo, token, f"sha256:{lightx_compressed_digest}", lightx_layer)
+    if scipy_layer is not None:
+        upload_blob(args.repo, token, f"sha256:{scipy_compressed_digest}", scipy_layer)
     upload_blob(args.repo, token, f"sha256:{config_digest}", config_bytes)
 
     base_media_type = base_manifest.get("mediaType", DOCKER_MANIFEST)
@@ -326,6 +387,14 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
                 "mediaType": base_layer_media_type,
                 "size": len(lightx_layer),
                 "digest": f"sha256:{lightx_compressed_digest}",
+            }
+        )
+    if scipy_layer is not None:
+        new_layers.append(
+            {
+                "mediaType": base_layer_media_type,
+                "size": len(scipy_layer),
+                "digest": f"sha256:{scipy_compressed_digest}",
             }
         )
     manifest = {
@@ -367,6 +436,13 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
                 "lightx2vOverlayDigest": f"sha256:{lightx_compressed_digest}",
             }
         )
+    if scipy_layer is not None:
+        result.update(
+            {
+                "scipyOverlayBytes": len(scipy_layer),
+                "scipyOverlayDigest": f"sha256:{scipy_compressed_digest}",
+            }
+        )
     return result
 
 
@@ -377,6 +453,7 @@ def main() -> None:
     parser.add_argument("--base-tag", required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--lightx2v-checkpoint")
+    parser.add_argument("--scipy-wheel", help="Linux CPython 3.11 SciPy wheel to add for optional Real-ESRGAN")
     parser.add_argument(
         "--code-only",
         action="store_true",
