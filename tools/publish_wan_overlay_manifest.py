@@ -494,7 +494,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         history.append({"created_by": "COPY pyzmq wheel /", "comment": "pyzmq runtime dependency for LightX2V VACE transport"})
     image_config = config.setdefault("config", {})
     env = list(image_config.get("Env") or [])
-    env_overrides = {
+    runtime_env_overrides = {
         "HOME": "/home/wan",
         "XDG_CACHE_HOME": "/home/wan/.cache",
         "TRITON_CACHE_DIR": "/home/wan/.cache/triton",
@@ -538,14 +538,25 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "VACE_STITCH_STAGE_TIMEOUT_SECONDS": "7200",
     }
     if not args.code_only:
-        keys = set(env_overrides) | {
+        keys = set(runtime_env_overrides) | {
             "GENERATIVE_DANCE_JOB_TIMEOUT_SECONDS",
             "VACE_STITCH_JOB_TIMEOUT_SECONDS",
             "GENERATIVE_DANCE_WAN_RENDER_TIMEOUT_SECONDS",
             "VACE_STITCH_RUNTIME_TIMEOUT_SECONDS",
         }
         env = [value for value in env if value.split("=", 1)[0] not in keys]
-        env.extend(f"{key}={value}" for key, value in env_overrides.items())
+        env.extend(f"{key}={value}" for key, value in runtime_env_overrides.items())
+    image_env_overrides: dict[str, str] = {}
+    for raw_override in args.env_override:
+        key, separator, value = raw_override.partition("=")
+        key = key.strip()
+        if not separator or not key:
+            raise ValueError(f"--env-override must use KEY=VALUE syntax: {raw_override!r}")
+        image_env_overrides[key] = value
+    if image_env_overrides:
+        override_keys = set(image_env_overrides)
+        env = [value for value in env if value.split("=", 1)[0] not in override_keys]
+        env.extend(f"{key}={value}" for key, value in image_env_overrides.items())
     image_config["Env"] = env
     config_bytes = json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()
     config_digest = hashlib.sha256(config_bytes).hexdigest()
@@ -696,6 +707,12 @@ def main() -> None:
     parser.add_argument("--prometheus-client-wheel", help="Linux CPython 3.11 prometheus-client wheel for LightX2V VACE")
     parser.add_argument("--pyzmq-wheel", help="Linux CPython 3.11 pyzmq wheel for LightX2V VACE transport")
     parser.add_argument("--worker-entrypoint", help="Replace the base image worker entrypoint with this executable")
+    parser.add_argument(
+        "--env-override",
+        action="append",
+        default=[],
+        help="Replace an image environment variable (repeatable, KEY=VALUE)",
+    )
     parser.add_argument(
         "--code-only",
         action="store_true",
