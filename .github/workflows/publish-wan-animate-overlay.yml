@@ -9,11 +9,11 @@ on:
       base_tag:
         description: Existing public Wan image tag to inherit
         required: true
-        default: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r5
+        default: wan-q6-vast-direct-20260905-vace-lightx2v-r1
       tag:
         description: New code-overlay tag
         required: true
-        default: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r8
+        default: wan-q6-vast-direct-20260905-vace-lightx2v-r2
 
 permissions:
   contents: read
@@ -21,8 +21,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r5' }}
-  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r8' }}
+  BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r1' }}
+  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r2' }}
 
 jobs:
   publish:
@@ -46,13 +46,19 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m pip download --no-deps --only-binary=:all: \
-            --platform manylinux_2_17_x86_64 --python-version 311 \
+            --platform manylinux2014_x86_64 --python-version 311 \
             --implementation cp scipy==1.14.1 --dest /tmp/scipy-wheel
           scipy_wheel=$(find /tmp/scipy-wheel -maxdepth 1 -type f -name 'scipy-*.whl' -print -quit)
           test -n "${scipy_wheel}"
+          python3 -m pip download --no-deps --only-binary=:all: \
+            --platform manylinux2014_x86_64 --python-version 311 \
+            --implementation cp imageio-ffmpeg==0.6.0 --dest /tmp/imageio-ffmpeg-wheel
+          imageio_ffmpeg_wheel=$(find /tmp/imageio-ffmpeg-wheel -maxdepth 1 -type f -name 'imageio_ffmpeg-*.whl' -print -quit)
+          test -n "${imageio_ffmpeg_wheel}"
           python3 tools/publish_wan_overlay_manifest.py \
             --repo "${IMAGE#ghcr.io/}" \
             --base-tag "${BASE_TAG}" \
             --tag "${TAG}" \
             --code-only \
-            --scipy-wheel "${scipy_wheel}"
+            --scipy-wheel "${scipy_wheel}" \
+            --imageio-ffmpeg-wheel "${imageio_ffmpeg_wheel}"

@@ -83,6 +83,10 @@ falling back to CPU model offload.
   time and output metadata against the prior 50-step CPU-offloaded baseline,
   save all diagnostics/artifacts locally, and destroy the paid instance after
   the test.
+- Keep LightX2V's explicit runtime dependencies in the small registry overlay;
+  the worker image uses `pip install --no-deps .`, so packages imported by the
+  vendored LightX2V tree must be installed explicitly and verified in the
+  isolated run.
 
 ### Affected Files
 
