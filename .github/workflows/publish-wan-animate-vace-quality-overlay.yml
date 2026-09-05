@@ -12,8 +12,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r11
-  TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r12
+  BASE_TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r12
+  TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r13
 
 jobs:
   publish:
@@ -36,4 +36,9 @@ jobs:
             --base-tag "${BASE_TAG}" \
             --tag "${TAG}" \
             --code-only \
-            --worker-entrypoint containers/wan-animate-worker/entrypoint.sh
+            --worker-entrypoint containers/wan-animate-worker/entrypoint.sh \
+            --env-override GENERATIVE_DANCE_CANVAS_WIDTH=480 \
+            --env-override GENERATIVE_DANCE_CANVAS_HEIGHT=832 \
+            --env-override GENERATIVE_DANCE_FPS=24 \
+            --env-override VACE_STITCH_OUTPUT_WIDTH=480 \
+            --env-override VACE_STITCH_OUTPUT_HEIGHT=832
