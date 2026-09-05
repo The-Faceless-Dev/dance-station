@@ -87,6 +87,10 @@ falling back to CPU model offload.
   the worker image uses `pip install --no-deps .`, so packages imported by the
   vendored LightX2V tree must be installed explicitly and verified in the
   isolated run.
+- Run VACE through a VACE-only LightX2V entry path. Do not import the upstream
+  all-model CLI, which eagerly loads unrelated model runners and optional
+  dependencies before VACE starts. Keep CPU-offload flags as hard-fail checks,
+  not silent overrides, so the GPU-resident requirement is observable.
 
 ### Affected Files
 
