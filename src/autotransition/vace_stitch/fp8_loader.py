@@ -142,6 +142,29 @@ def _replace_linears(root: nn.Module) -> int:
     return replacements
 
 
+def _materialize_frequency_buffer(model: nn.Module) -> bool:
+    """Materialize VACE's unregistered RoPE tensor after meta construction."""
+
+    frequencies = getattr(model, "freqs", None)
+    if frequencies is None or not bool(getattr(frequencies, "is_meta", False)):
+        return False
+    from wan.modules.model import rope_params
+
+    dim = int(model.dim)
+    heads = int(model.num_heads)
+    head_dim = dim // heads
+    with torch.device("cpu"):
+        model.freqs = torch.cat(
+            [
+                rope_params(1024, head_dim - 4 * (head_dim // 6)),
+                rope_params(1024, 2 * (head_dim // 6)),
+                rope_params(1024, 2 * (head_dim // 6)),
+            ],
+            dim=1,
+        )
+    return True
+
+
 def load_scaled_fp8_vace_model(model_class: type[nn.Module], checkpoint_dir: Path, report_path: Path | None = None) -> nn.Module:
     """Construct the official VACE model and stream its scaled-FP8 tensors in."""
 
@@ -181,6 +204,8 @@ def load_scaled_fp8_vace_model(model_class: type[nn.Module], checkpoint_dir: Pat
                 fp8_count += int(tensor.dtype in {torch.float8_e4m3fn, torch.float8_e5m2})
                 _assign_tensor(model, key, tensor)
 
+    frequency_materialized = _materialize_frequency_buffer(model)
+
     meta_parameters = [name for name, value in model.named_parameters() if value.is_meta]
     if meta_parameters:
         raise RuntimeError(f"scaled VACE checkpoint left parameters unloaded: {meta_parameters[:8]}")
@@ -196,6 +221,7 @@ def load_scaled_fp8_vace_model(model_class: type[nn.Module], checkpoint_dir: Pat
         "torchVersion": torch.__version__,
         "cudaAvailable": bool(torch.cuda.is_available()),
         "scaledMatmulAvailable": hasattr(torch, "_scaled_mm"),
+        "metaFrequencyMaterialized": frequency_materialized,
     }
     if report_path is not None:
         report_path.parent.mkdir(parents=True, exist_ok=True)

@@ -2,6 +2,15 @@ name: Publish Wan Animate Code Overlay
 
 on:
   workflow_dispatch:
+    inputs:
+      base_tag:
+        description: Existing public Wan image tag to inherit
+        required: true
+        default: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r5
+      tag:
+        description: New code-overlay tag
+        required: true
+        default: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r6
 
 permissions:
   contents: read
@@ -9,8 +18,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: wan-int8-convrot-5090-20260903-r6
-  TAG: wan-int8-convrot-5090-20260903-r8
+  BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r5' }}
+  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r6' }}
 
 jobs:
   publish:
