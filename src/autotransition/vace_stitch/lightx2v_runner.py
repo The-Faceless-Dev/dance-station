@@ -106,6 +106,11 @@ def main() -> None:
         config.get("t5_cpu_offload"),
         config.get("vae_cpu_offload"),
     )
+    logger.info(
+        "[VACE][LightX2V] attention={} rope={} (attention fallback disabled)",
+        config.get("self_attn_1_type"),
+        config.get("rope_type"),
+    )
     print_config(config)
 
     input_info = init_empty_input_info("vace")

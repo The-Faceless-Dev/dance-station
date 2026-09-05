@@ -110,6 +110,53 @@ def test_vace_lightx2v_reuses_existing_animate_vae(monkeypatch: pytest.MonkeyPat
     assert config.lightx2v_vae == Path("/Wan-AI/vae.pth")
 
 
+def test_vace_lightx2v_defaults_to_wan_torch_rope_without_changing_attention(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_file = tmp_path / "lightx2v.json"
+    config_file.write_text(json.dumps({"self_attn_1_type": "flash_attn2"}), encoding="utf-8")
+    config = VaceStitchConfig(
+        runtime_backend="lightx2v",
+        runtime_command="fake-vace",
+        lightx2v_config=config_file,
+        lightx2v_attention_backend="flash_attn2",
+        lightx2v_rope_type="torch_complex_rope",
+    )
+    runtime = VaceRuntime(config)
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    mask = tmp_path / "mask.mp4"
+    mask.write_bytes(b"mask")
+    captured: dict[str, object] = {}
+
+    def fake_run(_: object, *, values: dict[str, object], **__: object) -> None:
+        config_path = values["lightx2v_config"]
+        assert isinstance(config_path, Path)
+        captured.update(json.loads(config_path.read_text(encoding="utf-8")))
+        output = values["output"]
+        assert isinstance(output, Path)
+        output.write_bytes(b"output")
+
+    monkeypatch.setattr("autotransition.vace_stitch.runtime.run_adapter_command", fake_run)
+    monkeypatch.setattr(
+        "autotransition.vace_stitch.runtime.probe_video",
+        lambda path: VideoProbe(path, 832, 480, 16, 1.0, 16, "yuv420p"),
+    )
+    runtime.generate(
+        source_video=source,
+        source_mask=mask,
+        output_dir=tmp_path / "output",
+        prompt="continue",
+        frame_num=45,
+        seed=1,
+    )
+
+    assert captured["self_attn_1_type"] == "flash_attn2"
+    assert captured["cross_attn_1_type"] == "flash_attn2"
+    assert captured["cross_attn_2_type"] == "flash_attn2"
+    assert captured["rope_type"] == "torch_complex_rope"
+
+
 def test_vace_lightx2v_keeps_transformer_on_gpu_but_can_stage_t5_on_cpu(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

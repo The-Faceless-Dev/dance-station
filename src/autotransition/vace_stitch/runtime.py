@@ -208,6 +208,7 @@ class VaceRuntime:
                     "self_attn_1_type": self.config.lightx2v_attention_backend,
                     "cross_attn_1_type": self.config.lightx2v_attention_backend,
                     "cross_attn_2_type": self.config.lightx2v_attention_backend,
+                    "rope_type": self.config.lightx2v_rope_type,
                 }
             )
             if self.config.lightx2v_t5_checkpoint:

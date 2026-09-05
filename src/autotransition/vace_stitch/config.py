@@ -44,6 +44,9 @@ class VaceStitchConfig:
     lightx2v_lora_strength: float = 1.0
     lightx2v_steps: int = 4
     lightx2v_attention_backend: str = "flash_attn2"
+    # The direct LightX2V runner does not pass through create_generator(), so
+    # it must receive Wan's intended RoPE implementation explicitly.
+    lightx2v_rope_type: str = "torch_complex_rope"
     source_root: Path | None = None
     checkpoint_dir: Path | None = None
     checkpoint_file: Path | None = None
@@ -143,6 +146,7 @@ class VaceStitchConfig:
             lightx2v_lora_strength=number("VACE_STITCH_LIGHTX2V_LORA_STRENGTH", 1.0),
             lightx2v_steps=integer("VACE_STITCH_LIGHTX2V_STEPS", 4),
             lightx2v_attention_backend=os.getenv("VACE_STITCH_LIGHTX2V_ATTENTION", "flash_attn2").lower(),
+            lightx2v_rope_type=os.getenv("VACE_STITCH_LIGHTX2V_ROPE", "torch_complex_rope").lower(),
             source_root=_path("VACE_STITCH_SOURCE_ROOT"),
             checkpoint_dir=_path("VACE_STITCH_CHECKPOINT_DIR"),
             checkpoint_file=_path("VACE_STITCH_CHECKPOINT_FILE"),
@@ -234,6 +238,8 @@ class VaceStitchConfig:
             raise ValueError("LightX2V VACE sampling settings are invalid")
         if self.lightx2v_attention_backend not in {"flash_attn2", "flash_attn3"}:
             raise ValueError("LightX2V VACE attention must be flash_attn2 or flash_attn3")
+        if self.lightx2v_rope_type not in {"torch_complex_rope", "flashinfer_rope"}:
+            raise ValueError("LightX2V VACE RoPE must be torch_complex_rope or flashinfer_rope")
         if self.sample_solver not in {"unipc", "dpm++"}:
             raise ValueError("VACE stitch sample solver must be unipc or dpm++")
         if self.attention_backend not in {"auto", "flash_attention_2"}:
@@ -277,6 +283,7 @@ class VaceStitchConfig:
             "lightx2vLoraStrength": self.lightx2v_lora_strength,
             "lightx2vSteps": self.lightx2v_steps,
             "lightx2vAttentionBackend": self.lightx2v_attention_backend,
+            "lightx2vRopeType": self.lightx2v_rope_type,
             "sourceRoot": str(self.source_root) if self.source_root else None,
             "checkpointDirConfigured": bool(self.checkpoint_dir),
             "checkpointFile": str(self.checkpoint_file) if self.checkpoint_file else None,
