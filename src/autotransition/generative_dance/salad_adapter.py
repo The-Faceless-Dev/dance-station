@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
-import time
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -16,6 +15,7 @@ from .worker import GenerativeDanceWorker
 
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
+MAX_COMPLETION_ARTIFACT_IDS = 32
 
 
 def _callback(payload: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -81,6 +81,25 @@ def _failure_url(complete_url: str) -> str:
     return f"{complete_url[:-len(marker)]}/fail"
 
 
+def _completion_artifact_ids(uploaded: list[tuple[dict[str, Any], str]]) -> list[str]:
+    """Keep callback completion within the launch-server schema limit.
+
+    Every artifact is still uploaded and remains available through the job's
+    artifact list. The completion payload only needs to reference the most
+    useful subset, with primary outputs preferred so a large diagnostics bundle
+    cannot prevent a successful job from reaching its terminal state.
+    """
+
+    ordered = sorted(
+        uploaded,
+        key=lambda item: (
+            not bool(item[0].get("primary")),
+            str(item[0].get("name") or ""),
+        ),
+    )
+    return [artifact_id for _, artifact_id in ordered[:MAX_COMPLETION_ARTIFACT_IDS]]
+
+
 async def _progress(url: str, token: str, job_id: str, job: dict[str, Any], sequence: int, *, status: str = "running", message: str | None = None) -> None:
     if not url:
         return
@@ -118,9 +137,8 @@ async def process_queue_job(payload: dict[str, Any], worker: GenerativeDanceWork
     job = await worker.submit(payload)
     sequence = 1
     await _progress(progress_url, token, job_id, worker.get(job_id), sequence, message="Wan Animate worker accepted the job")
-    deadline = time.monotonic() + config.job_timeout_seconds + 300
     last_key: tuple[Any, ...] | None = None
-    while time.monotonic() < deadline:
+    while True:
         current = worker.get(job_id)
         key = (current.get("status"), current.get("stage"), current.get("progress"), current.get("updated_at"))
         if key != last_key:
@@ -131,12 +149,14 @@ async def process_queue_job(payload: dict[str, Any], worker: GenerativeDanceWork
             if current.get("status") != "succeeded":
                 failure = current.get("failure") or {}
                 message = f"[{failure.get('code', 'generative_dance_worker_failed')}] stage={failure.get('stage', 'unknown')}: {failure.get('message', 'Wan Animate failed')}"
-                artifact_ids: list[str] = []
+                uploaded: list[tuple[dict[str, Any], str]] = []
                 for artifact in current.get("artifacts") or []:
                     try:
-                        artifact_ids.append(await asyncio.to_thread(_upload, callback_url, token, artifact))
+                        artifact_id = await asyncio.to_thread(_upload, callback_url, token, artifact)
+                        uploaded.append((artifact, artifact_id))
                     except Exception as exc:
                         print(json.dumps({"event": "wan_failure_artifact_upload_failed", "jobId": job_id, "name": artifact.get("name"), "error": str(exc)}), flush=True)
+                artifact_ids = _completion_artifact_ids(uploaded)
                 try:
                     await asyncio.to_thread(_post_json, _failure_url(complete_url), token, {"errorCode": failure.get("code", "generative_dance_worker_failed"), "errorMessage": message, "artifactIds": artifact_ids})
                 except Exception as exc:
@@ -144,7 +164,11 @@ async def process_queue_job(payload: dict[str, Any], worker: GenerativeDanceWork
                 sequence += 1
                 await _progress(progress_url, token, job_id, current, sequence, status="failed", message=message)
                 raise RuntimeError(message)
-            artifact_ids = [await asyncio.to_thread(_upload, callback_url, token, artifact) for artifact in current.get("artifacts") or []]
+            uploaded = []
+            for artifact in current.get("artifacts") or []:
+                artifact_id = await asyncio.to_thread(_upload, callback_url, token, artifact)
+                uploaded.append((artifact, artifact_id))
+            artifact_ids = _completion_artifact_ids(uploaded)
             await asyncio.to_thread(_post_json, complete_url, token, {"artifactIds": artifact_ids})
             sequence += 1
             await _progress(progress_url, token, job_id, current, sequence, status="succeeded", message="Wan Animate worker completed the job")

@@ -13,7 +13,7 @@ on:
       tag:
         description: New code-overlay tag
         required: true
-        default: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r7
+        default: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r8
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ permissions:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
   BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r5' }}
-  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r7' }}
+  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r8' }}
 
 jobs:
   publish:
