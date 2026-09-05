@@ -13,7 +13,7 @@ on:
       tag:
         description: New code-overlay tag
         required: true
-        default: wan-q6-vast-direct-20260905-vace-lightx2v-r3
+        default: wan-q6-vast-direct-20260905-vace-lightx2v-r4
 
 permissions:
   contents: read
@@ -21,8 +21,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r2' }}
-  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r3' }}
+  BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r3' }}
+  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r4' }}
 
 jobs:
   publish:
@@ -73,4 +73,5 @@ jobs:
             --scipy-wheel "${scipy_wheel}" \
             --imageio-ffmpeg-wheel "${imageio_ffmpeg_wheel}" \
             --prometheus-client-wheel "${prometheus_client_wheel}" \
-            --pyzmq-wheel "${pyzmq_wheel}"
+            --pyzmq-wheel "${pyzmq_wheel}" \
+            --worker-entrypoint containers/vace-stitch-worker/entrypoint.sh

@@ -64,7 +64,7 @@ def get_registry_token(repo: str, username: str, password: str) -> str:
     return token
 
 
-def add_file_entries(tar: tarfile.TarFile, repo_root: Path) -> None:
+def add_file_entries(tar: tarfile.TarFile, repo_root: Path, worker_entrypoint: Path | None = None) -> None:
     entries: list[tuple[str, Path]] = []
     runtime_root = repo_root / "src" / "autotransition" / "generative_dance"
     for path in runtime_root.rglob("*"):
@@ -84,6 +84,8 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path) -> None:
     entries.append(("app/tools/generative_dance/wan_animate_2_runner.py", runner))
     runtime = repo_root / "tools" / "generative_dance" / "wan_animate_2_runtime.py"
     entries.append(("app/tools/generative_dance/wan_animate_2_runtime.py", runtime))
+    if worker_entrypoint is not None:
+        entries.append(("usr/local/bin/wan-animate-worker-entrypoint", worker_entrypoint))
 
     directories = {
         "app",
@@ -94,6 +96,8 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path) -> None:
         "app/tools",
         "app/tools/generative_dance",
     }
+    if worker_entrypoint is not None:
+        directories.update({"usr", "usr/local", "usr/local/bin"})
     for archive_name in sorted(directories):
         info = tarfile.TarInfo(archive_name)
         info.uid = 0
@@ -113,16 +117,16 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path) -> None:
         info.uname = ""
         info.gname = ""
         info.mtime = 0
-        info.mode = 0o644
+        info.mode = 0o755 if archive_name == "usr/local/bin/wan-animate-worker-entrypoint" else 0o644
         info.size = path.stat().st_size
         with path.open("rb") as source:
             tar.addfile(info, source)
 
 
-def make_overlay_layer(repo_root: Path) -> tuple[bytes, str, str]:
+def make_overlay_layer(repo_root: Path, worker_entrypoint: Path | None = None) -> tuple[bytes, str, str]:
     raw_buffer = io.BytesIO()
     with tarfile.open(fileobj=raw_buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-        add_file_entries(archive, repo_root)
+        add_file_entries(archive, repo_root, worker_entrypoint)
     raw = raw_buffer.getvalue()
     compressed = gzip.compress(raw, compresslevel=9, mtime=0)
     raw_digest = hashlib.sha256(raw).hexdigest()
@@ -357,7 +361,12 @@ def upload_blob(repo: str, token: str, digest: str, payload: bytes) -> None:
 
 def publish(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = Path(args.repo_root).resolve()
-    code_layer, code_raw_digest, code_compressed_digest = make_overlay_layer(repo_root)
+    worker_entrypoint = None
+    if args.worker_entrypoint:
+        worker_entrypoint = Path(args.worker_entrypoint).resolve()
+        if not worker_entrypoint.is_file():
+            raise FileNotFoundError(f"worker entrypoint was not found: {worker_entrypoint}")
+    code_layer, code_raw_digest, code_compressed_digest = make_overlay_layer(repo_root, worker_entrypoint)
     lightx_layer = None
     lightx_raw_digest = None
     lightx_compressed_digest = None
@@ -686,6 +695,7 @@ def main() -> None:
     parser.add_argument("--imageio-ffmpeg-wheel", help="Linux CPython 3.11 imageio-ffmpeg wheel for LightX2V")
     parser.add_argument("--prometheus-client-wheel", help="Linux CPython 3.11 prometheus-client wheel for LightX2V VACE")
     parser.add_argument("--pyzmq-wheel", help="Linux CPython 3.11 pyzmq wheel for LightX2V VACE transport")
+    parser.add_argument("--worker-entrypoint", help="Replace the base image worker entrypoint with this executable")
     parser.add_argument(
         "--code-only",
         action="store_true",
