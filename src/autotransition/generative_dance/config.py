@@ -109,8 +109,8 @@ class GenerativeDanceConfig:
             return default if value is None else float(value)
 
         canvas = CanvasContract(
-            width=integer("GENERATIVE_DANCE_CANVAS_WIDTH", 640),
-            height=integer("GENERATIVE_DANCE_CANVAS_HEIGHT", 800),
+            width=integer("GENERATIVE_DANCE_CANVAS_WIDTH", 480),
+            height=integer("GENERATIVE_DANCE_CANVAS_HEIGHT", 832),
             fps=integer("GENERATIVE_DANCE_FPS", 24),
             anchor_x=number("GENERATIVE_DANCE_ANCHOR_X", 0.5),
             anchor_y=number("GENERATIVE_DANCE_ANCHOR_Y", 0.58),
@@ -263,17 +263,6 @@ class GenerativeDanceConfig:
         if self.wan_inference_steps < self.wan_min_inference_steps:
             raise ValueError(
                 "generative dance Wan default inference steps cannot be below the configured minimum"
-            )
-        required_lightx_steps = 6 if self.wan_checkpoint_format == "int8_convrot" else 4
-        if self.wan_lightx2v_enabled and self.wan_inference_steps != required_lightx_steps:
-            raise ValueError(
-                "LightX2V Wan-Animate-2 acceleration requires exactly "
-                f"{required_lightx_steps} inference steps for {self.wan_checkpoint_format}"
-            )
-        if self.wan_lightx2v_enabled and self.wan_min_inference_steps != required_lightx_steps:
-            raise ValueError(
-                "LightX2V Wan-Animate-2 acceleration requires a "
-                f"{required_lightx_steps}-step minimum for {self.wan_checkpoint_format}"
             )
         if self.matte_input_size < 64:
             raise ValueError("generative dance matte input size must be at least 64")

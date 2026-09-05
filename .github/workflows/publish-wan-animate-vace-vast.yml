@@ -12,8 +12,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r8
-  TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r1
+  BASE_TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r10
+  TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r11
   VACE_COMMIT: 48eb44f1c4be87cc65a98bff985a26976841e9f3
   WAN21_COMMIT: 9737cba9c1c3c4d04b33fcad41c111989865d315
   LIGHTX2V_COMMIT: bb964f8a125ab5147b4645ec6895b727e67f37ba

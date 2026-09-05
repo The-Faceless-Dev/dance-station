@@ -31,7 +31,15 @@ from .contracts import BridgeResult, BridgeSpec, StitchSegment, StitchSequence
 from .diagnostics import analyze_video_seams, part_boundaries
 from .enhancement import VaceVideoStage
 from .runtime import VaceRuntime
-from .video import VaceVideoError, extract_generated_gap, extract_time_range, frame_count, normalize_canvas, prepare_firstlastclip
+from .video import (
+    VaceVideoError,
+    extract_generated_gap,
+    extract_time_range,
+    frame_count,
+    native_vace_canvas,
+    normalize_canvas,
+    prepare_firstlastclip,
+)
 
 
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
@@ -480,13 +488,27 @@ class VaceStitchWorker:
             sequence = StitchSequence.from_parameters(parameters, default_duration=self.config.default_gap_seconds)
             sequence.validate()
             output_fps = sequence.fps or self.config.output_fps
-            output_width = sequence.width or self.config.output_width
-            output_height = sequence.height or self.config.output_height
+            requested_width = sequence.width or self.config.output_width
+            requested_height = sequence.height or self.config.output_height
             transparent = bool(parameters.get("transparent", self.config.transparent_default))
             model_size = str(parameters.get("model_size") or parameters.get("modelSize") or self.config.model_size)
             if model_size not in {"480p", "720p"}:
                 raise ValueError("VACE stitch model size must be 480p or 720p")
-            model_width, model_height = ((1280, 720) if model_size == "720p" else (832, 480))
+            output_width, output_height = native_vace_canvas(
+                model_size,
+                portrait=requested_height > requested_width,
+            )
+            self._event(
+                job_id,
+                "vace_canvas_resolved",
+                modelSize=model_size,
+                requestedWidth=requested_width,
+                requestedHeight=requested_height,
+                resolvedWidth=output_width,
+                resolvedHeight=output_height,
+                orientation="portrait" if requested_height > requested_width else "landscape",
+            )
+            model_width, model_height = output_width, output_height
             records = self._input_records(payload)
             missing = [segment.input_id for segment in sequence.segments if segment.input_id not in records]
             if missing:
@@ -760,6 +782,13 @@ class VaceStitchWorker:
                 "runtime": "wan-vace-stitch",
                 "modelName": self.config.model_name,
                 "modelSize": model_size,
+                "canvas": {
+                    "requestedWidth": requested_width,
+                    "requestedHeight": requested_height,
+                    "resolvedWidth": output_width,
+                    "resolvedHeight": output_height,
+                    "orientation": "portrait" if requested_height > requested_width else "landscape",
+                },
                 "singleParentJob": True,
                 "seed": job_seed,
                 "seedProvided": seed_was_provided,

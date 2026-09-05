@@ -54,8 +54,8 @@ class VaceStitchConfig:
     model_size: str = "480p"
     model_fps: int = 16
     output_fps: int = 24
-    output_width: int = 832
-    output_height: int = 480
+    output_width: int = 480
+    output_height: int = 832
     default_prompt: str = "the character continues dancing"
     default_loop_prompt: str = "the character continues dancing and returns smoothly to the starting motion"
     default_gap_seconds: float = 2.0
@@ -154,8 +154,8 @@ class VaceStitchConfig:
             model_size=os.getenv("VACE_STITCH_MODEL_SIZE", "480p"),
             model_fps=integer("VACE_STITCH_MODEL_FPS", 16),
             output_fps=integer("VACE_STITCH_OUTPUT_FPS", 24),
-            output_width=integer("VACE_STITCH_OUTPUT_WIDTH", 832),
-            output_height=integer("VACE_STITCH_OUTPUT_HEIGHT", 480),
+            output_width=integer("VACE_STITCH_OUTPUT_WIDTH", 480),
+            output_height=integer("VACE_STITCH_OUTPUT_HEIGHT", 832),
             default_prompt=os.getenv("VACE_STITCH_DEFAULT_PROMPT", "the character continues dancing"),
             default_loop_prompt=os.getenv(
                 "VACE_STITCH_DEFAULT_LOOP_PROMPT",

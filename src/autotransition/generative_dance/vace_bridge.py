@@ -15,6 +15,7 @@ from autotransition.vace_stitch.runtime import VaceRuntime
 from autotransition.vace_stitch.video import (
     extract_generated_gap,
     frame_count,
+    native_vace_canvas,
     prepare_firstlastclip,
 )
 from autotransition.vace_stitch.config import VaceStitchConfig
@@ -176,8 +177,9 @@ class VaceBridgeComposer:
         prompt = self._resolve_prompt(parameters, bridge)
         bridge_seed = (job_seed + bridge_index) % (2**31)
         requested_gap_frames = max(1, round(bridge.duration_seconds * self.config.model_fps))
-        model_width, model_height = (
-            (1280, 720) if self.config.model_size == "720p" else (832, 480)
+        model_width, model_height = native_vace_canvas(
+            self.config.model_size,
+            portrait=output_height > output_width,
         )
         prepared = prepare_firstlastclip(
             before["result"].output_video,

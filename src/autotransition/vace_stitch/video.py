@@ -14,6 +14,20 @@ class VaceVideoError(RuntimeError):
     """Raised when a video cannot satisfy the stitcher's technical contract."""
 
 
+def native_vace_canvas(model_size: str, *, portrait: bool) -> tuple[int, int]:
+    """Return the native VACE canvas for a model tier and orientation."""
+
+    dimensions = {
+        "480p": (480, 832),
+        "720p": (720, 1280),
+    }
+    try:
+        short_side, long_side = dimensions[model_size.lower()]
+    except KeyError as exc:
+        raise ValueError("VACE model size must be 480p or 720p") from exc
+    return (short_side, long_side) if portrait else (long_side, short_side)
+
+
 def _number(value: float) -> str:
     return f"{value:.8f}".rstrip("0").rstrip(".") or "0"
 

@@ -23,8 +23,8 @@ def _jsonable(value: Any) -> Any:
 class CanvasContract:
     """The coordinate and timing contract shared by every driver and render."""
 
-    width: int = 640
-    height: int = 800
+    width: int = 480
+    height: int = 832
     fps: int = 24
     anchor_x: float = 0.5
     anchor_y: float = 0.58

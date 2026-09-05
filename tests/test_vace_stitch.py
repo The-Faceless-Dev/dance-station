@@ -20,6 +20,7 @@ from autotransition.vace_stitch.video import (
     PreparedVaceInput,
     extract_generated_gap,
     frame_count,
+    native_vace_canvas,
     prepare_firstlastclip,
     solid_video,
 )
@@ -90,6 +91,13 @@ def test_vace_config_exposes_scaled_14b_settings(monkeypatch: pytest.MonkeyPatch
     assert config.checkpoint_file is not None
     assert config.checkpoint_file.name == "wan2.1_vace_14B_fp8_scaled.safetensors"
     assert config.loop_enabled is True
+
+
+def test_native_vace_canvas_matches_requested_orientation() -> None:
+    assert native_vace_canvas("480p", portrait=False) == (832, 480)
+    assert native_vace_canvas("480p", portrait=True) == (480, 832)
+    assert native_vace_canvas("720p", portrait=False) == (1280, 720)
+    assert native_vace_canvas("720p", portrait=True) == (720, 1280)
 
 
 def test_vace_lightx2v_reuses_existing_animate_text_assets(monkeypatch: pytest.MonkeyPatch) -> None:
