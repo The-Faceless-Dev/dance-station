@@ -1,6 +1,9 @@
 name: Publish Wan Animate Code Overlay
 
 on:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
   workflow_dispatch:
     inputs:
       base_tag:
