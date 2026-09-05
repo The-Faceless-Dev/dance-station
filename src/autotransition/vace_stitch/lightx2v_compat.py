@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+
 import torch
+
+
+LOGGER = logging.getLogger("wan-vace-lightx2v")
 
 
 def install() -> None:
     from lightx2v.common.ops.mm.mm_weight import MMWeightQuantTemplate
     from lightx2v.models.networks.wan.model import WanModel
     from lightx2v.models.networks.wan.vace_model import WanVaceModel
+    from lightx2v.models.networks.wan.weights.vace.transformer_weights import (
+        WanVaceTransformerAttentionBlock,
+    )
     from lightx2v.utils.registry_factory import MM_WEIGHT_REGISTER
     from lightx2v_platform.base.global_var import AI_DEVICE
 
@@ -56,8 +64,71 @@ def install() -> None:
             return output.reshape(*original_shape[:-1], output.shape[-1])
 
     # Keep the official config name while changing only the loader selected by
-    # the scaled VACE checkpoint. Other LightX2V quantized models are untouched.
+    # the scaled VACE checkpoint. The VACE-specific projection layers are
+    # patched below because upstream constructs those with ``Default`` even
+    # when the surrounding transformer uses the configured quantized loader.
     MM_WEIGHT_REGISTER["fp8-pertensor"] = ScaledVaceFP8Weight
+
+    if not getattr(WanVaceTransformerAttentionBlock, "_faceless_scaled_fp8_patch", False):
+        original_vace_block_init = WanVaceTransformerAttentionBlock.__init__
+
+        def vace_block_init(
+            self,
+            base_block_idx,
+            block_index,
+            task,
+            mm_type,
+            config,
+            create_cuda_buffer,
+            create_cpu_buffer,
+            block_prefix,
+        ):
+            original_vace_block_init(
+                self,
+                base_block_idx,
+                block_index,
+                task,
+                mm_type,
+                config,
+                create_cuda_buffer,
+                create_cpu_buffer,
+                block_prefix,
+            )
+            projection_cls = MM_WEIGHT_REGISTER["fp8-pertensor"]
+            if base_block_idx == 0:
+                self.compute_phases[0].add_module(
+                    "before_proj",
+                    projection_cls(
+                        f"{block_prefix}.{block_index}.before_proj.weight",
+                        f"{block_prefix}.{block_index}.before_proj.bias",
+                        create_cuda_buffer,
+                        create_cpu_buffer,
+                        self.lazy_load,
+                        self.lazy_load_file,
+                    ),
+                )
+            self.compute_phases[-1].add_module(
+                "after_proj",
+                projection_cls(
+                    f"{block_prefix}.{block_index}.after_proj.weight",
+                    f"{block_prefix}.{block_index}.after_proj.bias",
+                    create_cuda_buffer,
+                    create_cpu_buffer,
+                    self.lazy_load,
+                    self.lazy_load_file,
+                ),
+            )
+
+        WanVaceTransformerAttentionBlock.__init__ = vace_block_init
+        WanVaceTransformerAttentionBlock._faceless_scaled_fp8_patch = True
+        LOGGER.info(
+            "patched VACE before_proj/after_proj to use the scaled-FP8 GPU matmul loader"
+        )
+        print(
+            "[VACE][LightX2V] scaled-FP8 VACE projection loader installed "
+            "for before_proj/after_proj; CPU fallback disabled",
+            flush=True,
+        )
 
     # The upstream VACE subclass omits WanModel's dynamic-LoRA constructor
     # arguments. Preserve its normal initialization path and add those args.
