@@ -214,6 +214,48 @@ def _configure_torch_runtime() -> dict[str, Any]:
     return report
 
 
+def _patch_vace_meta_frequency_buffer() -> dict[str, Any]:
+    """Materialize Wan's unregistered RoPE tensor after meta checkpoint loading.
+
+    ``VaceWanModel.from_pretrained`` can construct the model under Accelerate's
+    meta-device loader.  The positional-frequency tensor is a plain tensor,
+    not a parameter or registered buffer, so it is absent from the checkpoint
+    state dict and remains meta.  The upstream forward path then tries to copy
+    that tensor to CUDA and fails before the first denoising step.
+    """
+
+    import torch
+    from models.wan.modules.model import VaceWanModel
+    from wan.modules.model import rope_params
+
+    original = VaceWanModel.from_pretrained
+    if getattr(original, "_autotransition_meta_frequency_patch", False):
+        return {"patched": False, "reason": "already-installed"}
+
+    def patched_from_pretrained(cls: Any, *args: Any, **kwargs: Any) -> Any:
+        model = original(*args, **kwargs)
+        frequencies = getattr(model, "freqs", None)
+        if frequencies is None or bool(getattr(frequencies, "is_meta", False)):
+            dim = int(model.dim)
+            heads = int(model.num_heads)
+            head_dim = dim // heads
+            with torch.device("cpu"):
+                model.freqs = torch.cat(
+                    [
+                        rope_params(1024, head_dim - 4 * (head_dim // 6)),
+                        rope_params(1024, 2 * (head_dim // 6)),
+                        rope_params(1024, 2 * (head_dim // 6)),
+                    ],
+                    dim=1,
+                )
+            return model
+        return model
+
+    patched_from_pretrained._autotransition_meta_frequency_patch = True
+    VaceWanModel.from_pretrained = classmethod(patched_from_pretrained)
+    return {"patched": True, "source": "models.wan.modules.model.VaceWanModel"}
+
+
 def main() -> None:
     if len(sys.argv) < 3 or sys.argv[1] != "--script":
         raise SystemExit("usage: python -m autotransition.vace_stitch.native_runner --script SCRIPT [VACE ARGS]")
@@ -236,6 +278,9 @@ def main() -> None:
     script_root = str(script.parent)
     if script_root not in sys.path:
         sys.path.insert(0, script_root)
+    frequency_patch = _patch_vace_meta_frequency_buffer()
+    diagnostics["metaFrequencyPatch"] = frequency_patch
+    _write_diagnostics(save_dir, diagnostics)
     from .config import VaceStitchConfig
     from .fp8_loader import install_scaled_fp8_loader
 

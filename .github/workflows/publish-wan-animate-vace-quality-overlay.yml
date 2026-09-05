@@ -1,4 +1,4 @@
-name: Publish Wan Animate VACE Quality Overlay
+name: Publish Wan Animate VACE Runtime Fix Overlay
 
 on:
   push:
@@ -12,10 +12,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-r1
-  TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r4
-  QUALITY_REPO: the-faceless-dev/faceless-wan-vace-stitch-worker
-  QUALITY_TAG: vace13b-20260829-quality-rife9
+  BASE_TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r4
+  TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r5
 
 jobs:
   publish:
@@ -25,26 +23,16 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Publish registry-only quality overlay
+      - name: Publish registry-only runtime fix overlay
         shell: bash
         env:
-          VACE_VAE_URL: https://huggingface.co/Wan-AI/Wan2.1-VACE-14B/resolve/main/Wan2.1_VAE.pth
-          VACE_VAE_SHA256: 38071ab59bd94681c686fa51d75a1968f64e470262043be31f7a094e442fd981
-          VACE_VAE_BYTES: 507609880
-
           REGISTRY_USERNAME: ${{ github.actor }}
           REGISTRY_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          curl --fail --location --retry 5 --retry-delay 5 \
-            --output /tmp/Wan2.1_VAE.pth "${VACE_VAE_URL}"
-          test "$(stat -c '%s' /tmp/Wan2.1_VAE.pth)" = "${VACE_VAE_BYTES}"
-          echo "${VACE_VAE_SHA256}  /tmp/Wan2.1_VAE.pth" | sha256sum -c -
-          python tools/publish_wan_quality_overlay.py \
+          python tools/publish_wan_overlay_manifest.py \
             --repo-root . \
             --repo "${IMAGE#ghcr.io/}" \
             --base-tag "${BASE_TAG}" \
             --tag "${TAG}" \
-            --quality-repo "${QUALITY_REPO}" \
-            --quality-tag "${QUALITY_TAG}" \
-            --vace-vae-path /tmp/Wan2.1_VAE.pth
+            --code-only
