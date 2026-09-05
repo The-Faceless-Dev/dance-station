@@ -207,6 +207,10 @@ class VaceRuntime:
                     "cross_attn_2_type": self.config.lightx2v_attention_backend,
                 }
             )
+            if self.config.lightx2v_t5_checkpoint:
+                payload["t5_original_ckpt"] = str(self.config.lightx2v_t5_checkpoint)
+            if self.config.lightx2v_t5_tokenizer:
+                payload["t5_tokenizer_path"] = str(self.config.lightx2v_t5_tokenizer)
             lightx2v_config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         try:
             run_adapter_command(

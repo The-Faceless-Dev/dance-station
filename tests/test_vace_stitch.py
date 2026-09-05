@@ -91,6 +91,16 @@ def test_vace_config_exposes_scaled_14b_settings(monkeypatch: pytest.MonkeyPatch
     assert config.loop_enabled is True
 
 
+def test_vace_lightx2v_reuses_existing_animate_text_assets(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GENERATIVE_DANCE_WAN_T5_CHECKPOINT", "/Wan-AI/models_t5_umt5-xxl-enc-bf16.pth")
+    monkeypatch.setenv("GENERATIVE_DANCE_WAN_T5_TOKENIZER", "/Wan-AI/umt5-xxl")
+
+    config = VaceStitchConfig.from_env()
+
+    assert config.lightx2v_t5_checkpoint == Path("/Wan-AI/models_t5_umt5-xxl-enc-bf16.pth")
+    assert config.lightx2v_t5_tokenizer == Path("/Wan-AI/umt5-xxl")
+
+
 def test_scaled_fp8_linear_has_a_cpu_fallback() -> None:
     layer = ScaledFP8Linear(4, 3, bias=True)
     layer.weight = torch.nn.Parameter(

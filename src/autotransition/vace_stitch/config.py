@@ -38,6 +38,8 @@ class VaceStitchConfig:
     lightx2v_source_root: Path | None = None
     lightx2v_config: Path | None = None
     lightx2v_lora: Path | None = None
+    lightx2v_t5_checkpoint: Path | None = None
+    lightx2v_t5_tokenizer: Path | None = None
     lightx2v_lora_strength: float = 1.0
     lightx2v_steps: int = 4
     lightx2v_attention_backend: str = "flash_attn2"
@@ -122,6 +124,16 @@ class VaceStitchConfig:
             lightx2v_source_root=_path("VACE_STITCH_LIGHTX2V_SOURCE_ROOT"),
             lightx2v_config=_path("VACE_STITCH_LIGHTX2V_CONFIG"),
             lightx2v_lora=_path("VACE_STITCH_LIGHTX2V_LORA"),
+            lightx2v_t5_checkpoint=(
+                _path("VACE_STITCH_LIGHTX2V_T5_CHECKPOINT")
+                or _path("GENERATIVE_DANCE_WAN_T5_CHECKPOINT")
+                or _path("WAN_T5_CHECKPOINT")
+            ),
+            lightx2v_t5_tokenizer=(
+                _path("VACE_STITCH_LIGHTX2V_T5_TOKENIZER")
+                or _path("GENERATIVE_DANCE_WAN_T5_TOKENIZER")
+                or _path("WAN_T5_TOKENIZER")
+            ),
             lightx2v_lora_strength=number("VACE_STITCH_LIGHTX2V_LORA_STRENGTH", 1.0),
             lightx2v_steps=integer("VACE_STITCH_LIGHTX2V_STEPS", 4),
             lightx2v_attention_backend=os.getenv("VACE_STITCH_LIGHTX2V_ATTENTION", "flash_attn2").lower(),
@@ -253,6 +265,8 @@ class VaceStitchConfig:
             "lightx2vSourceRoot": str(self.lightx2v_source_root) if self.lightx2v_source_root else None,
             "lightx2vConfig": str(self.lightx2v_config) if self.lightx2v_config else None,
             "lightx2vLora": str(self.lightx2v_lora) if self.lightx2v_lora else None,
+            "lightx2vT5Checkpoint": str(self.lightx2v_t5_checkpoint) if self.lightx2v_t5_checkpoint else None,
+            "lightx2vT5Tokenizer": str(self.lightx2v_t5_tokenizer) if self.lightx2v_t5_tokenizer else None,
             "lightx2vLoraStrength": self.lightx2v_lora_strength,
             "lightx2vSteps": self.lightx2v_steps,
             "lightx2vAttentionBackend": self.lightx2v_attention_backend,
