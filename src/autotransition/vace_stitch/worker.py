@@ -453,11 +453,15 @@ class VaceStitchWorker:
             artifacts.append(
                 {
                     "path": str(path),
-                    "name": path.name,
+                    "name": (
+                        "__".join(relative_parts)
+                        if is_bridge_metadata or "bridges" in relative_parts
+                        else path.name
+                    ),
                     "relativePath": self.store.relative(path),
                     "sizeBytes": path.stat().st_size,
                     "mediaType": media_type,
-                    "variant": "wan-vace-stitch-final" if is_final else "wan-vace-stitch-diagnostics",
+                    "variant": "generative-dance-vace-stitch-final" if is_final else "generative-dance-vace-stitch-diagnostics",
                     "primary": is_final and path.name in primary_names,
                 }
             )
@@ -570,32 +574,79 @@ class VaceStitchWorker:
             final_dir.mkdir(parents=True, exist_ok=True)
             rgb_parts: list[Path] = []
             alpha_parts: list[Path] = []
+            normal_bridges_by_before: dict[str, BridgeSpec] = {}
+            for bridge in sequence.bridges:
+                if not bridge.enabled:
+                    continue
+                if bridge.before_segment_id in normal_bridges_by_before:
+                    raise ValueError(
+                        f"multiple enabled bridges start at segment {bridge.before_segment_id}"
+                    )
+                normal_bridges_by_before[bridge.before_segment_id] = bridge
+            timeline_inputs: list[dict[str, Any]] = []
+            used_bridge_ids: list[str] = []
+
+            def append_timeline_part(kind: str, part_id: str, path: Path, *, loop: bool = False) -> None:
+                probe = probe_video(path)
+                frames = frame_count(probe, output_fps)
+                timeline_inputs.append(
+                    {
+                        "kind": kind,
+                        "id": part_id,
+                        "loop": loop,
+                        "path": str(path),
+                        "probe": probe.to_dict(),
+                        "frameCount": frames,
+                        "durationSeconds": frames / float(output_fps),
+                    }
+                )
+                rgb_parts.append(path)
+
             for index, prepared in enumerate(prepared_segments):
-                rgb_parts.append(prepared["source"])
+                segment_id = prepared["segment"].id
+                append_timeline_part("segment", segment_id, prepared["source"])
                 if transparent:
                     if prepared["alpha"] is None:
-                        raise RuntimeError(f"segment {prepared['segment'].id} has no alpha output")
+                        raise RuntimeError(f"segment {segment_id} has no alpha output")
                     alpha_parts.append(prepared["alpha"])
-                if index < len(sequence.bridges) and sequence.bridges[index].enabled:
-                    bridge = sequence.bridges[index]
+                bridge = normal_bridges_by_before.get(segment_id)
+                if bridge is not None:
                     part = bridge_parts[bridge.id]
-                    rgb_parts.append(part["rgb"])
+                    append_timeline_part("bridge", bridge.id, part["rgb"], loop=bridge.loop)
+                    used_bridge_ids.append(bridge.id)
                     if transparent:
                         if part["alpha"] is None:
                             raise RuntimeError(f"bridge {bridge.id} has no alpha output")
                         alpha_parts.append(part["alpha"])
             if sequence.loop_bridge and sequence.loop_bridge.enabled:
                 loop_part = bridge_parts[sequence.loop_bridge.id]
-                rgb_parts.append(loop_part["rgb"])
+                append_timeline_part("bridge", sequence.loop_bridge.id, loop_part["rgb"], loop=True)
+                used_bridge_ids.append(sequence.loop_bridge.id)
                 if transparent:
                     if loop_part["alpha"] is None:
                         raise RuntimeError("loop bridge has no alpha output")
                     alpha_parts.append(loop_part["alpha"])
+            expected_bridge_ids = [bridge.id for bridge in bridge_specs]
+            if sorted(used_bridge_ids) != sorted(expected_bridge_ids) or len(used_bridge_ids) != len(set(used_bridge_ids)):
+                raise VaceVideoError(
+                    "VACE timeline did not include every generated bridge exactly once: "
+                    f"expected={expected_bridge_ids} used={used_bridge_ids}"
+                )
+            timeline_path = final_dir / "timeline-inputs.json"
+            self.store.write_json(
+                timeline_path,
+                {
+                    "schemaVersion": 1,
+                    "outputFps": output_fps,
+                    "outputWidth": output_width,
+                    "outputHeight": output_height,
+                    "inputs": timeline_inputs,
+                    "expectedBridgeIds": expected_bridge_ids,
+                    "usedBridgeIds": used_bridge_ids,
+                },
+            )
             final_rgb = final_dir / "dance-stitch.mp4"
-            part_frame_counts = [
-                frame_count(probe_video(path), output_fps)
-                for path in rgb_parts
-            ]
+            part_frame_counts = [item["frameCount"] for item in timeline_inputs]
             expected_frame_count = sum(part_frame_counts)
             final_probe = stitch_videos(
                 rgb_parts,

@@ -9,12 +9,13 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: wan-q6-vast-direct-20260904-block-offload-r2
-  TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-r1
+  BASE_TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r8
+  TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r1
   VACE_COMMIT: 48eb44f1c4be87cc65a98bff985a26976841e9f3
   WAN21_COMMIT: 9737cba9c1c3c4d04b33fcad41c111989865d315
-  VACE_CHECKPOINT_URL: https://huggingface.co/spacepxl/Wan2.1_VACE_14B_fp8_scaled/resolve/main/wan2.1_vace_14B_fp8_scaled.safetensors
-  VACE_CHECKPOINT_BYTES: 17578334838
+  LIGHTX2V_COMMIT: bb964f8a125ab5147b4645ec6895b727e67f37ba
+  LIGHTX2V_LORA_URL: https://huggingface.co/lightx2v/Wan2.1-T2V-14B-StepDistill-CfgDistill-Lightx2v/resolve/main/loras/Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors
+  LIGHTX2V_LORA_BYTES: 631344264
 
 jobs:
   publish:
@@ -42,6 +43,15 @@ jobs:
           git -C /tmp/wan21-source fetch --depth 1 origin "${WAN21_COMMIT}"
           git -C /tmp/wan21-source checkout --detach "${WAN21_COMMIT}"
 
+      - name: Fetch pinned LightX2V source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init /tmp/lightx2v-source
+          git -C /tmp/lightx2v-source remote add origin https://github.com/ModelTC/LightX2V.git
+          git -C /tmp/lightx2v-source fetch --depth 1 origin "${LIGHTX2V_COMMIT}"
+          git -C /tmp/lightx2v-source checkout --detach "${LIGHTX2V_COMMIT}"
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -63,5 +73,7 @@ jobs:
             --tag "${TAG}" \
             --vace-source /tmp/wan-vace-source/vace \
             --wan21-source /tmp/wan21-source/wan \
-            --checkpoint-url "${VACE_CHECKPOINT_URL}" \
-            --checkpoint-size "${VACE_CHECKPOINT_BYTES}"
+            --lightx2v-source /tmp/lightx2v-source \
+            --lightx2v-lora-url "${LIGHTX2V_LORA_URL}" \
+            --lightx2v-lora-size "${LIGHTX2V_LORA_BYTES}" \
+            --reuse-checkpoint

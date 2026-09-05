@@ -41,6 +41,7 @@ MANIFEST_ACCEPT = ", ".join(
 )
 
 CHECKPOINT_NAME = "wan2.1_vace_14B_fp8_scaled.safetensors"
+LIGHTX2V_LORA_NAME = "Wan21_T2V_14B_lightx2v_cfg_step_distill_lora_rank64.safetensors"
 
 
 @dataclass(frozen=True)
@@ -92,8 +93,27 @@ VACE_ENV = {
     "VACE_STITCH_ENHANCEMENT_ENABLED": "false",
     "VACE_STITCH_MOTION_INTERPOLATION_ENABLED": "false",
     "VACE_STITCH_ARTIFACT_ROOT": "/var/lib/autotransition/generative-dance-jobs",
-    "VACE_STITCH_JOB_TIMEOUT_SECONDS": "7200",
+    "VACE_STITCH_STAGE_TIMEOUT_SECONDS": "7200",
     "VACE_STITCH_MAX_UPLOAD_BYTES": "2147483648",
+}
+
+LIGHTX2V_ENV = {
+    **VACE_ENV,
+    "PYTHONPATH": "/app/src:/opt/wan-animate-2:/opt/wan-vace:/opt/wan-vace/vace:/opt/wan21:/opt/lightx2v",
+    "VACE_STITCH_BACKEND": "lightx2v",
+    "VACE_STITCH_LIGHTX2V_SOURCE_ROOT": "/opt/lightx2v",
+    "VACE_STITCH_LIGHTX2V_CONFIG": "/models/wan-vace-14b/lightx2v-vace.json",
+    "VACE_STITCH_LIGHTX2V_LORA": f"/models/wan-vace-lightx2v/{LIGHTX2V_LORA_NAME}",
+    "VACE_STITCH_LIGHTX2V_LORA_STRENGTH": "1.0",
+    "VACE_STITCH_LIGHTX2V_STEPS": "4",
+    "VACE_STITCH_LIGHTX2V_ATTENTION": "flash_attn2",
+    "VACE_STITCH_SAMPLE_STEPS": "4",
+    "VACE_STITCH_SAMPLE_SHIFT": "5",
+    "VACE_STITCH_GUIDE_SCALE": "1",
+    "VACE_STITCH_OFFLOAD_MODEL": "false",
+    "VACE_STITCH_T5_CPU": "false",
+    "VACE_STITCH_ATTENTION_BACKEND": "flash_attention_2",
+    "VACE_STITCH_TF32": "true",
 }
 
 
@@ -214,7 +234,15 @@ def add_symlink(tar: tarfile.TarFile, archive_name: str, target: str, directorie
     tar.addfile(info)
 
 
-def build_entries(repo_root: Path, vace_root: Path, wan21_root: Path, checkpoint: Path | RemoteFile) -> list[tuple[str, str, Path | bytes | RemoteFile | str | None]]:
+def build_entries(
+    repo_root: Path,
+    vace_root: Path,
+    wan21_root: Path,
+    checkpoint: Path | RemoteFile | None,
+    *,
+    lightx2v_root: Path | None = None,
+    lightx2v_lora: Path | RemoteFile | None = None,
+) -> list[tuple[str, str, Path | bytes | RemoteFile | str | None]]:
     entries: list[tuple[str, str, Path | bytes | RemoteFile | str | None]] = []
     for path in repo_root.joinpath("src", "autotransition", "generative_dance").rglob("*"):
         if path.is_file() and "__pycache__" not in path.parts:
@@ -254,9 +282,19 @@ def build_entries(repo_root: Path, vace_root: Path, wan21_root: Path, checkpoint
     for archive_name, path in iter_tree(wan21_root, "opt/wan21/wan"):
         entries.append((archive_name, "file", path))
 
+    if lightx2v_root is not None:
+        for archive_name, path in iter_tree(lightx2v_root, "opt/lightx2v"):
+            entries.append((archive_name, "file", path))
+
     config = repo_root / "containers" / "wan-animate-worker" / "vace-model-config.json"
     entries.append(("models/wan-vace-14b/config.json", "file", config))
-    entries.append((f"models/wan-vace-14b/{CHECKPOINT_NAME}", "file", checkpoint))
+    if checkpoint is not None:
+        entries.append((f"models/wan-vace-14b/{CHECKPOINT_NAME}", "file", checkpoint))
+    lightx_config = repo_root / "containers" / "wan-animate-worker" / "lightx2v-vace.json"
+    if lightx2v_root is not None:
+        entries.append(("models/wan-vace-14b/lightx2v-vace.json", "file", lightx_config))
+    if lightx2v_lora is not None:
+        entries.append((f"models/wan-vace-lightx2v/{LIGHTX2V_LORA_NAME}", "file", lightx2v_lora))
     entries.extend(
         (
             ("models/wan-vace-14b/models_t5_umt5-xxl-enc-bf16.pth", "symlink", "../wan-animate-2/companions/models_t5_umt5-xxl-enc-bf16.pth"),
@@ -436,7 +474,7 @@ def stream_upload(url: str, headers: dict[str, str], entries, size: int, expecte
         connection.close()
 
 
-def update_config(config: dict, raw_diff_id: str) -> bytes:
+def update_config(config: dict, raw_diff_id: str, *, lightx2v_enabled: bool = False) -> bytes:
     rootfs = config.setdefault("rootfs", {})
     rootfs.setdefault("diff_ids", []).append(raw_diff_id)
     config.setdefault("history", []).append(
@@ -444,9 +482,10 @@ def update_config(config: dict, raw_diff_id: str) -> bytes:
     )
     image_config = config.setdefault("config", {})
     env = list(image_config.get("Env") or [])
-    keys = set(VACE_ENV)
+    env_values = LIGHTX2V_ENV if lightx2v_enabled else VACE_ENV
+    keys = set(env_values)
     env = [item for item in env if item.split("=", 1)[0] not in keys]
-    env.extend(f"{key}={value}" for key, value in VACE_ENV.items())
+    env.extend(f"{key}={value}" for key, value in env_values.items())
     image_config["Env"] = env
     return json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()
 
@@ -459,9 +498,15 @@ def main() -> None:
     parser.add_argument("--tag", required=True)
     parser.add_argument("--vace-source", required=True)
     parser.add_argument("--wan21-source", required=True)
-    checkpoint_group = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument("--lightx2v-source")
+    lora_group = parser.add_mutually_exclusive_group()
+    lora_group.add_argument("--lightx2v-lora")
+    lora_group.add_argument("--lightx2v-lora-url")
+    parser.add_argument("--lightx2v-lora-size", type=int)
+    checkpoint_group = parser.add_mutually_exclusive_group()
     checkpoint_group.add_argument("--checkpoint")
     checkpoint_group.add_argument("--checkpoint-url")
+    checkpoint_group.add_argument("--reuse-checkpoint", action="store_true")
     parser.add_argument("--checkpoint-size", type=int)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -469,7 +514,26 @@ def main() -> None:
     repo_root = Path(args.repo_root).resolve()
     vace_root = Path(args.vace_source).resolve()
     wan21_root = Path(args.wan21_source).resolve()
-    if args.checkpoint_url:
+    lightx2v_root = Path(args.lightx2v_source).resolve() if args.lightx2v_source else None
+    if lightx2v_root is not None and not lightx2v_root.is_dir():
+        raise SystemExit(f"LightX2V source is missing: {lightx2v_root}")
+    if args.lightx2v_lora_url and (not args.lightx2v_lora_size or args.lightx2v_lora_size <= 0):
+        raise SystemExit("--lightx2v-lora-size is required with --lightx2v-lora-url")
+    lightx2v_lora: Path | RemoteFile | None = None
+    if args.lightx2v_lora_url:
+        lightx2v_lora = RemoteFile(args.lightx2v_lora_url, args.lightx2v_lora_size)
+    elif args.lightx2v_lora:
+        lightx2v_lora = Path(args.lightx2v_lora).resolve()
+        if not lightx2v_lora.is_file() or lightx2v_lora.stat().st_size <= 0:
+            raise SystemExit(f"LightX2V LoRA is missing or empty: {lightx2v_lora}")
+    if lightx2v_root is not None and lightx2v_lora is None:
+        raise SystemExit("--lightx2v-lora or --lightx2v-lora-url is required with --lightx2v-source")
+    if not any((args.checkpoint, args.checkpoint_url, args.reuse_checkpoint)):
+        raise SystemExit("one of --checkpoint, --checkpoint-url, or --reuse-checkpoint is required")
+    if args.reuse_checkpoint:
+        checkpoint = None
+        checkpoint_size = 0
+    elif args.checkpoint_url:
         if not args.checkpoint_size or args.checkpoint_size <= 0:
             raise SystemExit("--checkpoint-size is required and must be positive with --checkpoint-url")
         checkpoint: Path | RemoteFile = RemoteFile(args.checkpoint_url, args.checkpoint_size)
@@ -479,7 +543,14 @@ def main() -> None:
         if not checkpoint.is_file() or checkpoint.stat().st_size <= 0:
             raise SystemExit(f"checkpoint is missing or empty: {checkpoint}")
         checkpoint_size = checkpoint.stat().st_size
-    entries = build_entries(repo_root, vace_root, wan21_root, checkpoint)
+    entries = build_entries(
+        repo_root,
+        vace_root,
+        wan21_root,
+        checkpoint,
+        lightx2v_root=lightx2v_root,
+        lightx2v_lora=lightx2v_lora,
+    )
     print(f"[overlay] entries={len(entries)} checkpointBytes={checkpoint_size}", flush=True)
     first = layer_pass(entries)
     layer_digest = f"sha256:{first.compressed_hash.hexdigest()}"
@@ -515,7 +586,7 @@ def main() -> None:
         f"{base_url}/blobs/{base_manifest['config']['digest']}",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
     )
-    image_config = update_config(json.loads(config_body), layer_diff_id)
+    image_config = update_config(json.loads(config_body), layer_diff_id, lightx2v_enabled=lightx2v_root is not None)
     config_digest = f"sha256:{hashlib.sha256(image_config).hexdigest()}"
     upload_layer(args.repo, token, layer_digest, entries, first.compressed_bytes)
     # Upload the small image config with the regular registry flow.

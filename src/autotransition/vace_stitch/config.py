@@ -18,6 +18,13 @@ def _path(name: str) -> Path | None:
     return Path(value).expanduser() if value else None
 
 
+def _optional_number(name: str) -> float | None:
+    value = os.getenv(name)
+    if value is None or value.strip().lower() in {"", "none", "null", "off", "disabled"}:
+        return None
+    return float(value)
+
+
 @dataclass(frozen=True)
 class VaceStitchConfig:
     """Model, timeline, artifact, and callback settings for one GPU worker."""
@@ -28,6 +35,12 @@ class VaceStitchConfig:
     runtime_command: str | None = None
     runtime_cwd: Path | None = None
     python_executable: str | None = None
+    lightx2v_source_root: Path | None = None
+    lightx2v_config: Path | None = None
+    lightx2v_lora: Path | None = None
+    lightx2v_lora_strength: float = 1.0
+    lightx2v_steps: int = 4
+    lightx2v_attention_backend: str = "flash_attn2"
     source_root: Path | None = None
     checkpoint_dir: Path | None = None
     checkpoint_file: Path | None = None
@@ -83,6 +96,9 @@ class VaceStitchConfig:
     motion_interpolation_cwd: Path | None = None
     motion_interpolation_target_fps: int = 0
     job_timeout_seconds: float = 7200.0
+    # VACE inference may legitimately run for hours on a long sequence. None
+    # means the model process runs until completion or an actual process error.
+    runtime_timeout_seconds: float | None = None
     max_upload_bytes: int = 2_147_483_648
     keep_intermediate: bool = True
 
@@ -103,6 +119,12 @@ class VaceStitchConfig:
             runtime_command=os.getenv("VACE_STITCH_COMMAND"),
             runtime_cwd=_path("VACE_STITCH_CWD"),
             python_executable=os.getenv("VACE_STITCH_PYTHON"),
+            lightx2v_source_root=_path("VACE_STITCH_LIGHTX2V_SOURCE_ROOT"),
+            lightx2v_config=_path("VACE_STITCH_LIGHTX2V_CONFIG"),
+            lightx2v_lora=_path("VACE_STITCH_LIGHTX2V_LORA"),
+            lightx2v_lora_strength=number("VACE_STITCH_LIGHTX2V_LORA_STRENGTH", 1.0),
+            lightx2v_steps=integer("VACE_STITCH_LIGHTX2V_STEPS", 4),
+            lightx2v_attention_backend=os.getenv("VACE_STITCH_LIGHTX2V_ATTENTION", "flash_attn2").lower(),
             source_root=_path("VACE_STITCH_SOURCE_ROOT"),
             checkpoint_dir=_path("VACE_STITCH_CHECKPOINT_DIR"),
             checkpoint_file=_path("VACE_STITCH_CHECKPOINT_FILE"),
@@ -160,14 +182,18 @@ class VaceStitchConfig:
             motion_interpolation_command=os.getenv("VACE_STITCH_MOTION_INTERPOLATION_COMMAND"),
             motion_interpolation_cwd=_path("VACE_STITCH_MOTION_INTERPOLATION_CWD"),
             motion_interpolation_target_fps=integer("VACE_STITCH_MOTION_INTERPOLATION_TARGET_FPS", 0),
-            job_timeout_seconds=number("VACE_STITCH_JOB_TIMEOUT_SECONDS", 7200.0),
+            job_timeout_seconds=number(
+                "VACE_STITCH_STAGE_TIMEOUT_SECONDS",
+                number("VACE_STITCH_JOB_TIMEOUT_SECONDS", 7200.0),
+            ),
+            runtime_timeout_seconds=_optional_number("VACE_STITCH_RUNTIME_TIMEOUT_SECONDS"),
             max_upload_bytes=integer("VACE_STITCH_MAX_UPLOAD_BYTES", 2_147_483_648),
             keep_intermediate=_bool("VACE_STITCH_KEEP_INTERMEDIATE", True),
         )
 
     def validate(self) -> None:
-        if self.runtime_backend not in {"command", "native"}:
-            raise ValueError("VACE stitch backend must be command or native")
+        if self.runtime_backend not in {"command", "native", "lightx2v"}:
+            raise ValueError("VACE stitch backend must be command, native, or lightx2v")
         if self.model_size not in {"480p", "720p"}:
             raise ValueError("VACE stitch model size must be 480p or 720p")
         if self.model_fps < 1 or self.model_fps > 60:
@@ -186,6 +212,10 @@ class VaceStitchConfig:
             raise ValueError("VACE stitch max window frames must be 4n+1 and at least 5")
         if self.sample_steps < 1 or self.sample_shift <= 0 or self.guide_scale < 0 or self.context_scale < 0:
             raise ValueError("VACE stitch sampling settings are invalid")
+        if self.lightx2v_steps < 1 or self.lightx2v_lora_strength < 0:
+            raise ValueError("LightX2V VACE sampling settings are invalid")
+        if self.lightx2v_attention_backend not in {"flash_attn2", "flash_attn3"}:
+            raise ValueError("LightX2V VACE attention must be flash_attn2 or flash_attn3")
         if self.sample_solver not in {"unipc", "dpm++"}:
             raise ValueError("VACE stitch sample solver must be unipc or dpm++")
         if self.attention_backend not in {"auto", "flash_attention_2"}:
@@ -207,7 +237,9 @@ class VaceStitchConfig:
         if self.motion_interpolation_target_fps < 0 or self.motion_interpolation_target_fps > 120:
             raise ValueError("VACE motion interpolation target FPS must be between 0 and 120")
         if self.job_timeout_seconds <= 0 or self.max_upload_bytes < 1:
-            raise ValueError("VACE stitch timeout and upload limit must be positive")
+            raise ValueError("VACE stitch stage timeout and upload limit must be positive")
+        if self.runtime_timeout_seconds is not None and self.runtime_timeout_seconds <= 0:
+            raise ValueError("VACE runtime timeout must be positive when configured")
         if self.checkpoint_file is not None and self.checkpoint_file.suffix.lower() not in {".safetensors", ".ckpt", ".bin"}:
             raise ValueError("VACE checkpoint file must be a safetensors, ckpt, or bin file")
 
@@ -218,6 +250,12 @@ class VaceStitchConfig:
             "runtimeBackend": self.runtime_backend,
             "runtimeCommandConfigured": bool(self.runtime_command),
             "runtimeCwd": str(self.runtime_cwd) if self.runtime_cwd else None,
+            "lightx2vSourceRoot": str(self.lightx2v_source_root) if self.lightx2v_source_root else None,
+            "lightx2vConfig": str(self.lightx2v_config) if self.lightx2v_config else None,
+            "lightx2vLora": str(self.lightx2v_lora) if self.lightx2v_lora else None,
+            "lightx2vLoraStrength": self.lightx2v_lora_strength,
+            "lightx2vSteps": self.lightx2v_steps,
+            "lightx2vAttentionBackend": self.lightx2v_attention_backend,
             "sourceRoot": str(self.source_root) if self.source_root else None,
             "checkpointDirConfigured": bool(self.checkpoint_dir),
             "checkpointFile": str(self.checkpoint_file) if self.checkpoint_file else None,
@@ -269,7 +307,8 @@ class VaceStitchConfig:
             "motionInterpolationBackend": self.motion_interpolation_backend,
             "motionInterpolationCommandConfigured": bool(self.motion_interpolation_command),
             "motionInterpolationTargetFps": self.motion_interpolation_target_fps,
-            "jobTimeoutSeconds": self.job_timeout_seconds,
+            "stageTimeoutSeconds": self.job_timeout_seconds,
+            "runtimeTimeoutSeconds": self.runtime_timeout_seconds,
             "maxUploadBytes": self.max_upload_bytes,
             "keepIntermediate": self.keep_intermediate,
         }

@@ -21,6 +21,7 @@ class VaceRuntime:
         self.config = config
         self.command = parse_command(config.runtime_command)
         self.native_command = self._build_native_command()
+        self.lightx2v_command = self._build_lightx2v_command()
         self._checkpoint_report: dict[str, object] | None = None
 
     def _validate_checkpoint(self) -> dict[str, object] | None:
@@ -113,9 +114,38 @@ class VaceRuntime:
             command.append("--t5_cpu")
         return tuple(command)
 
+    def _build_lightx2v_command(self) -> tuple[str, ...]:
+        if self.config.runtime_backend != "lightx2v":
+            return ()
+        if not self.config.lightx2v_source_root or not self.config.lightx2v_config:
+            return ()
+        return (
+            self.config.python_executable or sys.executable,
+            "-m",
+            "autotransition.vace_stitch.lightx2v_runner",
+            "--source-root",
+            str(self.config.lightx2v_source_root),
+            "--config-json",
+            "{lightx2v_config}",
+            "--model-path",
+            str(self.config.checkpoint_dir or ""),
+            "--frame-num",
+            "{frame_num}",
+            "--src-video",
+            "{source_video}",
+            "--src-mask",
+            "{source_mask}",
+            "--prompt",
+            "{prompt}",
+            "--seed",
+            "{seed}",
+            "--save-result-path",
+            "{output}",
+        )
+
     @property
     def configured(self) -> bool:
-        return bool(self.command or self.native_command)
+        return bool(self.command or self.native_command or self.lightx2v_command)
 
     def generate(
         self,
@@ -132,7 +162,7 @@ class VaceRuntime:
         model_name: str | None = None,
         model_size: str | None = None,
     ) -> Path:
-        command = self.command or self.native_command
+        command = self.command or self.native_command or self.lightx2v_command
         if not command:
             raise AvatarAdapterError(
                 "vace_runtime_not_configured",
@@ -150,7 +180,34 @@ class VaceRuntime:
         output_dir.mkdir(parents=True, exist_ok=True)
         output = output_dir / "vace-output.mp4"
         prompt_file = output_dir / "prompt.txt"
+        lightx2v_config_path = output_dir / "lightx2v-config.json"
         prompt_file.write_text(prompt, encoding="utf-8")
+        if self.config.runtime_backend == "lightx2v":
+            if not self.config.lightx2v_config or not self.config.lightx2v_config.is_file():
+                raise AvatarAdapterError(
+                    "vace_lightx2v_config_missing",
+                    "LightX2V VACE config is missing",
+                    retryable=False,
+                    details={"config": str(self.config.lightx2v_config)},
+                )
+            payload = json.loads(self.config.lightx2v_config.read_text(encoding="utf-8"))
+            payload.update(
+                {
+                    "target_video_length": frame_num,
+                    "infer_steps": self.config.lightx2v_steps,
+                    "sample_shift": sample_shift if sample_shift is not None else 5.0,
+                    "sample_guide_scale": guide_scale if guide_scale is not None else 1.0,
+                    "lora_configs": (
+                        [{"path": str(self.config.lightx2v_lora), "strength": self.config.lightx2v_lora_strength}]
+                        if self.config.lightx2v_lora
+                        else []
+                    ),
+                    "self_attn_1_type": self.config.lightx2v_attention_backend,
+                    "cross_attn_1_type": self.config.lightx2v_attention_backend,
+                    "cross_attn_2_type": self.config.lightx2v_attention_backend,
+                }
+            )
+            lightx2v_config_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         try:
             run_adapter_command(
                 command,
@@ -172,14 +229,16 @@ class VaceRuntime:
                     "offload_model": "true" if self.config.offload_model else "false",
                     "context_scale": self.config.context_scale,
                     "sample_solver": self.config.sample_solver,
+                    "lightx2v_config": lightx2v_config_path,
                 },
                 cwd=self.config.runtime_cwd,
-                timeout_seconds=self.config.job_timeout_seconds,
+                timeout_seconds=self.config.runtime_timeout_seconds,
                 log_dir=output_dir,
                 component="wan-vace-stitch",
             )
         finally:
             prompt_file.unlink(missing_ok=True)
+            lightx2v_config_path.unlink(missing_ok=True)
         if not output.is_file():
             candidates = sorted(
                 (
@@ -209,6 +268,7 @@ class VaceRuntime:
             ) from exc
         metadata = {
             "runtime": "wan-vace-stitch",
+            "backend": self.config.runtime_backend,
             "modelName": model_name or self.config.model_name,
             "modelSize": model_size or self.config.model_size,
             "prompt": prompt,
@@ -220,6 +280,16 @@ class VaceRuntime:
             "offloadModel": self.config.offload_model,
             "attentionBackend": self.config.attention_backend,
             "tf32": self.config.tf32,
+            "lightx2v": {
+                "enabled": self.config.runtime_backend == "lightx2v",
+                "sourceRoot": str(self.config.lightx2v_source_root) if self.config.lightx2v_source_root else None,
+                "steps": self.config.lightx2v_steps,
+                "lora": str(self.config.lightx2v_lora) if self.config.lightx2v_lora else None,
+                "loraStrength": self.config.lightx2v_lora_strength,
+                "attentionBackend": self.config.lightx2v_attention_backend,
+                "cpuOffload": self.config.offload_model,
+                "t5CpuOffload": self.config.t5_cpu,
+            },
             "checkpoint": checkpoint_report,
             "sourceVideo": str(source_video),
             "sourceMask": str(source_mask),
