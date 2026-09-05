@@ -9,11 +9,11 @@ on:
       base_tag:
         description: Existing public Wan image tag to inherit
         required: true
-        default: wan-q6-vast-direct-20260905-vace-lightx2v-r9
+        default: wan-q6-vast-direct-20260905-vace-lightx2v-r11
       tag:
         description: New code-overlay tag
         required: true
-        default: wan-q6-vast-direct-20260905-vace-lightx2v-r10
+        default: wan-q6-vast-direct-20260905-vace-lightx2v-r12
 
 permissions:
   contents: read
@@ -21,8 +21,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r9' }}
-  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r10' }}
+  BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r11' }}
+  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r12' }}
 
 jobs:
   publish:
@@ -77,4 +77,4 @@ jobs:
             --env-override VACE_STITCH_T5_CPU=true \
             --env-override VACE_STITCH_LIGHTX2V_ATTENTION=flash_attn2 \
             --env-override VACE_STITCH_LIGHTX2V_ROPE=torch_complex_rope \
-            --worker-entrypoint containers/vace-stitch-worker/entrypoint.sh
+            --worker-entrypoint containers/wan-animate-worker/entrypoint.sh
