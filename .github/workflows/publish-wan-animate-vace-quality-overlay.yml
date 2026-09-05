@@ -12,8 +12,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r4
-  TAG: wan-q6-vast-direct-20260904-block-offload-vace14b-quality-r5
+  BASE_TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r11
+  TAG: wan-q6-vast-direct-20260905-vace-lightx2v-r12
 
 jobs:
   publish:
@@ -35,4 +35,5 @@ jobs:
             --repo "${IMAGE#ghcr.io/}" \
             --base-tag "${BASE_TAG}" \
             --tag "${TAG}" \
-            --code-only
+            --code-only \
+            --worker-entrypoint containers/wan-animate-worker/entrypoint.sh
