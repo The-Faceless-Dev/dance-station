@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -107,6 +108,57 @@ def test_vace_lightx2v_reuses_existing_animate_vae(monkeypatch: pytest.MonkeyPat
     config = VaceStitchConfig.from_env()
 
     assert config.lightx2v_vae == Path("/Wan-AI/vae.pth")
+
+
+def test_vace_lightx2v_keeps_transformer_on_gpu_but_can_stage_t5_on_cpu(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_file = tmp_path / "lightx2v.json"
+    config_file.write_text("{}", encoding="utf-8")
+    runtime = VaceRuntime(
+        VaceStitchConfig(
+            runtime_command="fake-vace",
+            runtime_backend="lightx2v",
+            lightx2v_config=config_file,
+            lightx2v_t5_checkpoint=Path("/Wan-AI/t5.pth"),
+            lightx2v_t5_tokenizer=Path("/Wan-AI/tokenizer"),
+            lightx2v_vae=Path("/Wan-AI/vae.pth"),
+            t5_cpu=True,
+            offload_model=False,
+        )
+    )
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    mask = tmp_path / "mask.mp4"
+    mask.write_bytes(b"mask")
+    captured: dict[str, object] = {}
+
+    def fake_run(_: object, *, values: dict[str, object], **__: object) -> None:
+        config_path = values["lightx2v_config"]
+        assert isinstance(config_path, Path)
+        captured.update(json.loads(config_path.read_text(encoding="utf-8")))
+        output = values["output"]
+        assert isinstance(output, Path)
+        output.write_bytes(b"output")
+
+    monkeypatch.setattr("autotransition.vace_stitch.runtime.run_adapter_command", fake_run)
+    monkeypatch.setattr(
+        "autotransition.vace_stitch.runtime.probe_video",
+        lambda path: VideoProbe(path, 832, 480, 16, 1.0, 16, "yuv420p"),
+    )
+    runtime.generate(
+        source_video=source,
+        source_mask=mask,
+        output_dir=tmp_path / "output",
+        prompt="continue",
+        frame_num=45,
+        seed=1,
+    )
+
+    assert captured["cpu_offload"] is False
+    assert captured["t5_cpu_offload"] is True
+    assert captured["vae_cpu_offload"] is False
 
 
 def test_scaled_fp8_linear_has_a_cpu_fallback() -> None:

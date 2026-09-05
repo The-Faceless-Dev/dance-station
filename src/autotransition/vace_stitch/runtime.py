@@ -195,6 +195,9 @@ class VaceRuntime:
                 {
                     "target_video_length": frame_num,
                     "infer_steps": self.config.lightx2v_steps,
+                    "cpu_offload": self.config.offload_model,
+                    "t5_cpu_offload": self.config.t5_cpu,
+                    "vae_cpu_offload": False,
                     "sample_shift": sample_shift if sample_shift is not None else 5.0,
                     "sample_guide_scale": guide_scale if guide_scale is not None else 1.0,
                     "lora_configs": (

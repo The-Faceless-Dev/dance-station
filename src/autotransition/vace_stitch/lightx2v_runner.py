@@ -89,20 +89,22 @@ def main() -> None:
     # default of 81 frames.
     config["target_video_length"] = args.frame_num
     validate_config_paths(config)
-    for key in ("cpu_offload", "t5_cpu_offload", "vae_cpu_offload"):
-        if config.get(key):
-            raise RuntimeError(f"LightX2V VACE CPU offload is disabled but {key}=true")
+    if config.get("cpu_offload"):
+        raise RuntimeError("LightX2V VACE transformer CPU offload is disabled; set cpu_offload=false")
 
     device_name = torch.cuda.get_device_name(torch.cuda.current_device())
     logger.info(
         "[VACE][LightX2V] VACE-only runtime device={} gpu={} model_cls={} "
-        "frames={} steps={} lora_configs={} cpu_offload=false t5_cpu_offload=false vae_cpu_offload=false",
+        "frames={} steps={} lora_configs={} cpu_offload={} t5_cpu_offload={} vae_cpu_offload={}",
         AI_DEVICE,
         device_name,
         config.get("model_cls"),
         config.get("target_video_length"),
         config.get("infer_steps"),
         config.get("lora_configs"),
+        config.get("cpu_offload"),
+        config.get("t5_cpu_offload"),
+        config.get("vae_cpu_offload"),
     )
     print_config(config)
 
