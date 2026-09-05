@@ -101,6 +101,14 @@ def test_vace_lightx2v_reuses_existing_animate_text_assets(monkeypatch: pytest.M
     assert config.lightx2v_t5_tokenizer == Path("/Wan-AI/umt5-xxl")
 
 
+def test_vace_lightx2v_reuses_existing_animate_vae(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GENERATIVE_DANCE_WAN_VAE_CHECKPOINT", "/Wan-AI/vae.pth")
+
+    config = VaceStitchConfig.from_env()
+
+    assert config.lightx2v_vae == Path("/Wan-AI/vae.pth")
+
+
 def test_scaled_fp8_linear_has_a_cpu_fallback() -> None:
     layer = ScaledFP8Linear(4, 3, bias=True)
     layer.weight = torch.nn.Parameter(

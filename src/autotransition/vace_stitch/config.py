@@ -40,6 +40,7 @@ class VaceStitchConfig:
     lightx2v_lora: Path | None = None
     lightx2v_t5_checkpoint: Path | None = None
     lightx2v_t5_tokenizer: Path | None = None
+    lightx2v_vae: Path | None = None
     lightx2v_lora_strength: float = 1.0
     lightx2v_steps: int = 4
     lightx2v_attention_backend: str = "flash_attn2"
@@ -133,6 +134,11 @@ class VaceStitchConfig:
                 _path("VACE_STITCH_LIGHTX2V_T5_TOKENIZER")
                 or _path("GENERATIVE_DANCE_WAN_T5_TOKENIZER")
                 or _path("WAN_T5_TOKENIZER")
+            ),
+            lightx2v_vae=(
+                _path("VACE_STITCH_LIGHTX2V_VAE")
+                or _path("GENERATIVE_DANCE_WAN_VAE_CHECKPOINT")
+                or _path("WAN_VAE_CHECKPOINT")
             ),
             lightx2v_lora_strength=number("VACE_STITCH_LIGHTX2V_LORA_STRENGTH", 1.0),
             lightx2v_steps=integer("VACE_STITCH_LIGHTX2V_STEPS", 4),
@@ -267,6 +273,7 @@ class VaceStitchConfig:
             "lightx2vLora": str(self.lightx2v_lora) if self.lightx2v_lora else None,
             "lightx2vT5Checkpoint": str(self.lightx2v_t5_checkpoint) if self.lightx2v_t5_checkpoint else None,
             "lightx2vT5Tokenizer": str(self.lightx2v_t5_tokenizer) if self.lightx2v_t5_tokenizer else None,
+            "lightx2vVae": str(self.lightx2v_vae) if self.lightx2v_vae else None,
             "lightx2vLoraStrength": self.lightx2v_lora_strength,
             "lightx2vSteps": self.lightx2v_steps,
             "lightx2vAttentionBackend": self.lightx2v_attention_backend,
