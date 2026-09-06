@@ -96,6 +96,7 @@ class WanAnimate2LiteAdapter:
         inference_steps: int | None = None,
         text_length: int | None = None,
         reference_strength: float | None = None,
+        temporal_window: int | None = None,
         continuation_frames: Path | None = None,
         continuation_frame: Path | None = None,
     ) -> RenderedSegment:
@@ -119,6 +120,28 @@ class WanAnimate2LiteAdapter:
             if reference_strength is not None
             else self.config.wan_reference_strength
         )
+        effective_temporal_window = (
+            temporal_window
+            if temporal_window is not None
+            else self.config.wan_temporal_window
+        )
+        if effective_temporal_window < 2:
+            raise AvatarAdapterError(
+                "wan_invalid_temporal_window",
+                "Wan-Animate-2 temporal window must be at least 2 frames",
+                retryable=False,
+                details={"temporalWindow": effective_temporal_window},
+            )
+        if effective_temporal_window <= self.config.wan_temporal_context_frames:
+            raise AvatarAdapterError(
+                "wan_invalid_temporal_window",
+                "Wan-Animate-2 temporal window must be larger than its context overlap",
+                retryable=False,
+                details={
+                    "temporalWindow": effective_temporal_window,
+                    "temporalContextFrames": self.config.wan_temporal_context_frames,
+                },
+            )
         if not 0 < effective_reference_strength <= 5:
             raise AvatarAdapterError(
                 "wan_invalid_reference_strength",
@@ -140,18 +163,6 @@ class WanAnimate2LiteAdapter:
                     "minimumSteps": self.config.wan_min_inference_steps,
                     "modelRevision": self.config.wan_model_revision,
                 },
-            )
-        required_lightx_steps = 6 if self.config.wan_checkpoint_format == "int8_convrot" else 4
-        if self.config.wan_lightx2v_enabled and effective_steps != required_lightx_steps:
-            raise AvatarAdapterError(
-                "wan_lightx2v_invalid_steps",
-                (
-                    "The Wan-Animate-2 LightX2V profile requires exactly "
-                    f"{required_lightx_steps} inference steps for "
-                    f"{self.config.wan_checkpoint_format}"
-                ),
-                retryable=False,
-                details={"requestedSteps": effective_steps, "requiredSteps": required_lightx_steps},
             )
         output_dir.mkdir(parents=True, exist_ok=True)
         output = output_dir / "render.mp4"
@@ -187,7 +198,7 @@ class WanAnimate2LiteAdapter:
                     "reference_strength": effective_reference_strength,
                     "continuation_frame": continuation_frame or "",
                     "continuation_frames": effective_continuation or "",
-                    "temporal_window": self.config.wan_temporal_window,
+                    "temporal_window": effective_temporal_window,
                     "temporal_context_frames": self.config.wan_temporal_context_frames,
                     "guidance_scale": self.config.wan_guidance_scale,
                     "wan_transformer": self.config.wan_transformer_checkpoint or "",
