@@ -42,6 +42,16 @@ CODE_ONLY_RUNTIME_ENV_OVERRIDES = {
     "GENERATIVE_DANCE_WAN_MIN_STEPS": "10",
 }
 
+# The VACE runtime shares these large companion files with Wan Animate. A
+# code-only overlay must recreate the same paths used by the VACE loader when
+# its base image was assembled through the dedicated VACE overlay workflow.
+VACE_SHARED_SYMLINKS = {
+    "models/wan-vace-14b/models_t5_umt5-xxl-enc-bf16.pth":
+        "../wan-animate-2/companions/models_t5_umt5-xxl-enc-bf16.pth",
+    "models/wan-vace-14b/Wan2.1_VAE.pth": "../wan-animate-2/companions/vae.pth",
+    "models/wan-vace-14b/google/umt5-xxl": "../../wan-animate-2/companions/umt5-xxl",
+}
+
 
 def apply_code_only_env(env: list[str]) -> list[str]:
     """Remove stale Animate adapter settings from an inherited image config."""
@@ -121,6 +131,9 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path, worker_entrypoint: P
         "app/src/autotransition/vace_stitch",
         "app/tools",
         "app/tools/generative_dance",
+        "models",
+        "models/wan-vace-14b",
+        "models/wan-vace-14b/google",
     }
     if worker_entrypoint is not None:
         directories.update({"usr", "usr/local", "usr/local/bin"})
@@ -133,6 +146,19 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path, worker_entrypoint: P
         info.mtime = 0
         info.mode = 0o755
         info.type = tarfile.DIRTYPE
+        info.size = 0
+        tar.addfile(info)
+
+    for archive_name, target in sorted(VACE_SHARED_SYMLINKS.items()):
+        info = tarfile.TarInfo(archive_name)
+        info.uid = 0
+        info.gid = 0
+        info.uname = ""
+        info.gname = ""
+        info.mtime = 0
+        info.mode = 0o777
+        info.type = tarfile.SYMTYPE
+        info.linkname = target
         info.size = 0
         tar.addfile(info)
 

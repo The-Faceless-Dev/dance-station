@@ -119,6 +119,15 @@ def test_code_only_wan_overlay_removes_animate_adapter_but_preserves_vace() -> N
     assert "VACE_STITCH_LIGHTX2V_LORA=/models/wan-vace-lightx2v/vace.safetensors" in result
 
 
+def test_wan_overlay_restores_vace_shared_companion_paths() -> None:
+    source = Path("tools/publish_wan_overlay_manifest.py").read_text(encoding="utf-8")
+
+    assert '"models/wan-vace-14b/models_t5_umt5-xxl-enc-bf16.pth"' in source
+    assert '"models/wan-vace-14b/Wan2.1_VAE.pth"' in source
+    assert '"models/wan-vace-14b/google/umt5-xxl"' in source
+    assert 'info.type = tarfile.SYMTYPE' in source
+
+
 def test_lightx2v_uses_the_official_four_step_schedule() -> None:
     source = Path("tools/generative_dance/wan_animate_2_runner.py").read_text(encoding="utf-8")
     assert "def _lightx2v_sampling_sigmas(" in source
