@@ -13,6 +13,9 @@ those settings the defaults in the worker image used by production.
 - Add regression coverage for the VACE defaults.
 - Publish a new immutable overlay tag containing the VACE configuration and the
   previously fixed shared adapter file.
+- Base the replacement overlay on the known 120-layer r22 image so the final
+  image stays below Vast's layer-registration depth limit; do not stack another
+  five dependency layers on top of r23.
 
 ## Tradeoffs and risks
 
