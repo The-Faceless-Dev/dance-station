@@ -42,6 +42,8 @@ def run_adapter_command(
     component: str = "avatar-adapter",
     on_output: Callable[[str], None] | None = None,
 ) -> None:
+    # Keep streamed runtime telemetry at this boundary so long-running model
+    # workers can report progress without changing the adapter contract.
     command = render_command(template, **values)
     if not command:
         raise AvatarAdapterError("adapter_not_configured", "avatar adapter command is not configured", retryable=False)
