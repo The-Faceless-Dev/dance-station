@@ -25,6 +25,32 @@ OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 OCI_LAYER = "application/vnd.oci.image.layer.v1.tar+gzip"
 MANIFEST_ACCEPT = ", ".join((DOCKER_MANIFEST, OCI_MANIFEST, "application/vnd.docker.distribution.manifest.list.v2+json", "application/vnd.oci.image.index.v1+json"))
 
+# The current image uses LightX2V only inside the independent VACE bridge
+# overlay. These are the legacy Wan Animate variables that can otherwise leak
+# in from an older base image when a code-only overlay is published.
+ANIMATE_LIGHTX2V_ENV_KEYS = {
+    "GENERATIVE_DANCE_WAN_LIGHTX2V_ENABLED",
+    "GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT",
+    "GENERATIVE_DANCE_WAN_LIGHTX2V_STRENGTH",
+    "WAN_LIGHTX2V_ENABLED",
+    "WAN_LIGHTX2V_CHECKPOINT",
+    "WAN_LIGHTX2V_STRENGTH",
+}
+
+CODE_ONLY_RUNTIME_ENV_OVERRIDES = {
+    "GENERATIVE_DANCE_WAN_STEPS": "10",
+    "GENERATIVE_DANCE_WAN_MIN_STEPS": "10",
+}
+
+
+def apply_code_only_env(env: list[str]) -> list[str]:
+    """Remove stale Animate adapter settings from an inherited image config."""
+
+    remove_keys = ANIMATE_LIGHTX2V_ENV_KEYS | set(CODE_ONLY_RUNTIME_ENV_OVERRIDES)
+    result = [item for item in env if item.split("=", 1)[0] not in remove_keys]
+    result.extend(f"{key}={value}" for key, value in CODE_ONLY_RUNTIME_ENV_OVERRIDES.items())
+    return result
+
 
 class RegistryError(RuntimeError):
     def __init__(self, method: str, url: str, status: int, body: str) -> None:
@@ -521,23 +547,19 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "WAN_SDPA_BACKEND": "auto",
         "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
         "GENERATIVE_DANCE_WAN_REFERENCE_STRENGTH": "1.25",
-        "GENERATIVE_DANCE_WAN_STEPS": "4",
-        "GENERATIVE_DANCE_WAN_MIN_STEPS": "4",
-        "GENERATIVE_DANCE_WAN_LIGHTX2V_ENABLED": "1",
-        "GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT": "/models/wan-animate-2/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
-        "GENERATIVE_DANCE_WAN_LIGHTX2V_STRENGTH": "1.0",
-        # The 32 GB RTX 5090 profile fits the Q6 + LightX2V stack with the
-        # proven 17-frame window. The base image used by the overlay carried
-        # a 33-frame value, which OOMs once the adapter activations are added.
-        "GENERATIVE_DANCE_WAN_TEMPORAL_WINDOW": "17",
+        "GENERATIVE_DANCE_WAN_STEPS": "10",
+        "GENERATIVE_DANCE_WAN_MIN_STEPS": "10",
+        "GENERATIVE_DANCE_WAN_TEMPORAL_WINDOW": "81",
         "GENERATIVE_DANCE_WAN_TEMPORAL_CONTEXT_FRAMES": "5",
-        "WAN_LIGHTX2V_ENABLED": "1",
-        "WAN_LIGHTX2V_CHECKPOINT": "/models/wan-animate-2/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors",
-        "WAN_LIGHTX2V_STRENGTH": "1.0",
         "GENERATIVE_DANCE_STAGE_TIMEOUT_SECONDS": "7200",
         "VACE_STITCH_STAGE_TIMEOUT_SECONDS": "7200",
     }
-    if not args.code_only:
+    if args.code_only:
+        # Code-only overlays inherit the base image's environment. Remove
+        # stale Animate adapter settings, then explicitly restore the current
+        # no-adapter defaults without touching any VACE_* variables.
+        env = apply_code_only_env(env)
+    else:
         keys = set(runtime_env_overrides) | {
             "GENERATIVE_DANCE_JOB_TIMEOUT_SECONDS",
             "VACE_STITCH_JOB_TIMEOUT_SECONDS",

@@ -23,6 +23,7 @@ from autotransition.generative_dance.worker import (
     _sequence_segments_are_adjacent,
 )
 from autotransition.generative_dance.worker import GenerativeDanceWorker
+from tools.publish_wan_overlay_manifest import apply_code_only_env
 
 
 def test_native_wan_runner_render_path_uses_selected_runtime_dtype() -> None:
@@ -94,10 +95,28 @@ def test_wan_overlay_requires_fused_5090_attention_and_raw_cache() -> None:
     assert '"WAN_REFERENCE_ATTENTION_BACKEND": "flash"' in source
     assert '"WAN_GGUF_GPU_RAW_CACHE": "1"' in source
     assert '"WAN_GGUF_DEQUANT_DTYPE": "bfloat16"' in source
-    assert '"GENERATIVE_DANCE_WAN_STEPS": "4"' in source
-    assert '"GENERATIVE_DANCE_WAN_MIN_STEPS": "4"' in source
-    assert '"GENERATIVE_DANCE_WAN_LIGHTX2V_ENABLED": "1"' in source
-    assert '"WAN_LIGHTX2V_CHECKPOINT": "/models/wan-animate-2/lightx2v_I2V_14B_480p_cfg_step_distill_rank64_bf16.safetensors"' in source
+    assert '"GENERATIVE_DANCE_WAN_STEPS": "10"' in source
+    assert '"GENERATIVE_DANCE_WAN_MIN_STEPS": "10"' in source
+    assert 'ANIMATE_LIGHTX2V_ENV_KEYS' in source
+
+
+def test_code_only_wan_overlay_removes_animate_adapter_but_preserves_vace() -> None:
+    env = [
+        "GENERATIVE_DANCE_WAN_STEPS=4",
+        "GENERATIVE_DANCE_WAN_MIN_STEPS=4",
+        "GENERATIVE_DANCE_WAN_LIGHTX2V_ENABLED=1",
+        "GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT=/models/wan-animate-2/adapter.safetensors",
+        "WAN_LIGHTX2V_ENABLED=1",
+        "WAN_LIGHTX2V_CHECKPOINT=/models/wan-animate-2/adapter.safetensors",
+        "VACE_STITCH_LIGHTX2V_LORA=/models/wan-vace-lightx2v/vace.safetensors",
+    ]
+
+    result = apply_code_only_env(env)
+
+    assert "GENERATIVE_DANCE_WAN_STEPS=10" in result
+    assert "GENERATIVE_DANCE_WAN_MIN_STEPS=10" in result
+    assert all("LIGHTX2V" not in item or item.startswith("VACE_STITCH_") for item in result)
+    assert "VACE_STITCH_LIGHTX2V_LORA=/models/wan-vace-lightx2v/vace.safetensors" in result
 
 
 def test_lightx2v_uses_the_official_four_step_schedule() -> None:
