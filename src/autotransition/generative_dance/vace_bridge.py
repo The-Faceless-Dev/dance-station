@@ -220,9 +220,11 @@ class VaceBridgeComposer:
             prompt=prompt,
             frame_num=prepared.total_frames,
             seed=bridge_seed,
-            sample_steps=int(_value(parameters, "vace_steps", "vaceSteps", "steps", default=self.config.sample_steps)),
-            sample_shift=float(_value(parameters, "vace_shift", "vaceShift", "shift", default=self.config.sample_shift)),
-            guide_scale=float(_value(parameters, "vace_guidance", "vaceGuidance", "guidance", default=self.config.guide_scale)),
+            # VACE settings must not inherit the unrelated Animate steps/shift
+            # fields. Only explicit VACE keys may override the verified defaults.
+            sample_steps=int(_value(parameters, "vace_steps", "vaceSteps", default=self.config.sample_steps)),
+            sample_shift=float(_value(parameters, "vace_shift", "vaceShift", default=self.config.sample_shift)),
+            guide_scale=float(_value(parameters, "vace_guidance", "vaceGuidance", default=self.config.guide_scale)),
             model_name=str(_value(parameters, "vace_model_name", "vaceModelName", default=self.config.model_name)),
             model_size=str(_value(parameters, "vace_model_size", "vaceModelSize", default=self.config.model_size)),
             progress=lambda stage, fraction, message: report(

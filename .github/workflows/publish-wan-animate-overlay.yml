@@ -9,11 +9,11 @@ on:
       base_tag:
         description: Existing public Wan image tag to inherit
         required: true
-        default: wan-q6-vast-direct-20260905-vace-lightx2v-r22
+        default: wan-q6-vast-direct-20260905-vace-lightx2v-r23
       tag:
         description: New code-overlay tag
         required: true
-        default: wan-q6-vast-direct-20260905-vace-lightx2v-r23
+        default: wan-q6-vast-direct-20260905-vace-lightx2v-r24
 
 permissions:
   contents: read
@@ -21,8 +21,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r22' }}
-  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r23' }}
+  BASE_TAG: ${{ inputs.base_tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r23' }}
+  TAG: ${{ inputs.tag || 'wan-q6-vast-direct-20260905-vace-lightx2v-r24' }}
 
 jobs:
   publish:
@@ -74,9 +74,14 @@ jobs:
             --imageio-ffmpeg-wheel "${imageio_ffmpeg_wheel}" \
             --prometheus-client-wheel "${prometheus_client_wheel}" \
             --pyzmq-wheel "${pyzmq_wheel}" \
-            --env-override VACE_STITCH_T5_CPU=true \
+            --env-override VACE_STITCH_T5_CPU=false \
             --env-override VACE_STITCH_LIGHTX2V_ATTENTION=flash_attn2 \
             --env-override VACE_STITCH_LIGHTX2V_ROPE=torch_complex_rope \
+            --env-override VACE_STITCH_SAMPLE_STEPS=4 \
+            --env-override VACE_STITCH_SAMPLE_SHIFT=5 \
+            --env-override VACE_STITCH_GUIDE_SCALE=1 \
+            --env-override VACE_STITCH_OFFLOAD_MODEL=false \
+            --env-override VACE_STITCH_ATTENTION_BACKEND=flash_attention_2 \
             --env-override GENERATIVE_DANCE_WAN_STEPS=10 \
             --env-override GENERATIVE_DANCE_WAN_MIN_STEPS=10 \
             --worker-entrypoint containers/wan-animate-worker/entrypoint.sh

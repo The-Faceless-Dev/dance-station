@@ -78,6 +78,27 @@ def test_vace_config_exposes_prompt_and_model_settings(monkeypatch: pytest.Monke
     assert config.sample_steps == 30
 
 
+def test_vace_config_defaults_to_verified_lightx2v_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "VACE_STITCH_SAMPLE_STEPS",
+        "VACE_STITCH_SAMPLE_SHIFT",
+        "VACE_STITCH_GUIDE_SCALE",
+        "VACE_STITCH_OFFLOAD_MODEL",
+        "VACE_STITCH_T5_CPU",
+        "VACE_STITCH_ATTENTION_BACKEND",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    config = VaceStitchConfig.from_env()
+
+    assert config.sample_steps == 4
+    assert config.sample_shift == 5.0
+    assert config.guide_scale == 1.0
+    assert config.offload_model is False
+    assert config.t5_cpu is False
+    assert config.attention_backend == "flash_attention_2"
+
+
 def test_vace_config_exposes_scaled_14b_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VACE_STITCH_ENABLED", "true")
     monkeypatch.setenv("VACE_STITCH_MODEL_NAME", "vace-14B")
