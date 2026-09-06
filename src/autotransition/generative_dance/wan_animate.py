@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import shutil
 import sys
+import math
+import re
 from pathlib import Path
+from typing import Callable
 
 from autotransition.avatar.adapters.base import AvatarAdapterError
 from autotransition.avatar.adapters.command import parse_command, run_adapter_command
@@ -99,6 +102,7 @@ class WanAnimate2LiteAdapter:
         temporal_window: int | None = None,
         continuation_frames: Path | None = None,
         continuation_frame: Path | None = None,
+        progress: Callable[[str, float, str], None] | None = None,
     ) -> RenderedSegment:
         command = self.command or self.native_command
         effective_continuation = continuation_frames or continuation_frame
@@ -169,6 +173,44 @@ class WanAnimate2LiteAdapter:
         prompt_value = prompt or reference.prompt
         prompt_file = output_dir / "prompt.txt"
         prompt_file.write_text(prompt_value, encoding="utf-8")
+        report = progress or (lambda _stage, _fraction, _message: None)
+        total_windows: int | None = None
+        current_window = 0
+
+        def on_output(line: str) -> None:
+            nonlocal total_windows, current_window
+            if "stage=segment_start" in line:
+                match = re.search(r"source_frames=(\d+).*max_clip_len=(\d+).*overlap=(\d+)", line)
+                if match:
+                    frames, window, overlap = (int(value) for value in match.groups())
+                    total_windows = max(1, math.ceil(frames / max(1, window - overlap)))
+                    report("wan_prepare", 0.03, f"Wan prepared {frames} driver frames across {total_windows} window(s)")
+                return
+            match = re.search(r"stage=window_start index=(\d+).*input_frames=(\d+)", line)
+            if match:
+                current_window = int(match.group(1))
+                report("wan_window", _window_fraction(current_window - 1, 0.0), f"Wan started inference window {current_window}/{total_windows or '?'}")
+                return
+            match = re.search(r"stage=denoise step=(\d+)/(\d+)", line)
+            if match:
+                step, steps = (int(value) for value in match.groups())
+                report("wan_denoise", _window_fraction(current_window - 1, step / max(1, steps)), f"Wan denoise window {current_window}/{total_windows or '?'} step {step}/{steps}")
+                return
+            match = re.search(r"stage=window_complete index=(\d+)", line)
+            if match:
+                current_window = int(match.group(1))
+                report("wan_window", _window_fraction(current_window, 0.0), f"Wan completed inference window {current_window}/{total_windows or '?'}")
+                return
+            if "stage=vae_decode" in line:
+                report("wan_decode", _window_fraction(current_window, 0.5), "Wan decoding generated frames")
+                return
+            if "stage=render_complete" in line:
+                report("wan_render", 1.0, "Wan render completed")
+
+        def _window_fraction(completed: int, current: float) -> float:
+            count = max(1, total_windows or 1)
+            return min(1.0, 0.03 + 0.94 * ((completed + current) / count))
+
         try:
             run_adapter_command(
                 command,
@@ -217,6 +259,7 @@ class WanAnimate2LiteAdapter:
                 timeout_seconds=self.config.wan_render_timeout_seconds,
                 log_dir=output_dir,
                 component="wan-animate-2-lite",
+                on_output=on_output,
             )
         finally:
             prompt_file.unlink(missing_ok=True)

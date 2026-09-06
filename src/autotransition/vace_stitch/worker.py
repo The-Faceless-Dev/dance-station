@@ -9,7 +9,7 @@ import threading
 import traceback
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
@@ -321,9 +321,12 @@ class VaceStitchWorker:
         transparent: bool,
         bridge_index: int,
         job_seed: int,
+        progress: Callable[[str, float, str], None] | None = None,
     ) -> tuple[dict[str, Any], BridgeResult]:
         self._validate_gap(bridge)
         prompt = self._resolve_prompt(parameters, bridge)
+        report = progress or (lambda _stage, _fraction, _message: None)
+        report("vace_prepare", 0.02, f"Preparing VACE bridge {bridge.id}")
         bridge_seed = job_seed + bridge_index
         requested_gap_frames = max(1, int(round(bridge.duration_seconds * self.config.model_fps)))
         before_seconds = bridge.context_before_seconds or self.config.default_context_before_seconds
@@ -357,6 +360,7 @@ class VaceStitchWorker:
             sourceVideo=str(prepared.source_video),
             sourceMask=str(prepared.source_mask),
         )
+        report("vace_prepare", 0.12, f"Prepared VACE bridge window with {prepared.total_frames} frames")
         model_dir = output_dir / "model"
         model_output = self.runtime.generate(
             source_video=prepared.source_video,
@@ -370,7 +374,13 @@ class VaceStitchWorker:
             guide_scale=float(parameters.get("guidance", parameters.get("guide_scale", self.config.guide_scale))),
             model_name=str(parameters.get("model_name") or parameters.get("modelName") or self.config.model_name),
             model_size=str(parameters.get("model_size") or parameters.get("modelSize") or self.config.model_size),
+            progress=lambda stage, fraction, message: report(
+                stage,
+                0.12 + 0.70 * max(0.0, min(1.0, fraction)),
+                message,
+            ),
         )
+        report("vace_extract", 0.86, "Extracting the generated VACE bridge frames")
         bridge_rgb = output_dir / "generated-gap.mp4"
         extract_generated_gap(
             model_output,
@@ -392,6 +402,8 @@ class VaceStitchWorker:
                     retryable=False,
                 )
             alpha = self.matte.process(input_video=bridge_rgb, output_dir=output_dir / "matte").output_video
+            report("vace_matte", 0.96, "Generated VACE bridge matte completed")
+        report("vace_bridge", 1.0, f"VACE bridge {bridge.id} completed")
         metadata = {
             "schemaVersion": 1,
             "runtime": "wan-vace-stitch",
@@ -560,12 +572,18 @@ class VaceStitchWorker:
                 if before_index is None or after_index is None:
                     raise ValueError(f"bridge {bridge.id} references an unknown segment")
                 bridge_dir = self.job_dir(job_id) / "bridges" / f"{index + 1:03d}-{_safe_token(bridge.id, 'bridge')}"
-                self._progress(
-                    job_id,
-                    "vace_bridge",
-                    0.20 + 0.65 * (index / max(1, len(bridge_specs))),
-                    f"Generating transition {index + 1} of {len(bridge_specs)}",
-                )
+                bridge_start = index / max(1, len(bridge_specs))
+                bridge_span = 1.0 / max(1, len(bridge_specs))
+
+                def bridge_progress(stage: str, fraction: float, message: str, *, _start: float = bridge_start, _span: float = bridge_span) -> None:
+                    self._progress(
+                        job_id,
+                        stage,
+                        0.20 + 0.65 * (_start + _span * max(0.0, min(1.0, fraction))),
+                        f"Bridge {index + 1} of {len(bridge_specs)}: {message}",
+                    )
+
+                bridge_progress("vace_bridge", 0.0, f"Generating transition {index + 1} of {len(bridge_specs)}")
                 part, result = self._run_bridge(
                     job_id,
                     bridge,
@@ -581,6 +599,7 @@ class VaceStitchWorker:
                     transparent=transparent,
                     bridge_index=index,
                     job_seed=job_seed,
+                    progress=bridge_progress,
                 )
                 bridge_parts[bridge.id] = part
                 bridge_results.append(result)
@@ -693,17 +712,26 @@ class VaceStitchWorker:
                 if not stage.enabled:
                     continue
                 self._event(job_id, "vace_video_stage_started", stage=stage.stage, input=str(quality_rgb))
+                stage_start = 0.90 + 0.04 * len(stage_results)
+                self._progress(job_id, f"vace_{stage.stage}", stage_start, f"Running VACE {stage.stage} postprocessing")
                 stage_result = stage.process(
                     input_video=quality_rgb,
                     output_dir=final_dir / stage.stage,
                     width=output_width,
                     height=output_height,
                     fps=output_fps,
+                    progress=lambda fraction, message, _start=stage_start: self._progress(
+                        job_id,
+                        f"vace_{stage.stage}",
+                        _start + 0.03 * max(0.0, min(1.0, fraction)),
+                        message,
+                    ),
                 )
                 quality_rgb = stage_result.output_video
                 quality_fps = float(stage_result.probe.fps) if stage_result.probe is not None else quality_fps
                 stage_results.append(stage_result.to_dict())
                 self._event(job_id, "vace_video_stage_completed", stage=stage.stage, output=str(quality_rgb))
+                self._progress(job_id, f"vace_{stage.stage}", stage_start + 0.03, f"Completed VACE {stage.stage} postprocessing")
             quality_probe = final_probe if quality_rgb == final_rgb else probe_video(quality_rgb)
             expected_duration = expected_frame_count / float(output_fps)
             # ffmpeg reports a stream duration using container timestamps. A
@@ -732,6 +760,7 @@ class VaceStitchWorker:
             final_webm: Path | None = None
             final_preview: Path | None = None
             if transparent:
+                self._progress(job_id, "encode_transparency", 0.96, "Encoding the transparent VACE outputs")
                 if len(alpha_parts) != len(rgb_parts):
                     raise RuntimeError("transparent stitch part count does not match RGB part count")
                 final_alpha = final_dir / "dance-stitch-alpha.mov"
@@ -777,6 +806,7 @@ class VaceStitchWorker:
                     height=quality_probe.height,
                     fps=max(1, round(quality_fps)),
                 )
+                self._progress(job_id, "encode_transparency", 0.99, "Transparent VACE outputs are ready")
             result_metadata = {
                 "schemaVersion": 1,
                 "runtime": "wan-vace-stitch",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Callable
 from pathlib import Path
 from uuid import uuid4
 
@@ -146,6 +147,7 @@ class GenerativeDanceService:
         transparent: bool = True,
         continuation_frames: Path | None = None,
         continuation_frame: Path | None = None,
+        progress: Callable[[str, float, str], None] | None = None,
     ) -> RenderedSegment:
         reference = self.get_reference(reference_id)
         driver = self.get_driver(driver_id)
@@ -180,6 +182,7 @@ class GenerativeDanceService:
             reference_strength=reference_strength,
             temporal_window=temporal_window,
             continuation_frames=continuation_frames or continuation_frame,
+            progress=progress,
         )
         matte_video = None
         transparent_source_video = None
@@ -190,10 +193,14 @@ class GenerativeDanceService:
         transparent_probe = None
         anchor_sync_report: dict[str, object] | None = None
         if transparent:
+            if progress is not None:
+                progress("matte", 0.88, "Extracting the character matte")
             matte = self.matte.process(input_video=result.output_video, output_dir=output_dir / "matte")
             matte_video = matte.output_video
             matte_metadata = matte.metadata_path
             transparent_source_video = output_dir / "transparent-placed.mov"
+            if progress is not None:
+                progress("placement", 0.92, "Applying the requested canvas placement")
             apply_placement(
                 matte.output_video,
                 transparent_source_video,
@@ -243,6 +250,8 @@ class GenerativeDanceService:
             if anchor_sync_report is None:
                 anchor_sync_report = {"mode": "clip-boundary", "enabled": False, "applied": False}
             transparent_placed_video = output_dir / "transparent-placed.webm"
+            if progress is not None:
+                progress("encode_transparency", 0.96, "Encoding transparent preview artifacts")
             transparent_probe = encode_transparent_video(
                 transparent_source_video,
                 transparent_placed_video,
@@ -264,6 +273,8 @@ class GenerativeDanceService:
                 matte_metadata.unlink(missing_ok=True)
                 matte_video = None
                 matte_metadata = None
+            if progress is not None:
+                progress("encode_transparency", 1.0, "Transparent segment artifacts are ready")
         payload = json.loads(result.metadata_path.read_text(encoding="utf-8"))
         payload["outputVideo"] = self.store.relative(result.output_video)
         payload["rgbVideo"] = self.store.relative(result.output_video)

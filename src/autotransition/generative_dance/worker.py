@@ -460,6 +460,17 @@ class GenerativeDanceWorker:
             audit_enabled = self.config.identity_audit_enabled and index > 0
             audit_reports: list[dict[str, Any]] = []
             result = None
+            segment_start_progress = 0.18 + 0.50 * index / max(1, total)
+            segment_span = 0.50 / max(1, total)
+
+            def segment_progress(stage: str, fraction: float, message: str) -> None:
+                self._progress(
+                    job_id,
+                    stage,
+                    segment_start_progress + segment_span * max(0.0, min(1.0, fraction)),
+                    f"Segment {index + 1} of {total}: {message}",
+                )
+
             for attempt in range(self.config.identity_audit_max_retries + 1):
                 effective_seed = base_seed + attempt
                 render_seed = effective_seed
@@ -485,6 +496,7 @@ class GenerativeDanceWorker:
                     temporal_window=temporal_window,
                     placement=placement,
                     transparent=bool(parameters.get("transparent", True)),
+                    progress=segment_progress,
                 )
                 if not audit_enabled:
                     audit_reports.append(
@@ -564,7 +576,7 @@ class GenerativeDanceWorker:
         vace_bridges: list[Any] = []
         vace_loop = None
         if vace_config.enabled and len(rendered) > 1:
-            self._progress(job_id, "vace_bridge", 0.80, "Generating VACE transitions between dance clips")
+            self._progress(job_id, "vace_prepare", 0.70, "Preparing VACE transitions between dance clips")
             composer = VaceBridgeComposer(
                 vace_config,
                 self.store,
@@ -582,6 +594,12 @@ class GenerativeDanceWorker:
                 output_fps=sequence_fps,
                 transparent=has_alpha,
                 job_seed=None,
+                progress=lambda stage, fraction, message: self._progress(
+                    job_id,
+                    stage,
+                    0.70 + 0.18 * max(0.0, min(1.0, fraction)),
+                    message,
+                ),
             )
             self._event(
                 job_id,
@@ -593,6 +611,7 @@ class GenerativeDanceWorker:
             )
 
         if vace_parts:
+            self._progress(job_id, "assemble_timeline", 0.89, "Assembling generated dance segments and VACE bridges")
             timeline_inputs = _build_sequence_timeline(
                 rendered,
                 vace_parts=vace_parts,
@@ -600,6 +619,7 @@ class GenerativeDanceWorker:
                 vace_loop=vace_loop,
             )
         else:
+            self._progress(job_id, "assemble_timeline", 0.89, "Assembling generated dance segments")
             timeline_inputs = []
             for index, item in enumerate(rendered):
                 timeline_start = float(item["timelineStartSeconds"])
@@ -687,6 +707,7 @@ class GenerativeDanceWorker:
         if not rgb_inputs:
             raise RuntimeError("sequence rendering produced no output videos")
         final_rgb = final_dir / "generative-dance-output.mp4"
+        self._progress(job_id, "stitch_rgb", 0.91, "Writing the ordered RGB dance timeline")
         final_probe = stitch_videos(
             rgb_inputs,
             final_rgb,
@@ -718,6 +739,7 @@ class GenerativeDanceWorker:
             if not stage.enabled:
                 continue
             self._event(job_id, "vace_video_stage_started", stage=stage.stage, input=str(quality_rgb))
+            self._progress(job_id, f"vace_{stage.stage}", 0.93, f"Running VACE {stage.stage} postprocessing")
             stage_result = stage.process(
                 input_video=quality_rgb,
                 output_dir=final_dir / stage.stage,
@@ -729,11 +751,13 @@ class GenerativeDanceWorker:
             quality_probe = stage_result.probe or probe_video(quality_rgb)
             video_stages.append(stage_result.to_dict())
             self._event(job_id, "vace_video_stage_completed", stage=stage.stage, output=str(quality_rgb))
+            self._progress(job_id, f"vace_{stage.stage}", 0.95, f"Completed VACE {stage.stage} postprocessing")
 
         final_alpha = None
         final_webm = None
         final_preview = None
         if has_alpha and alpha_inputs and len(alpha_inputs) == len(rgb_inputs):
+            self._progress(job_id, "encode_transparency", 0.96, "Encoding the transparent dance outputs")
             final_alpha = final_dir / "generative-dance-output-alpha.mov"
             stitch_transparent_videos(
                 alpha_inputs,
@@ -761,6 +785,7 @@ class GenerativeDanceWorker:
             encode_transparent_video(final_alpha, final_webm, codec=self.config.transparent_codec, crf=self.config.transparent_crf)
             final_preview = final_dir / "generative-dance-output-preview.mp4"
             make_transparent_preview(final_alpha, final_preview, width=quality_probe.width, height=quality_probe.height, fps=max(1, round(quality_probe.fps)), pixel_aspect_ratio=self.config.canvas.pixel_aspect_ratio)
+            self._progress(job_id, "encode_transparency", 0.99, "Transparent dance outputs are ready")
         result_metadata = {
             "schemaVersion": 2,
             "runtime": "wan-animate",
@@ -907,6 +932,12 @@ class GenerativeDanceWorker:
                     reference_strength=reference_strength,
                     placement=placement,
                     transparent=bool(parameters.get("transparent", True)),
+                    progress=lambda stage, fraction, message: self._progress(
+                        job_id,
+                        stage,
+                        0.18 + 0.68 * max(0.0, min(1.0, fraction)),
+                        message,
+                    ),
                 )
                 self._progress(job_id, "finalize_artifacts", 0.95, "Validating placed and transparent outputs")
                 artifacts = self._artifacts(job_id, result.output_video.parent)

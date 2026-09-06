@@ -1,0 +1,55 @@
+name: Publish Flux Image Code Overlay
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_tag:
+        description: Existing public Flux image tag to inherit
+        required: true
+        default: flux2-klein-4b-20260817-r7
+      tag:
+        description: New code-overlay tag
+        required: true
+        default: flux2-klein-4b-20260906-progress-frame-r8
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-flux-image-worker
+  BASE_TAG: ${{ inputs.base_tag || 'flux2-klein-4b-20260817-r7' }}
+  TAG: ${{ inputs.tag || 'flux2-klein-4b-20260906-progress-frame-r8' }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Publish registry-only runtime overlay
+        shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python tools/publish_wan_overlay_manifest.py \
+            --runtime flux \
+            --repo-root . \
+            --repo "${IMAGE#ghcr.io/}" \
+            --base-tag "${BASE_TAG}" \
+            --tag "${TAG}" \
+            --code-only \
+            --env-override FLUX_IMAGE_AVATAR_WIDTH=480 \
+            --env-override FLUX_IMAGE_AVATAR_HEIGHT=832 \
+            --env-override FLUX_IMAGE_AVATAR_SUBJECT_SCALE=0.70

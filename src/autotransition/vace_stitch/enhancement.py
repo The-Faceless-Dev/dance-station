@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 from autotransition.avatar.adapters.base import AvatarAdapterError
 from autotransition.avatar.adapters.command import parse_command, run_adapter_command
@@ -52,7 +54,16 @@ class VaceVideoStage:
             self.command = parse_command(config.motion_interpolation_command)
             self.cwd = config.motion_interpolation_cwd
 
-    def process(self, *, input_video: Path, output_dir: Path, width: int, height: int, fps: int) -> VideoStageResult:
+    def process(
+        self,
+        *,
+        input_video: Path,
+        output_dir: Path,
+        width: int,
+        height: int,
+        fps: int,
+        progress: Callable[[float, str], None] | None = None,
+    ) -> VideoStageResult:
         if not self.enabled:
             return VideoStageResult(self.stage, input_video, False, None, None, None)
         if not self.command:
@@ -76,6 +87,14 @@ class VaceVideoStage:
         # public config numeric, but do not render a JSON/env float such as
         # 2.0 into argv as "2.0".
         command_scale = int(scale) if self.stage == "enhancement" else 1
+
+        def on_output(line: str) -> None:
+            if progress is None:
+                return
+            match = re.search(r"(?:frame|step)[ =:](\d+)(?:/(\d+))?", line, re.IGNORECASE)
+            if match and match.group(2):
+                progress(float(match.group(1)) / max(1, int(match.group(2))), f"{self.stage} {match.group(1)}/{match.group(2)}")
+
         run_adapter_command(
             self.command,
             values={
@@ -94,6 +113,7 @@ class VaceVideoStage:
             timeout_seconds=self.config.job_timeout_seconds,
             log_dir=output_dir,
             component=f"vace-{self.stage}",
+            on_output=on_output,
         )
         if not output.is_file() or output.stat().st_size == 0:
             raise AvatarAdapterError(

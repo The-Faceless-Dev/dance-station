@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import shlex
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from autotransition.avatar.adapters.base import AvatarAdapterError
 from autotransition.avatar.resources import AvatarProcessError, run_command
@@ -37,15 +37,22 @@ def run_adapter_command(
     *,
     values: Mapping[str, object],
     cwd: Path | None,
-    timeout_seconds: float,
+    timeout_seconds: float | None,
     log_dir: Path | None = None,
     component: str = "avatar-adapter",
+    on_output: Callable[[str], None] | None = None,
 ) -> None:
     command = render_command(template, **values)
     if not command:
         raise AvatarAdapterError("adapter_not_configured", "avatar adapter command is not configured", retryable=False)
     stdout_path = log_dir / f"{component}.stdout.log" if log_dir is not None else None
     stderr_path = log_dir / f"{component}.stderr.log" if log_dir is not None else None
+
+    def on_log_line(line: str) -> None:
+        print(f"[{component}] {line}", flush=True)
+        if on_output is not None:
+            on_output(line)
+
     try:
         run_command(
             command,
@@ -53,6 +60,7 @@ def run_adapter_command(
             timeout_seconds=timeout_seconds,
             stdout_path=stdout_path,
             stderr_path=stderr_path,
+            log=on_log_line,
             component=component,
         )
     except AvatarProcessError as exc:

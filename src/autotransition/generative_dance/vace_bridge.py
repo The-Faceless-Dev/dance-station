@@ -168,6 +168,7 @@ class VaceBridgeComposer:
         bridge_index: int,
         job_seed: int,
         transparent: bool,
+        progress: Callable[[str, float, str], None] | None = None,
     ) -> tuple[dict[str, Any], BridgeResult]:
         if not self.config.min_gap_seconds <= bridge.duration_seconds <= self.config.max_gap_seconds:
             raise ValueError(
@@ -175,6 +176,8 @@ class VaceBridgeComposer:
                 f"and {self.config.max_gap_seconds:g} seconds"
             )
         prompt = self._resolve_prompt(parameters, bridge)
+        report = progress or (lambda _stage, _fraction, _message: None)
+        report("vace_prepare", 0.02, f"Preparing VACE bridge {bridge.id}")
         bridge_seed = (job_seed + bridge_index) % (2**31)
         requested_gap_frames = max(1, round(bridge.duration_seconds * self.config.model_fps))
         model_width, model_height = native_vace_canvas(
@@ -209,6 +212,7 @@ class VaceBridgeComposer:
             modelName=self.config.model_name,
             modelSize=self.config.model_size,
         )
+        report("vace_prepare", 0.12, f"Prepared VACE bridge window with {prepared.total_frames} frames")
         model_output = self.runtime.generate(
             source_video=prepared.source_video,
             source_mask=prepared.source_mask,
@@ -221,7 +225,13 @@ class VaceBridgeComposer:
             guide_scale=float(_value(parameters, "vace_guidance", "vaceGuidance", "guidance", default=self.config.guide_scale)),
             model_name=str(_value(parameters, "vace_model_name", "vaceModelName", default=self.config.model_name)),
             model_size=str(_value(parameters, "vace_model_size", "vaceModelSize", default=self.config.model_size)),
+            progress=lambda stage, fraction, message: report(
+                stage,
+                0.12 + 0.70 * max(0.0, min(1.0, fraction)),
+                message,
+            ),
         )
+        report("vace_extract", 0.86, "Extracting the generated VACE bridge frames")
         bridge_rgb = output_dir / "generated-gap.mp4"
         extract_generated_gap(
             model_output,
@@ -240,6 +250,7 @@ class VaceBridgeComposer:
                     "transparent VACE output requested but the existing BiRefNet matte runtime is not configured"
                 )
             alpha = self.matte.process(input_video=bridge_rgb, output_dir=output_dir / "matte").output_video
+            report("vace_matte", 0.96, "Generated VACE bridge matte completed")
         probe = probe_video(bridge_rgb)
         metadata = {
             "schemaVersion": 1,
@@ -261,6 +272,7 @@ class VaceBridgeComposer:
         }
         metadata_path = output_dir / "bridge.json"
         self.store.write_json(metadata_path, metadata)
+        report("vace_bridge", 1.0, f"VACE bridge {bridge.id} completed")
         result = BridgeResult(
             bridge=bridge,
             prompt=prompt,
@@ -290,6 +302,7 @@ class VaceBridgeComposer:
         output_fps: int,
         transparent: bool,
         job_seed: int | None = None,
+        progress: Callable[[str, float, str], None] | None = None,
     ) -> tuple[dict[str, dict[str, Any]], list[BridgeResult], list[BridgeSpec], BridgeSpec | None]:
         bridges, loop_bridge = self.plan(rendered, sequence)
         if not bridges and loop_bridge is None:
@@ -303,6 +316,13 @@ class VaceBridgeComposer:
             before = by_id[bridge.before_segment_id]
             after = by_id[bridge.after_segment_id]
             output_dir = job_dir / "vace-bridges" / f"{index + 1:03d}-{bridge.id}"
+            bridge_start = index / max(1, len(all_bridges))
+            bridge_span = 1.0 / max(1, len(all_bridges))
+
+            def bridge_progress(stage: str, fraction: float, message: str, *, _start: float = bridge_start, _span: float = bridge_span) -> None:
+                if progress is not None:
+                    progress(stage, _start + _span * max(0.0, min(1.0, fraction)), f"Bridge {index + 1} of {len(all_bridges)}: {message}")
+
             part, result = self._run_bridge(
                 job_id=job_id,
                 bridge=bridge,
@@ -316,6 +336,7 @@ class VaceBridgeComposer:
                 bridge_index=index,
                 job_seed=seed,
                 transparent=transparent,
+                progress=bridge_progress,
             )
             parts[bridge.id] = part
             results.append(result)

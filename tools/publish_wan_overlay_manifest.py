@@ -101,14 +101,47 @@ def get_registry_token(repo: str, username: str, password: str) -> str:
     return token
 
 
-def add_file_entries(tar: tarfile.TarFile, repo_root: Path, worker_entrypoint: Path | None = None) -> None:
+def add_file_entries(
+    tar: tarfile.TarFile,
+    repo_root: Path,
+    worker_entrypoint: Path | None = None,
+    *,
+    runtime: str = "wan",
+) -> None:
     entries: list[tuple[str, Path]] = []
-    runtime_root = repo_root / "src" / "autotransition" / "generative_dance"
+    package_name = "generative_dance" if runtime == "wan" else "flux_image"
+    runtime_root = repo_root / "src" / "autotransition" / package_name
     for path in runtime_root.rglob("*"):
         if "__pycache__" in path.parts or not path.is_file():
             continue
         relative = path.relative_to(runtime_root).as_posix()
-        entries.append((f"app/src/autotransition/generative_dance/{relative}", path))
+        entries.append((f"app/src/autotransition/{package_name}/{relative}", path))
+
+    if runtime != "wan":
+        directories = {"app", "app/src", "app/src/autotransition", f"app/src/autotransition/{package_name}"}
+        for archive_name in sorted(directories):
+            info = tarfile.TarInfo(archive_name)
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            info.mtime = 0
+            info.mode = 0o755
+            info.type = tarfile.DIRTYPE
+            info.size = 0
+            tar.addfile(info)
+        for archive_name, path in sorted(entries):
+            info = tarfile.TarInfo(archive_name)
+            info.uid = 0
+            info.gid = 0
+            info.uname = ""
+            info.gname = ""
+            info.mtime = 0
+            info.mode = 0o644
+            info.size = path.stat().st_size
+            with path.open("rb") as source:
+                tar.addfile(info, source)
+        return
 
     vace_root = repo_root / "src" / "autotransition" / "vace_stitch"
     for path in vace_root.rglob("*"):
@@ -176,10 +209,15 @@ def add_file_entries(tar: tarfile.TarFile, repo_root: Path, worker_entrypoint: P
             tar.addfile(info, source)
 
 
-def make_overlay_layer(repo_root: Path, worker_entrypoint: Path | None = None) -> tuple[bytes, str, str]:
+def make_overlay_layer(
+    repo_root: Path,
+    worker_entrypoint: Path | None = None,
+    *,
+    runtime: str = "wan",
+) -> tuple[bytes, str, str]:
     raw_buffer = io.BytesIO()
     with tarfile.open(fileobj=raw_buffer, mode="w", format=tarfile.USTAR_FORMAT) as archive:
-        add_file_entries(archive, repo_root, worker_entrypoint)
+        add_file_entries(archive, repo_root, worker_entrypoint, runtime=runtime)
     raw = raw_buffer.getvalue()
     compressed = gzip.compress(raw, compresslevel=9, mtime=0)
     raw_digest = hashlib.sha256(raw).hexdigest()
@@ -419,7 +457,11 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         worker_entrypoint = Path(args.worker_entrypoint).resolve()
         if not worker_entrypoint.is_file():
             raise FileNotFoundError(f"worker entrypoint was not found: {worker_entrypoint}")
-    code_layer, code_raw_digest, code_compressed_digest = make_overlay_layer(repo_root, worker_entrypoint)
+    code_layer, code_raw_digest, code_compressed_digest = make_overlay_layer(
+        repo_root,
+        worker_entrypoint,
+        runtime=args.runtime,
+    )
     lightx_layer = None
     lightx_raw_digest = None
     lightx_compressed_digest = None
@@ -529,7 +571,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     diff_ids = config.setdefault("rootfs", {}).setdefault("diff_ids", [])
     history = config.setdefault("history", [])
     diff_ids.append(f"sha256:{code_raw_digest}")
-    history.append({"created_by": "COPY payload/ /", "comment": "Wan Animate runtime overlay"})
+    history.append({"created_by": "COPY payload/ /", "comment": f"{args.runtime} runtime overlay"})
     if lightx_layer is not None:
         diff_ids.append(f"sha256:{lightx_raw_digest}")
         history.append({"created_by": "COPY lightx2v/ /", "comment": "Wan Animate LightX2V adapter"})
@@ -581,12 +623,12 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "GENERATIVE_DANCE_STAGE_TIMEOUT_SECONDS": "7200",
         "VACE_STITCH_STAGE_TIMEOUT_SECONDS": "7200",
     }
-    if args.code_only:
+    if args.code_only and args.runtime == "wan":
         # Code-only overlays inherit the base image's environment. Remove
         # stale Animate adapter settings, then explicitly restore the current
         # no-adapter defaults without touching any VACE_* variables.
         env = apply_code_only_env(env)
-    else:
+    elif not args.code_only:
         keys = set(runtime_env_overrides) | {
             "GENERATIVE_DANCE_JOB_TIMEOUT_SECONDS",
             "VACE_STITCH_JOB_TIMEOUT_SECONDS",
@@ -747,6 +789,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", default=".")
+    parser.add_argument("--runtime", choices=("wan", "flux"), default="wan")
     parser.add_argument("--repo", default="the-faceless-dev/faceless-wan-animate-worker")
     parser.add_argument("--base-tag", required=True)
     parser.add_argument("--tag", required=True)

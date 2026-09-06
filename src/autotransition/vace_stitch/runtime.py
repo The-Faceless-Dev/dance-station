@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
+from typing import Callable
 
 from autotransition.avatar.adapters.base import AvatarAdapterError
 from autotransition.avatar.adapters.command import parse_command, run_adapter_command
@@ -161,6 +163,7 @@ class VaceRuntime:
         guide_scale: float | None = None,
         model_name: str | None = None,
         model_size: str | None = None,
+        progress: Callable[[str, float, str], None] | None = None,
     ) -> Path:
         command = self.command or self.native_command or self.lightx2v_command
         if not command:
@@ -182,6 +185,29 @@ class VaceRuntime:
         prompt_file = output_dir / "prompt.txt"
         lightx2v_config_path = output_dir / "lightx2v-config.json"
         prompt_file.write_text(prompt, encoding="utf-8")
+        report = progress or (lambda _stage, _fraction, _message: None)
+
+        def on_output(line: str) -> None:
+            stage_match = re.search(r"stage=([A-Za-z0-9_-]+)", line)
+            stage_name = stage_match.group(1) if stage_match else "inference"
+            step_match = re.search(r"(?:step|sample_step)[ =](\d+)/(\d+)", line)
+            if step_match:
+                step, steps = (int(value) for value in step_match.groups())
+                report(
+                    "vace_denoise",
+                    0.20 + 0.70 * (step / max(1, steps)),
+                    f"VACE denoise step {step}/{steps}",
+                )
+                return
+            if stage_name in {"transformer_load", "t5_load", "clip_load", "vae_load"}:
+                report("vace_load", 0.05, f"VACE loading {stage_name.replace('_', ' ')}")
+            elif stage_name in {"condition_encode", "t5_prompt_encode", "t5_prompt_encode_complete"}:
+                report("vace_conditioning", 0.15, "VACE encoding prompt and source conditioning")
+            elif stage_name in {"vae_decode", "decoded_frames_ready"}:
+                report("vace_decode", 0.92, "VACE decoding generated frames")
+            elif stage_name in {"render_complete", "segment_complete"}:
+                report("vace_inference", 0.95, "VACE inference completed")
+
         if self.config.runtime_backend == "lightx2v":
             if not self.config.lightx2v_config or not self.config.lightx2v_config.is_file():
                 raise AvatarAdapterError(
@@ -245,6 +271,7 @@ class VaceRuntime:
                 timeout_seconds=self.config.runtime_timeout_seconds,
                 log_dir=output_dir,
                 component="wan-vace-stitch",
+                on_output=on_output,
             )
         finally:
             prompt_file.unlink(missing_ok=True)
