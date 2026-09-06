@@ -154,6 +154,11 @@ def add_file_entries(
     entries.append(("app/tools/generative_dance/wan_animate_2_runner.py", runner))
     runtime = repo_root / "tools" / "generative_dance" / "wan_animate_2_runtime.py"
     entries.append(("app/tools/generative_dance/wan_animate_2_runtime.py", runtime))
+    # Wan Animate imports this shared adapter from the inherited image. Keep
+    # the callback-capable version in the overlay so the worker and adapter
+    # contracts cannot drift between base-image revisions.
+    adapter_command = repo_root / "src" / "autotransition" / "avatar" / "adapters" / "command.py"
+    entries.append(("app/src/autotransition/avatar/adapters/command.py", adapter_command))
     if worker_entrypoint is not None:
         entries.append(("usr/local/bin/wan-animate-worker-entrypoint", worker_entrypoint))
 
@@ -161,6 +166,8 @@ def add_file_entries(
         "app",
         "app/src",
         "app/src/autotransition",
+        "app/src/autotransition/avatar",
+        "app/src/autotransition/avatar/adapters",
         "app/src/autotransition/generative_dance",
         "app/src/autotransition/vace_stitch",
         "app/tools",
