@@ -60,7 +60,7 @@ jobs:
       - name: Ensure Flux container package is public
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           curl --fail-with-body --silent --show-error --location \
