@@ -450,6 +450,48 @@ def upload_blob(repo: str, token: str, digest: str, payload: bytes) -> None:
     )
 
 
+def resolve_linux_amd64_manifest(
+    base_url: str,
+    token: str,
+    manifest_body: bytes,
+) -> dict[str, Any]:
+    """Resolve an OCI/Docker index to the Linux/amd64 image it describes."""
+
+    manifest = json.loads(manifest_body)
+    media_type = manifest.get("mediaType")
+    if media_type not in {
+        "application/vnd.docker.distribution.manifest.list.v2+json",
+        "application/vnd.oci.image.index.v1+json",
+    }:
+        if media_type not in {DOCKER_MANIFEST, OCI_MANIFEST}:
+            raise RuntimeError(f"base image has unsupported manifest media type: {media_type}")
+        return manifest
+    candidates = manifest.get("manifests") or []
+    selected = next(
+        (
+            item
+            for item in candidates
+            if (item.get("platform") or {}).get("os") == "linux"
+            and (item.get("platform") or {}).get("architecture") == "amd64"
+        ),
+        None,
+    )
+    if not selected or not selected.get("digest"):
+        raise RuntimeError("base image index has no linux/amd64 image manifest")
+    _, _, child_body = registry_request(
+        "GET",
+        f"{base_url}/manifests/{selected['digest']}",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": f"{DOCKER_MANIFEST}, {OCI_MANIFEST}",
+        },
+    )
+    child = json.loads(child_body)
+    if child.get("mediaType") not in {DOCKER_MANIFEST, OCI_MANIFEST}:
+        raise RuntimeError(f"resolved base image has unsupported manifest media type: {child.get('mediaType')}")
+    return child
+
+
 def publish(args: argparse.Namespace) -> dict[str, Any]:
     repo_root = Path(args.repo_root).resolve()
     worker_entrypoint = None
@@ -556,11 +598,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         f"{base_url}/manifests/{args.base_tag}",
         headers=auth,
     )
-    base_manifest = json.loads(manifest_body)
-    if base_manifest.get("mediaType") not in {DOCKER_MANIFEST, OCI_MANIFEST}:
-        raise RuntimeError(
-            f"base image is not a single Docker/OCI image manifest: {base_manifest.get('mediaType')}"
-        )
+    base_manifest = resolve_linux_amd64_manifest(base_url, token, manifest_body)
 
     _, _, config_body = registry_request(
         "GET",
