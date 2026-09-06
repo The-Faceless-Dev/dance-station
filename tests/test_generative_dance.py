@@ -105,6 +105,8 @@ def test_code_only_wan_overlay_removes_animate_adapter_but_preserves_vace() -> N
     env = [
         "GENERATIVE_DANCE_WAN_STEPS=4",
         "GENERATIVE_DANCE_WAN_MIN_STEPS=4",
+        "GENERATIVE_DANCE_WAN_TEMPORAL_WINDOW=17",
+        "GENERATIVE_DANCE_WAN_TEMPORAL_CONTEXT_FRAMES=3",
         "GENERATIVE_DANCE_WAN_LIGHTX2V_ENABLED=1",
         "GENERATIVE_DANCE_WAN_LIGHTX2V_CHECKPOINT=/models/wan-animate-2/adapter.safetensors",
         "WAN_LIGHTX2V_ENABLED=1",
@@ -116,6 +118,10 @@ def test_code_only_wan_overlay_removes_animate_adapter_but_preserves_vace() -> N
 
     assert "GENERATIVE_DANCE_WAN_STEPS=10" in result
     assert "GENERATIVE_DANCE_WAN_MIN_STEPS=10" in result
+    assert "GENERATIVE_DANCE_WAN_TEMPORAL_WINDOW=81" in result
+    assert "GENERATIVE_DANCE_WAN_TEMPORAL_CONTEXT_FRAMES=5" in result
+    assert "GENERATIVE_DANCE_WAN_TEMPORAL_WINDOW=17" not in result
+    assert "GENERATIVE_DANCE_WAN_TEMPORAL_CONTEXT_FRAMES=3" not in result
     assert all("LIGHTX2V" not in item or item.startswith("VACE_STITCH_") for item in result)
     assert "VACE_STITCH_LIGHTX2V_LORA=/models/wan-vace-lightx2v/vace.safetensors" in result
 

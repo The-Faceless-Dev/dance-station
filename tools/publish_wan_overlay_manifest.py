@@ -40,6 +40,11 @@ ANIMATE_LIGHTX2V_ENV_KEYS = {
 CODE_ONLY_RUNTIME_ENV_OVERRIDES = {
     "GENERATIVE_DANCE_WAN_STEPS": "10",
     "GENERATIVE_DANCE_WAN_MIN_STEPS": "10",
+    # The inherited r22 lineage can still carry the old Q6+LightX2V
+    # 17-frame profile. Animate no longer uses that adapter and must retain
+    # the verified large-window configuration.
+    "GENERATIVE_DANCE_WAN_TEMPORAL_WINDOW": "81",
+    "GENERATIVE_DANCE_WAN_TEMPORAL_CONTEXT_FRAMES": "5",
 }
 
 # The VACE runtime shares these large companion files with Wan Animate. This
