@@ -316,6 +316,19 @@ def _alpha_encoder_args(codec: str, crf: int) -> list[str]:
     ]
 
 
+def _concat_filter_graph(input_count: int, *, input_filter: str, output_filter: str) -> str:
+    """Build an explicit concat graph so every input is consumed in order."""
+
+    if input_count < 1:
+        raise ValueError("at least one video input is required")
+    normalized = ";".join(
+        f"[{index}:v:0]{input_filter}[concat{index}]"
+        for index in range(input_count)
+    )
+    joined = "".join(f"[concat{index}]" for index in range(input_count))
+    return f"{normalized};{joined}concat=n={input_count}:v=1:a=0,{output_filter}[out]"
+
+
 def make_blank_video(
     output: Path,
     *,
@@ -767,30 +780,26 @@ def stitch_transparent_videos(
     if pixel_aspect_ratio <= 0:
         raise ValueError("pixel aspect ratio must be positive")
     output.parent.mkdir(parents=True, exist_ok=True)
-    concat_file = output.with_suffix(".concat.txt")
-    concat_file.write_text(
-        "".join(f"file '{path.resolve().as_posix().replace(chr(39), chr(39) + chr(92) + chr(39) + chr(39))}'\n" for path in inputs),
-        encoding="utf-8",
+    filter_graph = _concat_filter_graph(
+        len(inputs),
+        input_filter=f"scale={width}:{height}:flags=lanczos,setsar={_format_filter_number(pixel_aspect_ratio)},format=rgba",
+        output_filter=f"fps={fps},format=rgba",
     )
-    try:
-        command = [
-            ffmpeg,
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_file),
+    command = [ffmpeg, "-y"]
+    for path in inputs:
+        command.extend(["-i", str(path)])
+    command.extend(
+        [
+            "-filter_complex",
+            filter_graph,
+            "-map",
+            "[out]",
             "-an",
-            "-vf",
-            f"scale={width}:{height}:flags=lanczos,fps={fps},setsar={_format_filter_number(pixel_aspect_ratio)},format=rgba",
             *_alpha_encoder_args(codec, crf),
             str(output),
         ]
-        _run_ffmpeg(command, purpose="transparent dance composition")
-    finally:
-        concat_file.unlink(missing_ok=True)
+    )
+    _run_ffmpeg(command, purpose="transparent dance composition")
     result = probe_video(output)
     if result.width != width or result.height != height:
         raise VideoToolError(f"transparent composition produced unexpected dimensions: {result.to_dict()}")
@@ -808,25 +817,21 @@ def stitch_videos(inputs: list[Path], output: Path, *, width: int, height: int, 
     if not ffmpeg:
         raise VideoToolError("ffmpeg is required to compose dance videos")
     output.parent.mkdir(parents=True, exist_ok=True)
-    concat_file = output.with_suffix(".concat.txt")
-    concat_lines = []
+    filter_graph = _concat_filter_graph(
+        len(inputs),
+        input_filter=f"scale={width}:{height}:flags=lanczos,setsar=1,format=yuv420p",
+        output_filter=f"fps={fps},format=yuv420p",
+    )
+    command = [ffmpeg, "-y"]
     for path in inputs:
-        escaped_path = path.resolve().as_posix().replace("'", "'\\''")
-        concat_lines.append(f"file '{escaped_path}'")
-    concat_file.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
-    try:
-        command = [
-            ffmpeg,
-            "-y",
-            "-f",
-            "concat",
-            "-safe",
-            "0",
-            "-i",
-            str(concat_file),
+        command.extend(["-i", str(path)])
+    command.extend(
+        [
+            "-filter_complex",
+            filter_graph,
+            "-map",
+            "[out]",
             "-an",
-            "-vf",
-            f"scale={width}:{height}:flags=lanczos,fps={fps},setsar=1",
             "-c:v",
             "libx264",
             "-pix_fmt",
@@ -835,7 +840,6 @@ def stitch_videos(inputs: list[Path], output: Path, *, width: int, height: int, 
             "+faststart",
             str(output),
         ]
-        _run_ffmpeg(command, purpose="dance composition")
-    finally:
-        concat_file.unlink(missing_ok=True)
+    )
+    _run_ffmpeg(command, purpose="dance composition")
     return probe_video(output)
