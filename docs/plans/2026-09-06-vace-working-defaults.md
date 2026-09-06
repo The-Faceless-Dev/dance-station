@@ -7,15 +7,16 @@ those settings the defaults in the worker image used by production.
 
 ## Changes
 
-- Set the VACE configuration defaults to 4 inference steps and sample shift 5.
+- Set the VACE configuration defaults to 4 inference steps, sample shift 5,
+  guide scale 5, and CPU T5 offload, matching the successful 5090 run.
 - Add the same explicit environment overrides to the Wan code-overlay workflow.
 - Keep Animate LightX2V disabled and keep VACE LightX2V enabled separately.
 - Add regression coverage for the VACE defaults.
 - Publish a new immutable overlay tag containing the VACE configuration and the
   previously fixed shared adapter file.
-- Base the replacement overlay on the known 120-layer r22 image so the final
+- Base each replacement overlay on the known 120-layer r22 image so the final
   image stays below Vast's layer-registration depth limit; do not stack another
-  five dependency layers on top of r23.
+  five dependency layers on top of a previous overlay.
 
 ## Tradeoffs and risks
 

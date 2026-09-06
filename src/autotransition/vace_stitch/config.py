@@ -172,11 +172,11 @@ class VaceStitchConfig:
             # production runs. Keep these independent from Animate settings.
             sample_steps=integer("VACE_STITCH_SAMPLE_STEPS", 4),
             sample_shift=number("VACE_STITCH_SAMPLE_SHIFT", 5.0),
-            guide_scale=number("VACE_STITCH_GUIDE_SCALE", 1.0),
+            guide_scale=number("VACE_STITCH_GUIDE_SCALE", 5.0),
             context_scale=number("VACE_STITCH_CONTEXT_SCALE", 1.0),
             sample_solver=os.getenv("VACE_STITCH_SAMPLE_SOLVER", "unipc"),
             offload_model=_bool("VACE_STITCH_OFFLOAD_MODEL", False),
-            t5_cpu=_bool("VACE_STITCH_T5_CPU", False),
+            t5_cpu=_bool("VACE_STITCH_T5_CPU", True),
             attention_backend=os.getenv("VACE_STITCH_ATTENTION_BACKEND", "flash_attention_2").lower(),
             tf32=_bool("VACE_STITCH_TF32", False),
             temporary_background=os.getenv("VACE_STITCH_TEMPORARY_BACKGROUND", "0x7f7f7f"),

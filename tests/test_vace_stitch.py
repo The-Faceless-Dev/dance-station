@@ -93,9 +93,9 @@ def test_vace_config_defaults_to_verified_lightx2v_settings(monkeypatch: pytest.
 
     assert config.sample_steps == 4
     assert config.sample_shift == 5.0
-    assert config.guide_scale == 1.0
+    assert config.guide_scale == 5.0
     assert config.offload_model is False
-    assert config.t5_cpu is False
+    assert config.t5_cpu is True
     assert config.attention_backend == "flash_attention_2"
 
 
