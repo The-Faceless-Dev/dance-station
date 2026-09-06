@@ -646,24 +646,29 @@ class GenerativeDanceWorker:
                 alpha_inputs.append(Path(str(alpha_path)))
         input_probes = []
         expected_frames = 0
+        expected_duration = 0.0
         for item in timeline_inputs:
             probe = probe_video(item["rgb"])
             frames = vace_frame_count(probe, sequence_fps)
             expected_frames += frames
+            expected_duration += probe.duration_seconds
             input_probes.append(
                 {
                     "kind": item["kind"],
                     "id": item["id"],
                     "path": str(item["rgb"]),
                     "durationSeconds": probe.duration_seconds,
-                    "frameCount": frames,
+                    "frameCountEstimate": frames,
                 }
             )
+        duration_tolerance = max(0.25, (3.0 / sequence_fps) * max(1, len(input_probes)))
         self._event(
             job_id,
             "sequence_timeline_assembled",
             inputCount=len(input_probes),
-            expectedFrameCount=expected_frames,
+            expectedFrameCountEstimate=expected_frames,
+            expectedDurationSeconds=expected_duration,
+            durationToleranceSeconds=duration_tolerance,
             inputs=input_probes,
         )
         assembly_metadata_path = final_dir / "sequence-assembly.json"
@@ -673,7 +678,9 @@ class GenerativeDanceWorker:
                 "schemaVersion": 1,
                 "fps": sequence_fps,
                 "inputs": input_probes,
-                "expectedFrameCount": expected_frames,
+                "expectedFrameCountEstimate": expected_frames,
+                "expectedDurationSeconds": expected_duration,
+                "durationToleranceSeconds": duration_tolerance,
                 "loopIncluded": bool(vace_loop),
             },
         )
@@ -688,10 +695,14 @@ class GenerativeDanceWorker:
             fps=sequence_fps,
         )
         actual_frames = vace_frame_count(final_probe, sequence_fps)
-        if actual_frames != expected_frames:
+        duration_delta = abs(final_probe.duration_seconds - expected_duration)
+        if duration_delta > duration_tolerance:
             raise RuntimeError(
-                "assembled sequence frame count does not match its ordered inputs: "
-                f"expected={expected_frames} actual={actual_frames} inputs={len(input_probes)}"
+                "assembled sequence duration does not match its ordered inputs: "
+                f"expected={expected_duration:.6f}s actual={final_probe.duration_seconds:.6f}s "
+                f"delta={duration_delta:.6f}s tolerance={duration_tolerance:.6f}s "
+                f"frameEstimate={expected_frames} actualFrames={actual_frames} "
+                f"inputs={len(input_probes)}"
             )
 
         # Postprocessing is deliberately after the complete RGB timeline is
@@ -777,7 +788,12 @@ class GenerativeDanceWorker:
             "assembly": {
                 "metadataPath": str(assembly_metadata_path),
                 "inputs": input_probes,
-                "expectedFrameCount": expected_frames,
+                "expectedFrameCountEstimate": expected_frames,
+                "expectedDurationSeconds": expected_duration,
+                "actualDurationSeconds": final_probe.duration_seconds,
+                "durationDeltaSeconds": duration_delta,
+                "durationToleranceSeconds": duration_tolerance,
+                "actualFrameCountObserved": actual_frames,
                 "actualFrameCount": actual_frames,
                 "loopIncluded": bool(vace_loop),
             },
