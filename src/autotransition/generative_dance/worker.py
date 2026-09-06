@@ -56,6 +56,60 @@ def _sequence_segments_are_adjacent(
     return abs(timeline_start - previous_timeline_end) <= (1.0 / fps + 0.01)
 
 
+def _build_sequence_timeline(
+    rendered: list[dict[str, Any]],
+    *,
+    vace_parts: dict[str, dict[str, Any]],
+    vace_bridges: list[Any],
+    vace_loop: Any | None,
+) -> list[dict[str, Any]]:
+    """Build the exact ordered timeline that will be handed to FFmpeg."""
+
+    timeline: list[dict[str, Any]] = []
+    for index, item in enumerate(rendered):
+        result = item["result"]
+        timeline.append(
+            {
+                "kind": "segment",
+                "id": str(item["segmentId"]),
+                "rgb": result.output_video,
+                "alpha": result.transparent_source_video or result.transparent_video,
+            }
+        )
+        if not vace_parts or index >= len(rendered) - 1:
+            continue
+        if index >= len(vace_bridges):
+            raise RuntimeError(
+                "VACE returned fewer boundary bridges than the rendered sequence requires: "
+                f"required={len(rendered) - 1} returned={len(vace_bridges)}"
+            )
+        bridge = vace_bridges[index]
+        part = vace_parts.get(bridge.id)
+        if part is None:
+            raise RuntimeError(f"VACE bridge {bridge.id} was generated but has no assembled video part")
+        timeline.append(
+            {
+                "kind": "loop-bridge" if bridge.loop else "bridge",
+                "id": bridge.id,
+                "rgb": part["rgb"],
+                "alpha": part.get("alpha"),
+            }
+        )
+    if vace_loop is not None:
+        part = vace_parts.get(vace_loop.id)
+        if part is None:
+            raise RuntimeError(f"VACE loop bridge {vace_loop.id} was generated but has no assembled video part")
+        timeline.append(
+            {
+                "kind": "loop-bridge",
+                "id": vace_loop.id,
+                "rgb": part["rgb"],
+                "alpha": part.get("alpha"),
+            }
+        )
+    return timeline
+
+
 def _resolve_identity_seed(parameters: dict[str, Any]) -> int:
     """Resolve one seed for the whole request, rather than one per segment."""
 
@@ -277,6 +331,34 @@ class GenerativeDanceWorker:
         sequence_fps = int(round(float(sequence.get("fps") or self.config.canvas.fps)))
         if sequence_fps < 1 or sequence_fps > 120:
             raise ValueError("generative dance sequence FPS must be between 1 and 120")
+        requested_temporal_window = sequence.get(
+            "maxFramesPerGeneration",
+            sequence.get("max_frames_per_generation"),
+        )
+        temporal_window: int | None = None
+        if requested_temporal_window is not None:
+            try:
+                temporal_window = int(requested_temporal_window)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("generative dance sequence maxFramesPerGeneration must be an integer") from exc
+            if temporal_window < 2:
+                raise ValueError("generative dance sequence maxFramesPerGeneration must be at least 2")
+            if temporal_window > self.config.wan_temporal_window:
+                raise ValueError(
+                    "generative dance sequence maxFramesPerGeneration cannot exceed the worker temporal window "
+                    f"({self.config.wan_temporal_window})"
+                )
+            if temporal_window <= self.config.wan_temporal_context_frames:
+                raise ValueError(
+                    "generative dance sequence maxFramesPerGeneration must be larger than the worker context overlap"
+                )
+        self._event(
+            job_id,
+            "sequence_window_policy",
+            requestedMaxFramesPerGeneration=temporal_window,
+            effectiveMaxFramesPerGeneration=temporal_window or self.config.wan_temporal_window,
+            contextFrames=self.config.wan_temporal_context_frames,
+        )
         if identity_seed is None:
             identity_seed = _resolve_identity_seed(parameters)
         if reference_strength is None:
@@ -400,6 +482,7 @@ class GenerativeDanceWorker:
                     inference_steps=int(parameters.get("steps", parameters.get("num_inference_steps", self.config.wan_inference_steps))),
                     text_length=int(parameters.get("text_length", parameters.get("textLength", self.config.wan_text_length))),
                     reference_strength=reference_strength,
+                    temporal_window=temporal_window,
                     placement=placement,
                     transparent=bool(parameters.get("transparent", True)),
                 )
@@ -509,16 +592,16 @@ class GenerativeDanceWorker:
                 modelSize=vace_config.model_size,
             )
 
-        for index, item in enumerate(rendered):
-            if vace_parts and index > 0:
-                bridge = vace_bridges[index - 1]
-                part = vace_parts[bridge.id]
-                rgb_inputs.append(part["rgb"])
-                if has_alpha:
-                    if part["alpha"] is None:
-                        raise RuntimeError(f"VACE bridge {bridge.id} has no alpha output")
-                    alpha_inputs.append(part["alpha"])
-            elif not vace_parts:
+        if vace_parts:
+            timeline_inputs = _build_sequence_timeline(
+                rendered,
+                vace_parts=vace_parts,
+                vace_bridges=vace_bridges,
+                vace_loop=vace_loop,
+            )
+        else:
+            timeline_inputs = []
+            for index, item in enumerate(rendered):
                 timeline_start = float(item["timelineStartSeconds"])
                 cursor = max(
                     (float(previous["timelineEndSeconds"]) for previous in rendered[:index]),
@@ -526,39 +609,74 @@ class GenerativeDanceWorker:
                 )
                 if timeline_start > cursor + tolerance:
                     gap = timeline_start - cursor
-                    rgb_inputs.append(
-                        make_blank_video(
-                            final_dir / f"gap-{len(rgb_inputs):03d}.mp4",
+                    gap_rgb = make_blank_video(
+                        final_dir / f"gap-{len(timeline_inputs):03d}.mp4",
+                        width=self.config.canvas.width,
+                        height=self.config.canvas.height,
+                        fps=sequence_fps,
+                        duration_seconds=gap,
+                    ).path
+                    gap_alpha = None
+                    if has_alpha:
+                        gap_alpha = make_blank_video(
+                            final_dir / f"gap-{len(timeline_inputs):03d}.mov",
                             width=self.config.canvas.width,
                             height=self.config.canvas.height,
                             fps=sequence_fps,
                             duration_seconds=gap,
+                            transparent=True,
+                            crf=self.config.transparent_crf,
                         ).path
-                    )
-                    if has_alpha:
-                        alpha_inputs.append(
-                            make_blank_video(
-                                final_dir / f"gap-{len(alpha_inputs):03d}.mov",
-                                width=self.config.canvas.width,
-                                height=self.config.canvas.height,
-                                fps=sequence_fps,
-                                duration_seconds=gap,
-                                transparent=True,
-                                crf=self.config.transparent_crf,
-                            ).path
-                        )
-            result = item["result"]
-            rgb_inputs.append(result.output_video)
-            alpha_path = result.transparent_source_video or result.transparent_video
-            if has_alpha and alpha_path is not None:
-                alpha_inputs.append(alpha_path)
-        if vace_loop is not None:
-            loop_part = vace_parts[vace_loop.id]
-            rgb_inputs.append(loop_part["rgb"])
-            if has_alpha:
-                if loop_part["alpha"] is None:
-                    raise RuntimeError("VACE loop bridge has no alpha output")
-                alpha_inputs.append(loop_part["alpha"])
+                    timeline_inputs.append({"kind": "gap", "id": f"gap-{index + 1}", "rgb": gap_rgb, "alpha": gap_alpha})
+                result = item["result"]
+                timeline_inputs.append(
+                    {
+                        "kind": "segment",
+                        "id": str(item["segmentId"]),
+                        "rgb": result.output_video,
+                        "alpha": result.transparent_source_video or result.transparent_video,
+                    }
+                )
+        rgb_inputs = [Path(str(item["rgb"])) for item in timeline_inputs]
+        if has_alpha:
+            for item in timeline_inputs:
+                alpha_path = item.get("alpha")
+                if alpha_path is None:
+                    raise RuntimeError(f"sequence timeline item {item['id']} has no alpha output")
+                alpha_inputs.append(Path(str(alpha_path)))
+        input_probes = []
+        expected_frames = 0
+        for item in timeline_inputs:
+            probe = probe_video(item["rgb"])
+            frames = vace_frame_count(probe, sequence_fps)
+            expected_frames += frames
+            input_probes.append(
+                {
+                    "kind": item["kind"],
+                    "id": item["id"],
+                    "path": str(item["rgb"]),
+                    "durationSeconds": probe.duration_seconds,
+                    "frameCount": frames,
+                }
+            )
+        self._event(
+            job_id,
+            "sequence_timeline_assembled",
+            inputCount=len(input_probes),
+            expectedFrameCount=expected_frames,
+            inputs=input_probes,
+        )
+        assembly_metadata_path = final_dir / "sequence-assembly.json"
+        self.store.write_json(
+            assembly_metadata_path,
+            {
+                "schemaVersion": 1,
+                "fps": sequence_fps,
+                "inputs": input_probes,
+                "expectedFrameCount": expected_frames,
+                "loopIncluded": bool(vace_loop),
+            },
+        )
         if not rgb_inputs:
             raise RuntimeError("sequence rendering produced no output videos")
         final_rgb = final_dir / "generative-dance-output.mp4"
@@ -569,6 +687,12 @@ class GenerativeDanceWorker:
             height=self.config.canvas.height,
             fps=sequence_fps,
         )
+        actual_frames = vace_frame_count(final_probe, sequence_fps)
+        if actual_frames != expected_frames:
+            raise RuntimeError(
+                "assembled sequence frame count does not match its ordered inputs: "
+                f"expected={expected_frames} actual={actual_frames} inputs={len(input_probes)}"
+            )
 
         # Postprocessing is deliberately after the complete RGB timeline is
         # composed. The alpha timeline is transformed to the resulting frame
@@ -650,6 +774,13 @@ class GenerativeDanceWorker:
                 "config": vace_config.to_public_dict(),
             },
             "videoStages": video_stages,
+            "assembly": {
+                "metadataPath": str(assembly_metadata_path),
+                "inputs": input_probes,
+                "expectedFrameCount": expected_frames,
+                "actualFrameCount": actual_frames,
+                "loopIncluded": bool(vace_loop),
+            },
             "sequence": sequence,
             "segments": [
                 {

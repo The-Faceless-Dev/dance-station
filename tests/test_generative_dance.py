@@ -18,6 +18,7 @@ from autotransition.generative_dance.service import GenerativeDanceService
 from autotransition.generative_dance.video import VideoProbe
 from autotransition.generative_dance.wan_animate import WanAnimate2LiteAdapter
 from autotransition.generative_dance.worker import (
+    _build_sequence_timeline,
     _resolve_identity_seed,
     _resolve_reference_strength,
     _sequence_segments_are_adjacent,
@@ -452,6 +453,29 @@ def test_sequence_continuity_carries_only_across_adjacent_segments() -> None:
     assert not _sequence_segments_are_adjacent(2.2, 2.0, fps=24)
 
 
+def test_sequence_timeline_includes_each_bridge_and_the_loop() -> None:
+    rendered = [
+        {"segmentId": "first", "result": SimpleNamespace(output_video=Path("first.mp4"), transparent_video=None, transparent_source_video=None)},
+        {"segmentId": "second", "result": SimpleNamespace(output_video=Path("second.mp4"), transparent_video=None, transparent_source_video=None)},
+    ]
+    timeline = _build_sequence_timeline(
+        rendered,
+        vace_parts={
+            "bridge-1": {"rgb": Path("bridge-1.mp4"), "alpha": None},
+            "bridge-2": {"rgb": Path("bridge-2.mp4"), "alpha": None},
+        },
+        vace_bridges=[SimpleNamespace(id="bridge-1", loop=False)],
+        vace_loop=SimpleNamespace(id="bridge-2", loop=True),
+    )
+
+    assert [(item["kind"], item["id"]) for item in timeline] == [
+        ("segment", "first"),
+        ("bridge", "bridge-1"),
+        ("segment", "second"),
+        ("loop-bridge", "bridge-2"),
+    ]
+
+
 def test_worker_sequence_resets_continuation_at_source_boundaries(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -540,7 +564,7 @@ def test_worker_sequence_resets_continuation_at_source_boundaries(
 
     def fake_stitch(inputs: list[Path], output: Path, **_: object) -> None:
         output.write_bytes(b"stitched")
-        return VideoProbe(output, 640, 800, 24.0, len(inputs), len(inputs) * 24, "yuv420p")
+        return VideoProbe(output, 640, 800, 24.0, len(inputs) * 10, len(inputs) * 240, "yuv420p")
 
     monkeypatch.setattr(worker, "_download", fake_download)
     monkeypatch.setattr(worker_module, "probe_video", lambda _path: VideoProbe(Path("source.mp4"), 640, 800, 24.0, 10.0, 240, "yuv420p"))
