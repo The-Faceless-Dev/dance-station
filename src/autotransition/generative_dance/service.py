@@ -141,6 +141,7 @@ class GenerativeDanceService:
         inference_steps: int | None = None,
         text_length: int | None = None,
         reference_strength: float | None = None,
+        temporal_window: int | None = None,
         placement: SegmentPlacement | None = None,
         transparent: bool = True,
         continuation_frames: Path | None = None,
@@ -177,6 +178,7 @@ class GenerativeDanceService:
             inference_steps=inference_steps,
             text_length=text_length,
             reference_strength=reference_strength,
+            temporal_window=temporal_window,
             continuation_frames=continuation_frames or continuation_frame,
         )
         matte_video = None
