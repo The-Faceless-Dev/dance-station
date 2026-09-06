@@ -123,8 +123,11 @@ def test_wan_overlay_restores_vace_shared_companion_paths() -> None:
     source = Path("tools/publish_wan_overlay_manifest.py").read_text(encoding="utf-8")
 
     assert '"models/wan-vace-14b/models_t5_umt5-xxl-enc-bf16.pth"' in source
+    assert '"../../Wan-AI/models_t5_umt5-xxl-enc-bf16.pth"' in source
     assert '"models/wan-vace-14b/Wan2.1_VAE.pth"' in source
+    assert '"../../Wan-AI/vae.pth"' in source
     assert '"models/wan-vace-14b/google/umt5-xxl"' in source
+    assert '"../../../Wan-AI/umt5-xxl"' in source
     assert 'info.type = tarfile.SYMTYPE' in source
 
 

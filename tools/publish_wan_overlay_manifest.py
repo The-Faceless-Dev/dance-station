@@ -42,14 +42,15 @@ CODE_ONLY_RUNTIME_ENV_OVERRIDES = {
     "GENERATIVE_DANCE_WAN_MIN_STEPS": "10",
 }
 
-# The VACE runtime shares these large companion files with Wan Animate. A
-# code-only overlay must recreate the same paths used by the VACE loader when
-# its base image was assembled through the dedicated VACE overlay workflow.
+# The VACE runtime shares these large companion files with Wan Animate. This
+# image lineage stores the shared companions under /Wan-AI, so the code-only
+# overlay must recreate the paths used by the VACE loader without duplicating
+# those large files.
 VACE_SHARED_SYMLINKS = {
     "models/wan-vace-14b/models_t5_umt5-xxl-enc-bf16.pth":
-        "../wan-animate-2/companions/models_t5_umt5-xxl-enc-bf16.pth",
-    "models/wan-vace-14b/Wan2.1_VAE.pth": "../wan-animate-2/companions/vae.pth",
-    "models/wan-vace-14b/google/umt5-xxl": "../../wan-animate-2/companions/umt5-xxl",
+        "../../Wan-AI/models_t5_umt5-xxl-enc-bf16.pth",
+    "models/wan-vace-14b/Wan2.1_VAE.pth": "../../Wan-AI/vae.pth",
+    "models/wan-vace-14b/google/umt5-xxl": "../../../Wan-AI/umt5-xxl",
 }
 
 
