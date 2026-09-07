@@ -570,7 +570,10 @@ class GenerativeDanceWorker:
         rgb_inputs: list[Path] = []
         alpha_inputs: list[Path] = []
         has_alpha = bool(parameters.get("transparent", True))
-        vace_config = VaceStitchConfig.from_env()
+        # Environment values remain the compatibility fallback. A submitted
+        # job may override only the bounded postprocess controls; model,
+        # attention, VACE, and Animate settings remain worker-controlled.
+        vace_config = VaceStitchConfig.from_env().with_request_postprocess(parameters)
         vace_parts: dict[str, dict[str, Any]] = {}
         vace_results: list[Any] = []
         vace_bridges: list[Any] = []

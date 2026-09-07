@@ -99,6 +99,29 @@ def test_vace_config_defaults_to_verified_lightx2v_settings(monkeypatch: pytest.
     assert config.attention_backend == "flash_attention_2"
 
 
+def test_vace_request_postprocess_overrides_only_video_stages(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VACE_STITCH_SAMPLE_STEPS", "4")
+    monkeypatch.setenv("VACE_STITCH_ENHANCEMENT_ENABLED", "false")
+    monkeypatch.setenv("VACE_STITCH_MOTION_INTERPOLATION_ENABLED", "false")
+    config = VaceStitchConfig.from_env()
+
+    overridden = config.with_request_postprocess({
+        "postprocess": {
+            "enhancement_enabled": True,
+            "enhancement_scale": 2,
+            "motion_interpolation_enabled": True,
+            "motion_interpolation_target_fps": 48,
+        },
+    })
+
+    assert overridden.enhancement_enabled is True
+    assert overridden.enhancement_scale == 2
+    assert overridden.motion_interpolation_enabled is True
+    assert overridden.motion_interpolation_target_fps == 48
+    assert overridden.sample_steps == config.sample_steps
+    assert overridden.runtime_backend == config.runtime_backend
+
+
 def test_vace_config_exposes_scaled_14b_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VACE_STITCH_ENABLED", "true")
     monkeypatch.setenv("VACE_STITCH_MODEL_NAME", "vace-14B")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -214,6 +214,49 @@ class VaceStitchConfig:
             max_upload_bytes=integer("VACE_STITCH_MAX_UPLOAD_BYTES", 2_147_483_648),
             keep_intermediate=_bool("VACE_STITCH_KEEP_INTERMEDIATE", True),
         )
+
+    def with_request_postprocess(self, parameters: dict[str, Any]) -> "VaceStitchConfig":
+        """Apply bounded per-job postprocess choices without changing env defaults."""
+
+        raw = parameters.get("postprocess")
+        if raw is None:
+            return self
+        if not isinstance(raw, dict):
+            raise ValueError("Wan Animate postprocess must be an object")
+
+        def optional_bool(name: str, current: bool) -> bool:
+            value = raw.get(name)
+            if value is None:
+                return current
+            if not isinstance(value, bool):
+                raise ValueError(f"Wan Animate postprocess {name} must be a boolean")
+            return value
+
+        def optional_number(name: str, current: float, minimum: float, maximum: float) -> float:
+            value = raw.get(name)
+            if value is None:
+                return current
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not minimum <= float(value) <= maximum:
+                raise ValueError(f"Wan Animate postprocess {name} must be between {minimum:g} and {maximum:g}")
+            return float(value)
+
+        def optional_integer(name: str, current: int, minimum: int, maximum: int) -> int:
+            value = raw.get(name)
+            if value is None:
+                return current
+            if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+                raise ValueError(f"Wan Animate postprocess {name} must be an integer between {minimum} and {maximum}")
+            return value
+
+        configured = replace(
+            self,
+            enhancement_enabled=optional_bool("enhancement_enabled", self.enhancement_enabled),
+            enhancement_scale=optional_number("enhancement_scale", self.enhancement_scale, 1.0, 4.0),
+            motion_interpolation_enabled=optional_bool("motion_interpolation_enabled", self.motion_interpolation_enabled),
+            motion_interpolation_target_fps=optional_integer("motion_interpolation_target_fps", self.motion_interpolation_target_fps, 24, 60),
+        )
+        configured.validate()
+        return configured
 
     def validate(self) -> None:
         if self.runtime_backend not in {"command", "native", "lightx2v"}:
