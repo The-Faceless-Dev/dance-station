@@ -148,8 +148,8 @@ def _request(payload: dict[str, Any], loras: tuple[FluxLoRARequest, ...]) -> Flu
     return FluxImageRequest(
         prompt=str(parameters.get("prompt") or payload.get("prompt") or ""),
         negative_prompt=str(parameters.get("negative_prompt") or parameters.get("negativePrompt") or ""),
-        width=int(parameters.get("width", 1328)),
-        height=int(parameters.get("height", 1328)),
+        width=int(parameters.get("width", 960)),
+        height=int(parameters.get("height", 1664)),
         steps=int(parameters.get("steps", parameters.get("num_inference_steps", 4))),
         true_cfg_scale=float(parameters.get("true_cfg_scale", parameters.get("trueCfgScale", 1.0))),
         seed=int(parameters["seed"]) if parameters.get("seed") is not None else None,

@@ -13,7 +13,7 @@ on:
       tag:
         description: New code-overlay tag
         required: true
-        default: flux2-klein-4b-20260906-progress-frame-r8
+        default: flux2-klein-4b-20260907-portrait-960x1664-r9
 
 permissions:
   contents: read
@@ -22,7 +22,7 @@ permissions:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-flux-image-worker
   BASE_TAG: ${{ inputs.base_tag || 'flux2-klein-4b-20260817-r7' }}
-  TAG: ${{ inputs.tag || 'flux2-klein-4b-20260906-progress-frame-r8' }}
+  TAG: ${{ inputs.tag || 'flux2-klein-4b-20260907-portrait-960x1664-r9' }}
 
 jobs:
   publish:
@@ -53,8 +53,8 @@ jobs:
             --base-tag "${BASE_TAG}" \
             --tag "${TAG}" \
             --code-only \
-            --env-override FLUX_IMAGE_AVATAR_WIDTH=480 \
-            --env-override FLUX_IMAGE_AVATAR_HEIGHT=832 \
+            --env-override FLUX_IMAGE_AVATAR_WIDTH=960 \
+            --env-override FLUX_IMAGE_AVATAR_HEIGHT=1664 \
             --env-override FLUX_IMAGE_AVATAR_SUBJECT_SCALE=0.70
 
       - name: Ensure Flux container package is public

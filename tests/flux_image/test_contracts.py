@@ -13,6 +13,13 @@ def test_flux_defaults_to_no_loras() -> None:
     assert request.to_dict()["loras"] == []
 
 
+def test_flux_defaults_to_canonical_avatar_resolution() -> None:
+    request = FluxImageRequest(prompt="a full-body character")
+    request.validate(FluxImageConfig())
+    assert (request.width, request.height) == (960, 1664)
+    assert (request.width, request.height) in FluxImageConfig().supported_resolutions
+
+
 def test_flux_rejects_unsupported_resolution() -> None:
     with pytest.raises(ValueError, match="resolution"):
         FluxImageRequest(prompt="test", width=512, height=512).validate(FluxImageConfig())

@@ -61,8 +61,8 @@ class FluxLoRARequest:
 class FluxImageRequest:
     prompt: str
     negative_prompt: str = ""
-    width: int = 1328
-    height: int = 1328
+    width: int = 960
+    height: int = 1664
     steps: int = 4
     true_cfg_scale: float = 1.0
     seed: int | None = None

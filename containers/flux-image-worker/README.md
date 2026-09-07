@@ -42,8 +42,8 @@ FLUX_IMAGE_DEVICE=cuda
 FLUX_IMAGE_DTYPE=bfloat16
 FLUX_IMAGE_CPU_OFFLOAD=true
 FLUX_IMAGE_MAX_STEPS=4
-FLUX_IMAGE_AVATAR_WIDTH=480
-FLUX_IMAGE_AVATAR_HEIGHT=832
+FLUX_IMAGE_AVATAR_WIDTH=960
+FLUX_IMAGE_AVATAR_HEIGHT=1664
 FLUX_IMAGE_AVATAR_SUBJECT_SCALE=0.70
 ```
 
@@ -66,8 +66,8 @@ inference.
   "job_id": "job-id",
   "parameters": {
     "prompt": "A purple horse wearing a baseball cap",
-    "width": 1328,
-    "height": 1328,
+    "width": 960,
+    "height": 1664,
     "steps": 4,
     "true_cfg_scale": 1.0,
     "seed": 123,
@@ -81,7 +81,7 @@ preserve the failure summary and event log in the durable artifact directory.
 
 The model inference request keeps its requested resolution and sampling path.
 After inference, the worker detects the requested solid background, fits the
-character to approximately 70% of the canonical `480x832` portrait canvas,
+character to approximately 70% of the canonical `960x1664` portrait canvas,
 and fills the remaining canvas with the sampled background color. The original
 model PNG remains in the attempt directory for diagnostics; `image.png` is the
 framed production artifact. Job progress reports model loading, prompt

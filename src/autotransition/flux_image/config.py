@@ -38,13 +38,14 @@ class FluxImageConfig:
     max_loras: int = 4
     max_lora_scale: float = 3.0
     max_lora_bytes: int = 512 * 1024 * 1024
-    avatar_output_width: int = 480
-    avatar_output_height: int = 832
+    avatar_output_width: int = 960
+    avatar_output_height: int = 1664
     avatar_subject_scale: float = 0.70
     job_timeout_seconds: float = 3600.0
     gpu_required: bool = True
     keep_failed_artifacts: bool = True
     supported_resolutions: tuple[tuple[int, int], ...] = (
+        (960, 1664),
         (1328, 1328),
         (1664, 928),
         (928, 1664),
@@ -73,8 +74,8 @@ class FluxImageConfig:
             max_loras=int(os.getenv("FLUX_IMAGE_MAX_LORAS", "4")),
             max_lora_scale=float(os.getenv("FLUX_IMAGE_MAX_LORA_SCALE", "3")),
             max_lora_bytes=int(os.getenv("FLUX_IMAGE_MAX_LORA_BYTES", str(512 * 1024 * 1024))),
-            avatar_output_width=int(os.getenv("FLUX_IMAGE_AVATAR_WIDTH", "480")),
-            avatar_output_height=int(os.getenv("FLUX_IMAGE_AVATAR_HEIGHT", "832")),
+            avatar_output_width=int(os.getenv("FLUX_IMAGE_AVATAR_WIDTH", "960")),
+            avatar_output_height=int(os.getenv("FLUX_IMAGE_AVATAR_HEIGHT", "1664")),
             avatar_subject_scale=float(os.getenv("FLUX_IMAGE_AVATAR_SUBJECT_SCALE", "0.70")),
             job_timeout_seconds=float(os.getenv("FLUX_IMAGE_JOB_TIMEOUT_SECONDS", "3600")),
             gpu_required=_bool("FLUX_IMAGE_GPU_REQUIRED", True),

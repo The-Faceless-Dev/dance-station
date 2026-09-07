@@ -91,7 +91,11 @@ class FluxImageWorker:
                 raise RuntimeError("FLUX runtime returned an empty or invalid PNG")
             raw_output_path = attempt_dir / "model-output.png"
             output_path.replace(raw_output_path)
-            progress("frame_output", 0.0, "Framing avatar on the canonical 480x832 canvas")
+            progress(
+                "frame_output",
+                0.0,
+                f"Framing avatar on the canonical {self.config.avatar_output_width}x{self.config.avatar_output_height} canvas",
+            )
             framing = frame_avatar_image(
                 raw_output_path,
                 output_path,
@@ -265,8 +269,8 @@ def request_from_payload(payload: dict[str, Any]) -> FluxImageRequest:
     return FluxImageRequest(
         prompt=str(payload.get("prompt") or ""),
         negative_prompt=str(payload.get("negative_prompt") or payload.get("negativePrompt") or ""),
-        width=int(payload.get("width", 1328)),
-        height=int(payload.get("height", 1328)),
+        width=int(payload.get("width", 960)),
+        height=int(payload.get("height", 1664)),
         steps=int(payload.get("steps", 4)),
         true_cfg_scale=float(payload.get("true_cfg_scale", payload.get("trueCfgScale", 1.0))),
         seed=int(payload["seed"]) if payload.get("seed") is not None else None,
