@@ -434,6 +434,32 @@ def make_pyzmq_layer(wheel: Path) -> tuple[bytes, str, str]:
     return compressed, hashlib.sha256(raw).hexdigest(), hashlib.sha256(compressed).hexdigest()
 
 
+def combine_overlay_layers(layers: list[bytes]) -> tuple[bytes, str, str]:
+    """Merge overlay tarballs so provider layer-depth limits cannot be hit."""
+
+    if not layers:
+        raise ValueError("at least one overlay layer is required")
+    raw_buffer = io.BytesIO()
+    written_directories: set[str] = set()
+    written_entries: set[str] = set()
+    with tarfile.open(fileobj=raw_buffer, mode="w", format=tarfile.USTAR_FORMAT) as output:
+        for compressed_layer in layers:
+            with tarfile.open(fileobj=io.BytesIO(compressed_layer), mode="r:gz") as source_archive:
+                for member in source_archive:
+                    if member.isdir() and member.name in written_directories:
+                        continue
+                    if member.name in written_entries:
+                        raise ValueError(f"overlay layers contain duplicate path: {member.name}")
+                    data = source_archive.extractfile(member) if member.isfile() else None
+                    output.addfile(member, data)
+                    written_entries.add(member.name)
+                    if member.isdir():
+                        written_directories.add(member.name)
+    raw = raw_buffer.getvalue()
+    compressed = gzip.compress(raw, compresslevel=9, mtime=0)
+    return compressed, hashlib.sha256(raw).hexdigest(), hashlib.sha256(compressed).hexdigest()
+
+
 def upload_blob(repo: str, token: str, digest: str, payload: bytes) -> None:
     base = f"https://ghcr.io/v2/{repo}"
     auth = {"Authorization": f"Bearer {token}"}
@@ -551,11 +577,18 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         pyzmq_layer, pyzmq_raw_digest, pyzmq_compressed_digest = make_pyzmq_layer(
             Path(args.pyzmq_wheel).resolve()
         )
+    overlay_layers = [code_layer]
+    for optional_layer in (lightx_layer, scipy_layer, imageio_ffmpeg_layer, prometheus_client_layer, pyzmq_layer):
+        if optional_layer is not None:
+            overlay_layers.append(optional_layer)
+    combined_layer, combined_raw_digest, combined_compressed_digest = combine_overlay_layers(overlay_layers)
     if args.dry_run:
         result = {
             "dryRun": True,
             "codeLayerDigest": f"sha256:{code_compressed_digest}",
             "codeLayerBytes": len(code_layer),
+            "combinedOverlayDigest": f"sha256:{combined_compressed_digest}",
+            "combinedOverlayBytes": len(combined_layer),
         }
         if lightx_layer is not None:
             result.update(
@@ -620,23 +653,11 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     config = json.loads(config_body)
     diff_ids = config.setdefault("rootfs", {}).setdefault("diff_ids", [])
     history = config.setdefault("history", [])
-    diff_ids.append(f"sha256:{code_raw_digest}")
-    history.append({"created_by": "COPY payload/ /", "comment": f"{args.runtime} runtime overlay"})
-    if lightx_layer is not None:
-        diff_ids.append(f"sha256:{lightx_raw_digest}")
-        history.append({"created_by": "COPY lightx2v/ /", "comment": "Wan Animate LightX2V adapter"})
-    if scipy_layer is not None:
-        diff_ids.append(f"sha256:{scipy_raw_digest}")
-        history.append({"created_by": "COPY scipy wheel /", "comment": "SciPy runtime dependency for Real-ESRGAN"})
-    if imageio_ffmpeg_layer is not None:
-        diff_ids.append(f"sha256:{imageio_ffmpeg_raw_digest}")
-        history.append({"created_by": "COPY imageio-ffmpeg wheel /", "comment": "imageio-ffmpeg runtime dependency for LightX2V"})
-    if prometheus_client_layer is not None:
-        diff_ids.append(f"sha256:{prometheus_client_raw_digest}")
-        history.append({"created_by": "COPY prometheus-client wheel /", "comment": "prometheus-client runtime dependency for LightX2V VACE"})
-    if pyzmq_layer is not None:
-        diff_ids.append(f"sha256:{pyzmq_raw_digest}")
-        history.append({"created_by": "COPY pyzmq wheel /", "comment": "pyzmq runtime dependency for LightX2V VACE transport"})
+    diff_ids.append(f"sha256:{combined_raw_digest}")
+    history.append({
+        "created_by": "COPY combined runtime overlay /",
+        "comment": f"{args.runtime} runtime and dependency overlay",
+    })
     image_config = config.setdefault("config", {})
     env = list(image_config.get("Env") or [])
     runtime_env_overrides = {
@@ -701,17 +722,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     image_config["Env"] = env
     config_bytes = json.dumps(config, separators=(",", ":"), ensure_ascii=False).encode()
     config_digest = hashlib.sha256(config_bytes).hexdigest()
-    upload_blob(args.repo, token, f"sha256:{code_compressed_digest}", code_layer)
-    if lightx_layer is not None:
-        upload_blob(args.repo, token, f"sha256:{lightx_compressed_digest}", lightx_layer)
-    if scipy_layer is not None:
-        upload_blob(args.repo, token, f"sha256:{scipy_compressed_digest}", scipy_layer)
-    if imageio_ffmpeg_layer is not None:
-        upload_blob(args.repo, token, f"sha256:{imageio_ffmpeg_compressed_digest}", imageio_ffmpeg_layer)
-    if prometheus_client_layer is not None:
-        upload_blob(args.repo, token, f"sha256:{prometheus_client_compressed_digest}", prometheus_client_layer)
-    if pyzmq_layer is not None:
-        upload_blob(args.repo, token, f"sha256:{pyzmq_compressed_digest}", pyzmq_layer)
+    upload_blob(args.repo, token, f"sha256:{combined_compressed_digest}", combined_layer)
     upload_blob(args.repo, token, f"sha256:{config_digest}", config_bytes)
 
     base_media_type = base_manifest.get("mediaType", DOCKER_MANIFEST)
@@ -722,50 +733,10 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
     new_layers = [
         {
             "mediaType": base_layer_media_type,
-            "size": len(code_layer),
-            "digest": f"sha256:{code_compressed_digest}",
+            "size": len(combined_layer),
+            "digest": f"sha256:{combined_compressed_digest}",
         }
     ]
-    if lightx_layer is not None:
-        new_layers.append(
-            {
-                "mediaType": base_layer_media_type,
-                "size": len(lightx_layer),
-                "digest": f"sha256:{lightx_compressed_digest}",
-            }
-        )
-    if scipy_layer is not None:
-        new_layers.append(
-            {
-                "mediaType": base_layer_media_type,
-                "size": len(scipy_layer),
-                "digest": f"sha256:{scipy_compressed_digest}",
-            }
-        )
-    if imageio_ffmpeg_layer is not None:
-        new_layers.append(
-            {
-                "mediaType": base_layer_media_type,
-                "size": len(imageio_ffmpeg_layer),
-                "digest": f"sha256:{imageio_ffmpeg_compressed_digest}",
-            }
-        )
-    if prometheus_client_layer is not None:
-        new_layers.append(
-            {
-                "mediaType": base_layer_media_type,
-                "size": len(prometheus_client_layer),
-                "digest": f"sha256:{prometheus_client_compressed_digest}",
-            }
-        )
-    if pyzmq_layer is not None:
-        new_layers.append(
-            {
-                "mediaType": base_layer_media_type,
-                "size": len(pyzmq_layer),
-                "digest": f"sha256:{pyzmq_compressed_digest}",
-            }
-        )
     manifest = {
         "schemaVersion": 2,
         "mediaType": base_media_type,
@@ -795,6 +766,8 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
         "layers": len(manifest["layers"]),
         "compressedBytes": sum(layer["size"] for layer in manifest["layers"]),
         "codeOverlayBytes": len(code_layer),
+        "combinedOverlayBytes": len(combined_layer),
+        "combinedOverlayDigest": f"sha256:{combined_compressed_digest}",
         "configDigest": f"sha256:{config_digest}",
         "codeOverlayDigest": f"sha256:{code_compressed_digest}",
     }
