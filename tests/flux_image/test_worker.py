@@ -54,3 +54,21 @@ def test_worker_external_job_id_is_idempotent(tmp_path: Path) -> None:
         assert first.id == second.id == "external-1"
     finally:
         worker.shutdown()
+
+
+def test_worker_persists_failure_diagnostics_without_staying_running(tmp_path: Path) -> None:
+    class FailingRuntime(FakeRuntime):
+        def generate(self, request, output_path, progress):
+            raise RuntimeError("simulated denoise failure")
+
+    config = FluxImageConfig(artifact_root=tmp_path)
+    worker = FluxImageWorker(config, runtime=FailingRuntime())
+    try:
+        job = __import__("asyncio").run(worker.submit(FluxImageRequest(prompt="test")))
+        result = wait_for(worker, job.id)
+        assert result["status"] == "failed"
+        assert result["failureCode"] == "flux_image_worker_failed"
+        assert {item["name"] for item in result["artifacts"]} == {"failure-summary.json", "events.jsonl"}
+        assert (tmp_path / job.id / "final" / "events.jsonl").is_file()
+    finally:
+        worker.shutdown()

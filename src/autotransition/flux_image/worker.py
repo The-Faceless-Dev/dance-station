@@ -152,6 +152,14 @@ class FluxImageWorker:
             }
             self.store.finalize_json(job_id, "failure-summary.json", failure_summary)
             failure_artifact = self.store.artifact(job_id, "failure-summary.json", "application/json")
+            # The event logger appends to the durable job root while the
+            # callback artifact contract reads from final/. Copy the log into
+            # final before creating its artifact record; otherwise a genuine
+            # inference exception raises FileNotFoundError inside this failure
+            # handler and leaves the job permanently marked as running.
+            event_log = self.store.job_dir(job_id) / "events.jsonl"
+            if event_log.is_file():
+                self.store.finalize_file(job_id, event_log, "events.jsonl")
             event_artifact = self.store.artifact(job_id, "events.jsonl", "application/jsonl")
             self._set_state(
                 job_id,

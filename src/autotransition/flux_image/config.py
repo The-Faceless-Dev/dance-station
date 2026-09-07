@@ -41,7 +41,10 @@ class FluxImageConfig:
     avatar_output_width: int = 960
     avatar_output_height: int = 1664
     avatar_subject_scale: float = 0.70
-    job_timeout_seconds: float = 3600.0
+    # A Flux image request must never occupy the Salad queue indefinitely.
+    # The launcher has a separate acceptance watchdog; this is the worker's
+    # end-to-end execution bound once Salad has delivered the HTTP request.
+    job_timeout_seconds: float = 600.0
     gpu_required: bool = True
     keep_failed_artifacts: bool = True
     supported_resolutions: tuple[tuple[int, int], ...] = (
@@ -77,7 +80,7 @@ class FluxImageConfig:
             avatar_output_width=int(os.getenv("FLUX_IMAGE_AVATAR_WIDTH", "960")),
             avatar_output_height=int(os.getenv("FLUX_IMAGE_AVATAR_HEIGHT", "1664")),
             avatar_subject_scale=float(os.getenv("FLUX_IMAGE_AVATAR_SUBJECT_SCALE", "0.70")),
-            job_timeout_seconds=float(os.getenv("FLUX_IMAGE_JOB_TIMEOUT_SECONDS", "3600")),
+            job_timeout_seconds=float(os.getenv("FLUX_IMAGE_JOB_TIMEOUT_SECONDS", "600")),
             gpu_required=_bool("FLUX_IMAGE_GPU_REQUIRED", True),
             keep_failed_artifacts=_bool("FLUX_IMAGE_KEEP_FAILED_ARTIFACTS", True),
         )

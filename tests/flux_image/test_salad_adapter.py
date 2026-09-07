@@ -50,6 +50,48 @@ def test_salad_queue_uploads_and_completes(monkeypatch, tmp_path: Path) -> None:
         result = asyncio.run(_run_queue_job(payload, worker, config))
         assert result["status"] == "succeeded"
         assert {name for _, name in uploaded} == {"image.png", "image-metadata.json"}
+        assert posted[0][1]["message"] == "FLUX worker accepted the job"
+        assert posted[0][1]["stage"] == "accepted"
         assert any(url.endswith("/complete") for url, _ in posted)
+    finally:
+        worker.shutdown()
+
+
+def test_salad_queue_reports_runtime_failure_before_returning_http_500(monkeypatch, tmp_path: Path) -> None:
+    config = FluxImageConfig(artifact_root=tmp_path)
+
+    class FailingRuntime(FakeRuntime):
+        def generate(self, request, output_path, progress):
+            raise RuntimeError("simulated denoise failure")
+
+    worker = FluxImageWorker(config, runtime=FailingRuntime())
+    posted = []
+
+    def post(url, token, payload, **kwargs):
+        posted.append((url, payload))
+        return {}
+
+    monkeypatch.setattr("autotransition.flux_image.salad_adapter._post_json", post)
+    payload = {
+        "runtime": "flux-image",
+        "job_id": "queue-job-failure",
+        "parameters": {"prompt": "test", "seed": 7},
+        "callback": {
+            "url": "https://launcher.test/artifacts",
+            "complete_url": "https://launcher.test/jobs/queue-job-failure/complete",
+            "progress_url": "https://launcher.test/jobs/queue-job-failure/progress",
+            "token": "callback-token",
+        },
+    }
+    try:
+        try:
+            asyncio.run(_run_queue_job(payload, worker, config))
+        except RuntimeError as exc:
+            assert "simulated denoise failure" in str(exc)
+        else:
+            raise AssertionError("expected the queue adapter to report the runtime failure")
+        failure_callbacks = [(url, body) for url, body in posted if url.endswith("/fail")]
+        assert len(failure_callbacks) == 1
+        assert failure_callbacks[0][1]["errorCode"] == "flux_image_worker_failed"
     finally:
         worker.shutdown()

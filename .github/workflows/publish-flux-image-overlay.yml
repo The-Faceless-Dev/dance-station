@@ -9,11 +9,11 @@ on:
       base_tag:
         description: Existing public Flux image tag to inherit
         required: true
-        default: flux2-klein-4b-20260817-r7
+        default: flux2-klein-4b-20260907-portrait-960x1664-r9
       tag:
         description: New code-overlay tag
         required: true
-        default: flux2-klein-4b-20260907-portrait-960x1664-r9
+        default: flux2-klein-4b-20260907-portrait-960x1664-r10
 
 permissions:
   contents: read
@@ -21,8 +21,8 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-flux-image-worker
-  BASE_TAG: ${{ inputs.base_tag || 'flux2-klein-4b-20260817-r7' }}
-  TAG: ${{ inputs.tag || 'flux2-klein-4b-20260907-portrait-960x1664-r9' }}
+  BASE_TAG: ${{ inputs.base_tag || 'flux2-klein-4b-20260907-portrait-960x1664-r9' }}
+  TAG: ${{ inputs.tag || 'flux2-klein-4b-20260907-portrait-960x1664-r10' }}
 
 jobs:
   publish:

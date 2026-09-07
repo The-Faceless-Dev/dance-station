@@ -217,15 +217,48 @@ async def _progress(url: str, token: str, job_id: str, job: dict[str, Any], sequ
         print(json.dumps({"event": "flux_progress_callback_failed", "jobId": job_id, "error": str(exc)}), flush=True)
 
 
+async def _fail_callback(complete_url: str, token: str, job_id: str, code: str, message: str) -> None:
+    """Tell launch-server about adapter failures before returning HTTP 500.
+
+    Salad uses the adapter's HTTP response to decide whether to retry, but the
+    launch server owns payment/refund state. Without this callback a worker
+    exception can leave the launch job in ``running`` until the provider gives
+    up, even though the adapter already knows the job failed.
+    """
+    fail_url = f"{complete_url.rsplit('/complete', 1)[0]}/fail"
+    try:
+        await asyncio.to_thread(
+            _post_json,
+            fail_url,
+            token,
+            {"errorCode": code[:120], "errorMessage": message[:4000], "artifactIds": []},
+            timeout=10,
+        )
+    except Exception as exc:
+        print(json.dumps({"event": "flux_failure_callback_failed", "jobId": job_id, "error": str(exc)}), flush=True)
+
+
 async def _run_queue_job(payload: dict[str, Any], worker: FluxImageWorker, config: FluxImageConfig) -> dict[str, Any]:
     job_id = _job_id(payload)
     callback_url, complete_url, progress_url, token = _callback(payload)
     paths: list[Path] = []
+    failure_callback_sent = False
     try:
+        # This is deliberately before LoRA downloads, request validation, and
+        # model execution. It proves that Salad reached this adapter and gives
+        # launch-server a live timestamp before any expensive work begins.
+        await _progress(
+            progress_url,
+            token,
+            job_id,
+            {"status": "running", "stage": "accepted", "progress": 0.0, "attempt": 0},
+            1,
+            "FLUX worker accepted the job",
+        )
         loras, paths = _loras_from_payload(payload, config)
         request = _request(payload, loras)
         job = await worker.submit(request)
-        sequence = 1
+        sequence = 2
         await _progress(progress_url, token, job_id, worker.get(job.id), sequence, "FLUX worker accepted the job")
         deadline = time.monotonic() + config.job_timeout_seconds + 60
         last_key: tuple[Any, ...] | None = None
@@ -248,10 +281,8 @@ async def _run_queue_job(payload: dict[str, Any], worker: FluxImageWorker, confi
                                 artifact_ids.append(await asyncio.to_thread(_upload_artifact, callback_url, token, path, artifact))
                             except Exception as upload_error:
                                 print(json.dumps({"event": "flux_failure_artifact_upload_failed", "jobId": job_id, "error": str(upload_error)}), flush=True)
-                    try:
-                        await asyncio.to_thread(_post_json, f"{complete_url.rsplit('/complete', 1)[0]}/fail", token, {"errorCode": failure.get("code", "flux_image_worker_failed"), "errorMessage": message, "artifactIds": artifact_ids})
-                    except Exception as exc:
-                        print(json.dumps({"event": "flux_failure_callback_failed", "jobId": job_id, "error": str(exc)}), flush=True)
+                    await _fail_callback(complete_url, token, job_id, failure.get("code", "flux_image_worker_failed"), message)
+                    failure_callback_sent = True
                     sequence += 1
                     await _progress(progress_url, token, job_id, current, sequence, message, "failed")
                     raise RuntimeError(message)
@@ -266,7 +297,12 @@ async def _run_queue_job(payload: dict[str, Any], worker: FluxImageWorker, confi
                 await _progress(progress_url, token, job_id, current, sequence, "FLUX worker completed the job", "succeeded")
                 return {"schema_version": 1, "runtime": "flux-image", "status": "succeeded", "job_id": job_id, "artifact_ids": artifact_ids}
             await asyncio.sleep(2)
-        raise TimeoutError("FLUX image job exceeded the worker timeout")
+        raise TimeoutError(f"FLUX image job exceeded the {config.job_timeout_seconds:.0f}s worker timeout")
+    except Exception as exc:
+        if not failure_callback_sent:
+            code = "flux_image_worker_timeout" if isinstance(exc, TimeoutError) else "flux_image_worker_failed"
+            await _fail_callback(complete_url, token, job_id, code, f"[{code}] {exc}")
+        raise
     finally:
         for path in paths:
             path.unlink(missing_ok=True)
