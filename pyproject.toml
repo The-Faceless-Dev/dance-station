@@ -17,6 +17,7 @@ dependencies = [
   "huggingface_hub>=0.27.0",
   "imageio-ffmpeg>=0.5.0",
   "httpx>=0.27.0",
+  "numpy>=1.26",
   "audioop-lts>=0.2.1; python_version >= '3.13'",
   "tangoflux @ git+https://github.com/declare-lab/TangoFlux",
   "pydub>=0.25.1",

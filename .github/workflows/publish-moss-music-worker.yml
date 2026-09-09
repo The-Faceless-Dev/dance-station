@@ -1,0 +1,82 @@
+name: Publish MOSS Music Worker
+
+on:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
+    paths:
+      - ".github/workflows/publish-moss-music-worker.yml"
+      - "containers/moss-music-worker/**"
+      - "src/autotransition/moss_music/**"
+      - "pyproject.toml"
+      - "tools/**"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published MOSS worker tag
+        required: true
+        default: moss-8b-20260909-r1
+      model_id:
+        description: Hugging Face model repository
+        required: true
+        default: OpenMOSS-Team/MOSS-Music-8B-Instruct
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-moss-music-worker
+  TAG: ${{ inputs.tag || 'moss-8b-20260909-r1' }}
+  MODEL_ID: ${{ inputs.model_id || 'OpenMOSS-Team/MOSS-Music-8B-Instruct' }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check runner storage
+        shell: bash
+        run: df -h /
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download model weights
+        shell: bash
+        env:
+          HF_XET_HIGH_PERFORMANCE: "1"
+          HF_XET_NUM_CONCURRENT_RANGE_GETS: "64"
+          HF_HUB_ENABLE_HF_XET: "1"
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir huggingface_hub
+          hf download "${MODEL_ID}" --local-dir /tmp/moss-music-8b-instruct
+          du -sh /tmp/moss-music-8b-instruct
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish model-bearing image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/moss-music-worker/Dockerfile
+          build-context: mossmodel=/tmp/moss-music-8b-instruct
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
