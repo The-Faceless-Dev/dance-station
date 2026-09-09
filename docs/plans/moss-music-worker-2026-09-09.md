@@ -281,17 +281,20 @@ Verified in the local readiness pass:
 * passed container `/health`, `/ready`, `/v1/worker/status`, and a complete
   mock audio job producing all seven declared artifacts.
 
-The first real 5090 startup exposed two runtime-image assumptions that local
-mock tests could not catch: the Blackwell import path attempted to initialize
+The first real 5090 startup exposed runtime-image assumptions that local mock
+tests could not catch: the Blackwell import path attempted to initialize
 DeepGEMM even though MOSS is a dense BF16 model, and SGLang's CUDA-graph capture
-requires a C compiler for Triton. The container now disables DeepGEMM unless it
-is explicitly enabled and includes `build-essential` with `CC=gcc` and `CXX=g++`.
-The first issue was reproduced and fixed; the compiler fix is awaiting a second
-real 5090 startup and inference test.
+requires both a host C compiler and the CUDA compiler for FlashInfer's JIT
+kernel build. The container disables DeepGEMM unless explicitly enabled and
+sets `CC=gcc`/`CXX=g++`. The MOSS image now uses the matching CUDA `devel` base,
+sets `CUDA_HOME=/usr/local/cuda`, and keeps the CUDA toolchain available at
+runtime. The first issue was reproduced and fixed; the compiler-only fix was
+insufficient because `build-essential` does not provide `nvcc`.
 
 Remaining before a production publish:
 
-* run the real full-song BF16 GPU benchmark on a 32 GiB or larger target and
+* verify a real 5090 startup reaches SGLang readiness with FlashInfer CUDA-graph
+  capture and run the real full-song BF16 GPU benchmark on a 32 GiB or larger target and
   record peak VRAM, audio duration, backend load time, timeline time, MOSS
   generation time, total elapsed time, and output validity;
 * use that benchmark to choose Salad versus Vast and the final GPU profile;

@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=pytorch/pytorch:2.8.0-cuda12.8-cudnn9-runtime
+ARG BASE_IMAGE=pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 FROM ${BASE_IMAGE} AS runtime-base
 
 ARG SGLANG_REPO=https://github.com/OpenMOSS/sglang.git
@@ -24,11 +24,16 @@ ENV PYTHONUNBUFFERED=1 \
     SGLANG_ENABLE_JIT_DEEPGEMM=0 \
     CC=gcc \
     CXX=g++ \
+    CUDA_HOME=/usr/local/cuda \
+    PATH=/usr/local/cuda/bin:${PATH} \
+    LD_LIBRARY_PATH=/usr/local/cuda/lib64:${LD_LIBRARY_PATH} \
     PYTORCH_ALLOC_CONF=expandable_segments:True
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl git ca-certificates ffmpeg build-essential \
     && rm -rf /var/lib/apt/lists/* \
+    && test -x "${CUDA_HOME}/bin/nvcc" \
+    && "${CUDA_HOME}/bin/nvcc" --version \
     && git clone --depth 1 --branch "${SGLANG_REF}" "${SGLANG_REPO}" /opt/sglang \
     && curl -fsSL "https://github.com/SaladTechnologies/salad-cloud-job-queue-worker/releases/download/${SALAD_WORKER_VERSION}/salad-http-job-queue-worker_x86_64.tar.gz" -o /tmp/salad-worker.tar.gz \
     && echo "${SALAD_WORKER_SHA256}  /tmp/salad-worker.tar.gz" | sha256sum -c - \
