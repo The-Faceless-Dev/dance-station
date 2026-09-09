@@ -291,11 +291,17 @@ sets `CUDA_HOME=/usr/local/cuda`, and keeps the CUDA toolchain available at
 runtime. The first issue was reproduced and fixed; the compiler-only fix was
 insufficient because `build-essential` does not provide `nvcc`.
 
-Remaining before a production publish:
+The corrected image was verified on Vast instance `50440259`, a single RTX
+5090. SGLang loaded the BF16 model, allocated its KV cache, completed FlashInfer
+CUDA-graph capture, and stayed ready after inference. A real full-song request
+(`moss-vast-full-20260909-1938`) completed successfully in 17.07 seconds after
+the backend was warm, returned seven artifacts, and produced a validated
+3,257,413-byte `analysis.json`. The container log and job/status snapshots are
+retained under `tmp/moss-music-vast-20260909-full/`. The instance is intentionally
+left running for interactive follow-up tests.
 
-* verify a real 5090 startup reaches SGLang readiness with FlashInfer CUDA-graph
-  capture and run the real full-song BF16 GPU benchmark on a 32 GiB or larger target and
-  record peak VRAM, audio duration, backend load time, timeline time, MOSS
-  generation time, total elapsed time, and output validity;
-* use that benchmark to choose Salad versus Vast and the final GPU profile;
-* integrate the verified runtime with launch-server pricing and client workflows.
+Remaining before a production integration:
+
+* add the verified MOSS runtime to launch-server pricing and client workflows;
+* add a production callback test that uploads all declared artifacts through the
+  launch-server contract;
