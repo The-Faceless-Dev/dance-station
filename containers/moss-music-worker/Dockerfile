@@ -21,6 +21,7 @@ ENV PYTHONUNBUFFERED=1 \
     MOSS_MUSIC_ARTIFACT_ROOT=/var/lib/autotransition/moss-music-jobs \
     MOSS_MUSIC_SGLANG_AUTOSTART=true \
     MOSS_MUSIC_SGLANG_PORT=30000 \
+    SGLANG_ENABLE_JIT_DEEPGEMM=0 \
     PYTORCH_ALLOC_CONF=expandable_segments:True
 
 RUN apt-get update \
@@ -38,6 +39,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY tools ./tools
 COPY containers/moss-music-worker/entrypoint.sh /usr/local/bin/moss-music-worker-entrypoint
+COPY containers/moss-music-worker/patch_sglang_blackwell.py /tmp/patch_sglang_blackwell.py
 
 RUN python -m pip install --no-cache-dir --no-deps . \
     && python -m pip install --no-cache-dir \
@@ -48,6 +50,8 @@ RUN python -m pip install --no-cache-dir --no-deps . \
        "uvicorn>=0.32.0" \
     && python -m pip install --no-cache-dir -e "/opt/sglang/python[all]" \
     && python -m pip install --no-cache-dir "nvidia-cudnn-cu12==9.16.0.29" \
+    && python /tmp/patch_sglang_blackwell.py \
+    && rm -f /tmp/patch_sglang_blackwell.py \
     && chmod 0755 /usr/local/bin/moss-music-worker-entrypoint
 
 RUN useradd --create-home --uid 10003 moss \
