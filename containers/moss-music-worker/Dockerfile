@@ -22,10 +22,12 @@ ENV PYTHONUNBUFFERED=1 \
     MOSS_MUSIC_SGLANG_AUTOSTART=true \
     MOSS_MUSIC_SGLANG_PORT=30000 \
     SGLANG_ENABLE_JIT_DEEPGEMM=0 \
+    CC=gcc \
+    CXX=g++ \
     PYTORCH_ALLOC_CONF=expandable_segments:True
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl git ca-certificates ffmpeg \
+    && apt-get install -y --no-install-recommends curl git ca-certificates ffmpeg build-essential \
     && rm -rf /var/lib/apt/lists/* \
     && git clone --depth 1 --branch "${SGLANG_REF}" "${SGLANG_REPO}" /opt/sglang \
     && curl -fsSL "https://github.com/SaladTechnologies/salad-cloud-job-queue-worker/releases/download/${SALAD_WORKER_VERSION}/salad-http-job-queue-worker_x86_64.tar.gz" -o /tmp/salad-worker.tar.gz \
