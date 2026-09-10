@@ -93,3 +93,8 @@ jobs can retrieve each durable file from
 focused pass, the worker derives the available output budget from the checkpoint's
 actual context length minus the measured text and audio input; this avoids
 SGLang's accidental 4096-token default without inventing a smaller ceiling.
+If a focused pass reaches the checkpoint context boundary, it is automatically
+reanalyzed in bounded audio windows and merged back with absolute source-song
+timestamps. `MOSS_MUSIC_SEMANTIC_WINDOW_SECONDS` defaults to 60 seconds and
+`MOSS_MUSIC_MIN_SEMANTIC_WINDOW_SECONDS` defaults to 5 seconds; these are
+internal context safeguards, not output-token limits.

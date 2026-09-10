@@ -13,10 +13,11 @@ from typing import Any, Callable, Protocol
 
 import httpx
 
-from .audio import AudioBuffer
+from .audio import AudioBuffer, write_audio_segment
 from .config import MossMusicConfig
 from .contracts import MossMusicRequest
-from .prompting import build_analysis_prompts
+from .parser import MossResponseError, merge_moss_segments, parse_moss_response
+from .prompting import add_segment_context, build_analysis_prompts
 
 
 class MossBackendError(RuntimeError):
@@ -213,6 +214,172 @@ class SGLangMossRuntime:
         except Exception as exc:
             return {"available": True, "cudaAvailable": True, "errorType": type(exc).__name__, "error": str(exc)}
 
+    @staticmethod
+    def _raw_text(response: Any) -> str:
+        if isinstance(response, str):
+            return response
+        if isinstance(response, dict) and isinstance(response.get("text"), str):
+            return response["text"]
+        return json.dumps(response, sort_keys=True, default=str)
+
+    @staticmethod
+    def _is_truncated(response: Any) -> bool:
+        if not isinstance(response, dict):
+            return False
+        metadata = response.get("meta_info") or response.get("metaInfo") or {}
+        candidates = [metadata, response]
+        choices = response.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            candidates.append(choices[0])
+        for container in candidates:
+            if not isinstance(container, dict):
+                continue
+            reason = container.get("finish_reason") or container.get("finishReason")
+            if isinstance(reason, dict):
+                reason = reason.get("type") or reason.get("reason")
+            if str(reason or "").strip().lower() in {"length", "max_tokens", "max_new_tokens"}:
+                return True
+        return False
+
+    def _generate_with_budget(self, *, prompt: str, audio_path: Path, temperature: float) -> tuple[Any, dict[str, Any]]:
+        budget = self.client.resolve_output_budget(prompt=prompt, audio_path=audio_path)
+        try:
+            response = self.client.generate(
+                prompt=prompt,
+                audio_path=audio_path,
+                max_new_tokens=int(budget["availableOutputTokens"]),
+                temperature=temperature,
+            )
+        except Exception as exc:
+            recovered_budget = self.client.recover_output_budget(str(exc), budget)
+            if recovered_budget is None:
+                raise
+            budget = recovered_budget
+            response = self.client.generate(
+                prompt=prompt,
+                audio_path=audio_path,
+                max_new_tokens=int(budget["availableOutputTokens"]),
+                temperature=temperature,
+            )
+        return response, budget
+
+    def _generate_segmented_pass(
+        self,
+        *,
+        request: MossMusicRequest,
+        audio: AudioBuffer,
+        analysis_pass: Any,
+        start_seconds: float,
+        end_seconds: float,
+        progress: Callable[[float, str], None],
+        pass_start: float,
+        pass_span: float,
+        segment_index: int,
+        segment_count_hint: int,
+    ) -> tuple[list[tuple[float, dict[str, Any]]], list[str], list[dict[str, Any]]]:
+        duration = end_seconds - start_seconds
+        segment_path = audio.path.parent / "semantic-segments" / f"{analysis_pass.name}-{start_seconds:010.3f}.wav"
+        write_audio_segment(audio, segment_path, start_seconds, end_seconds)
+        instruction = analysis_pass.instruction + add_segment_context(
+            start_seconds=start_seconds,
+            end_seconds=end_seconds,
+            full_duration_seconds=audio.duration_seconds,
+        )
+        response, budget = self._generate_with_budget(
+            prompt=instruction,
+            audio_path=segment_path,
+            temperature=request.temperature,
+        )
+        if self._is_truncated(response):
+            if duration <= self.config.min_semantic_window_seconds:
+                raise MossResponseError(
+                    f"MOSS {analysis_pass.name} segment remained truncated at "
+                    f"{duration:.3f}s, the configured minimum semantic window"
+                )
+            midpoint = start_seconds + duration / 2
+            first, first_raw, first_meta = self._generate_segmented_pass(
+                request=request,
+                audio=audio,
+                analysis_pass=analysis_pass,
+                start_seconds=start_seconds,
+                end_seconds=midpoint,
+                progress=progress,
+                pass_start=pass_start,
+                pass_span=pass_span,
+                segment_index=segment_index,
+                segment_count_hint=segment_count_hint + 1,
+            )
+            second, second_raw, second_meta = self._generate_segmented_pass(
+                request=request,
+                audio=audio,
+                analysis_pass=analysis_pass,
+                start_seconds=midpoint,
+                end_seconds=end_seconds,
+                progress=progress,
+                pass_start=pass_start,
+                pass_span=pass_span,
+                segment_index=segment_index,
+                segment_count_hint=segment_count_hint + 1,
+            )
+            return first + second, first_raw + second_raw, first_meta + second_meta
+        parsed, raw_text = parse_moss_response(response, required_keys=set(analysis_pass.required_keys))
+        progress(
+            min(pass_start + pass_span * 0.95, pass_start + pass_span),
+            f"MOSS-Music {analysis_pass.name} segment {segment_index + 1}/{max(1, segment_count_hint)} received",
+        )
+        return (
+            [(start_seconds, parsed)],
+            [raw_text],
+            [
+                {
+                    "startSeconds": round(start_seconds, 6),
+                    "endSeconds": round(end_seconds, 6),
+                    "outputCharacters": len(raw_text),
+                    "outputBudget": budget,
+                }
+            ],
+        )
+
+    def _run_segmented_pass(
+        self,
+        *,
+        request: MossMusicRequest,
+        audio: AudioBuffer,
+        analysis_pass: Any,
+        progress: Callable[[float, str], None],
+        pass_start: float,
+        pass_span: float,
+    ) -> tuple[dict[str, Any], str, list[dict[str, Any]]]:
+        window = self.config.semantic_window_seconds
+        ranges = [
+            (start, min(audio.duration_seconds, start + window))
+            for start in (index * window for index in range(math.ceil(audio.duration_seconds / window)))
+        ]
+        results: list[tuple[float, dict[str, Any]]] = []
+        raw_texts: list[str] = []
+        metadata: list[dict[str, Any]] = []
+        for index, (start_seconds, end_seconds) in enumerate(ranges):
+            chunk_results, chunk_raw, chunk_metadata = self._generate_segmented_pass(
+                request=request,
+                audio=audio,
+                analysis_pass=analysis_pass,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+                progress=progress,
+                pass_start=pass_start + pass_span * (index / len(ranges)),
+                pass_span=pass_span / len(ranges),
+                segment_index=index,
+                segment_count_hint=len(ranges),
+            )
+            results.extend(chunk_results)
+            raw_texts.extend(chunk_raw)
+            metadata.extend(chunk_metadata)
+        merged = merge_moss_segments(results)
+        return merged, "\n\n".join(
+            f"[segment {meta['startSeconds']:.3f}-{meta['endSeconds']:.3f}]\n{text}"
+            for meta, text in zip(metadata, raw_texts, strict=True)
+        ), metadata
+
     def analyze(
         self,
         request: MossMusicRequest,
@@ -226,49 +393,52 @@ class SGLangMossRuntime:
         for index, analysis_pass in enumerate(passes):
             start = index / len(passes)
             progress(start, f"Preparing MOSS-Music {analysis_pass.name} pass ({index + 1}/{len(passes)})")
-            budget = self.client.resolve_output_budget(prompt=analysis_pass.instruction, audio_path=audio.path)
-            prompt_hash = hashlib.sha256(analysis_pass.instruction.encode("utf-8")).hexdigest()
             started = time.monotonic()
+            prompt_hash = hashlib.sha256(analysis_pass.instruction.encode("utf-8")).hexdigest()
+            force_segmented = analysis_pass.name == "harmony" and audio.duration_seconds > self.config.semantic_window_seconds
+            segment_metadata: list[dict[str, Any]] = []
             try:
-                response = self.client.generate(
-                    prompt=analysis_pass.instruction,
-                    audio_path=audio.path,
-                    max_new_tokens=int(budget["availableOutputTokens"]),
-                    temperature=request.temperature,
-                )
-            except Exception as exc:
-                recovered_budget = self.client.recover_output_budget(str(exc), budget)
-                if recovered_budget is None:
-                    pass_metadata.append({"name": analysis_pass.name, "error": str(exc), "outputBudget": budget})
-                    raise MossAnalysisError(
-                        f"MOSS-Music {analysis_pass.name} pass failed: {exc}",
-                        responses=responses,
-                        raw_texts=raw_texts,
-                        metadata={"backend": "sglang", "model": self.config.model_name, "passes": pass_metadata},
-                    ) from exc
-                budget = recovered_budget
-                try:
-                    response = self.client.generate(
+                if force_segmented:
+                    response, raw_text, segment_metadata = self._run_segmented_pass(
+                        request=request,
+                        audio=audio,
+                        analysis_pass=analysis_pass,
+                        progress=progress,
+                        pass_start=start,
+                        pass_span=1 / len(passes),
+                    )
+                    budget = {"mode": "segmented", "segmentCount": len(segment_metadata), "windowSeconds": self.config.semantic_window_seconds}
+                else:
+                    response, budget = self._generate_with_budget(
                         prompt=analysis_pass.instruction,
                         audio_path=audio.path,
-                        max_new_tokens=int(budget["availableOutputTokens"]),
                         temperature=request.temperature,
                     )
-                except Exception as retry_exc:
-                    pass_metadata.append({"name": analysis_pass.name, "error": str(retry_exc), "outputBudget": budget})
-                    raise MossAnalysisError(
-                        f"MOSS-Music {analysis_pass.name} pass failed after context recovery: {retry_exc}",
-                        responses=responses,
-                        raw_texts=raw_texts,
-                        metadata={"backend": "sglang", "model": self.config.model_name, "passes": pass_metadata},
-                    ) from retry_exc
+                    if self._is_truncated(response):
+                        response, raw_text, segment_metadata = self._run_segmented_pass(
+                            request=request,
+                            audio=audio,
+                            analysis_pass=analysis_pass,
+                            progress=progress,
+                            pass_start=start,
+                            pass_span=1 / len(passes),
+                        )
+                        budget = {
+                            "mode": "segmented_after_context_limit",
+                            "segmentCount": len(segment_metadata),
+                            "windowSeconds": self.config.semantic_window_seconds,
+                        }
+                    else:
+                        raw_text = self._raw_text(response)
+            except Exception as exc:
+                pass_metadata.append({"name": analysis_pass.name, "error": str(exc)})
+                raise MossAnalysisError(
+                    f"MOSS-Music {analysis_pass.name} pass failed: {exc}",
+                    responses=responses,
+                    raw_texts=raw_texts,
+                    metadata={"backend": "sglang", "model": self.config.model_name, "passes": pass_metadata},
+                ) from exc
             responses[analysis_pass.name] = response
-            if isinstance(response, str):
-                raw_text = response
-            elif isinstance(response, dict) and isinstance(response.get("text"), str):
-                raw_text = response["text"]
-            else:
-                raw_text = json.dumps(response, sort_keys=True, default=str)
             raw_texts[analysis_pass.name] = raw_text
             pass_metadata.append(
                 {
@@ -279,6 +449,7 @@ class SGLangMossRuntime:
                     "elapsedSeconds": round(time.monotonic() - started, 3),
                     "outputCharacters": len(raw_text),
                     "outputBudget": budget,
+                    "segments": segment_metadata,
                 }
             )
             progress((index + 1) / len(passes), f"MOSS-Music {analysis_pass.name} pass received")

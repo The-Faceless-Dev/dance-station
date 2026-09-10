@@ -225,3 +225,48 @@ def merge_moss_passes(pass_results: list[tuple[str, dict[str, Any]]]) -> dict[st
     merged["events"].sort(key=lambda value: (value.get("start_seconds", 0), value.get("id", "")))
     merged["event_count"] = len(merged["events"])
     return merged
+
+
+def merge_moss_segments(segment_results: list[tuple[float, dict[str, Any]]]) -> dict[str, Any]:
+    """Merge bounded semantic responses while preserving absolute timestamps."""
+
+    merged: dict[str, Any] = {
+        "summary": "",
+        "tempo_bpm": None,
+        "time_signature": None,
+        "key": None,
+        "sections": [],
+        "beats": [],
+        "chords": [],
+        "lyrics": [],
+        "instruments": [],
+        "voices": [],
+        "visual_cues": [],
+        "events": [],
+        "warnings": [],
+    }
+    collections = tuple(name for name in merged if name not in {"summary", "tempo_bpm", "time_signature", "key", "warnings"})
+    seen: dict[str, set[str]] = {name: set() for name in collections}
+    for offset, parsed in segment_results:
+        for scalar in ("summary", "tempo_bpm", "time_signature", "key"):
+            if merged[scalar] in (None, "") and parsed.get(scalar) not in (None, ""):
+                merged[scalar] = parsed[scalar]
+        for warning in parsed.get("warnings", []):
+            if warning not in merged["warnings"]:
+                merged["warnings"].append(warning)
+        for collection in collections:
+            for item in parsed.get(collection, []):
+                enriched = dict(item)
+                for field_name in ("start_seconds", "end_seconds", "time_seconds"):
+                    if field_name in enriched and isinstance(enriched[field_name], (int, float)):
+                        enriched[field_name] = round(float(enriched[field_name]) + offset, 6)
+                enriched["source_segment_start_seconds"] = round(offset, 6)
+                identity = json.dumps(enriched, sort_keys=True, default=str)
+                if identity in seen[collection]:
+                    continue
+                seen[collection].add(identity)
+                merged[collection].append(enriched)
+    for collection in collections:
+        merged[collection].sort(key=lambda value: (value.get("start_seconds", value.get("time_seconds", 0)), value.get("id", "")))
+    merged["event_count"] = len(merged["events"])
+    return merged

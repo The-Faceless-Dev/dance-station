@@ -35,6 +35,8 @@ class MossMusicConfig:
     max_download_bytes: int = 1024 * 1024 * 1024
     max_prompt_characters: int = 16000
     default_temperature: float = 0.0
+    semantic_window_seconds: float = 60.0
+    min_semantic_window_seconds: float = 5.0
     request_timeout_seconds: float = 3600.0
     job_timeout_seconds: float = 3900.0
     max_timeline_cells: int = 100000
@@ -69,6 +71,8 @@ class MossMusicConfig:
             max_download_bytes=int(os.getenv("MOSS_MUSIC_MAX_DOWNLOAD_BYTES", str(1024 * 1024 * 1024))),
             max_prompt_characters=int(os.getenv("MOSS_MUSIC_MAX_PROMPT_CHARACTERS", "16000")),
             default_temperature=float(os.getenv("MOSS_MUSIC_DEFAULT_TEMPERATURE", "0")),
+            semantic_window_seconds=float(os.getenv("MOSS_MUSIC_SEMANTIC_WINDOW_SECONDS", "60")),
+            min_semantic_window_seconds=float(os.getenv("MOSS_MUSIC_MIN_SEMANTIC_WINDOW_SECONDS", "5")),
             request_timeout_seconds=float(os.getenv("MOSS_MUSIC_REQUEST_TIMEOUT_SECONDS", "3600")),
             job_timeout_seconds=float(os.getenv("MOSS_MUSIC_JOB_TIMEOUT_SECONDS", "3900")),
             max_timeline_cells=int(os.getenv("MOSS_MUSIC_MAX_TIMELINE_CELLS", "100000")),
@@ -88,6 +92,10 @@ class MossMusicConfig:
             raise ValueError("MOSS audio limits must be positive")
         if self.max_prompt_characters < 1:
             raise ValueError("MOSS prompt limit must be positive")
+        if self.semantic_window_seconds <= 0 or self.min_semantic_window_seconds <= 0:
+            raise ValueError("MOSS semantic window durations must be positive")
+        if self.min_semantic_window_seconds > self.semantic_window_seconds:
+            raise ValueError("MOSS minimum semantic window cannot exceed the semantic window")
         if self.model_context_length is not None and self.model_context_length < 1:
             raise ValueError("MOSS model context length must be positive when provided")
         if self.request_timeout_seconds <= 0 or self.job_timeout_seconds <= 0:

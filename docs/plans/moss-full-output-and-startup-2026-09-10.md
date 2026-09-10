@@ -46,3 +46,14 @@ manual shell intervention.
 - Run the complete local test suite and a production-shaped Vast run using
   `D:\goreset\crown.mp3`. Verify all artifacts and destroy the paid instance
   after the run.
+
+## Follow-up From First Full Run
+
+The first recovery image proved startup and GPU inference, but the full-song
+harmony pass consumed the checkpoint context completion budget and was rejected
+as truncated. The runtime now keeps the caller free of token controls while
+adaptively splitting only a pass that reaches the model context boundary into
+configurable audio windows, offsetting timestamps back onto the original song
+timeline, and merging the complete pass. The default semantic window is 60
+seconds and is controlled by worker configuration rather than a caller token
+limit.

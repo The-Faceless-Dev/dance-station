@@ -26,6 +26,16 @@ class AudioBuffer:
         return float(self.samples.size / self.sample_rate)
 
 
+def write_audio_segment(audio: AudioBuffer, destination: Path, start_seconds: float, end_seconds: float) -> Path:
+    """Write a normalized mono segment for bounded model context windows."""
+
+    start = max(0, min(audio.samples.size, round(start_seconds * audio.sample_rate)))
+    end = max(start + 1, min(audio.samples.size, round(end_seconds * audio.sample_rate)))
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    _write_wave(destination, audio.samples[start:end], audio.sample_rate)
+    return destination
+
+
 def acquire_audio(
     audio: MossAudioInput,
     destination: Path,

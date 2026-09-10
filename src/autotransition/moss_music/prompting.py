@@ -128,3 +128,15 @@ def build_analysis_prompt(request: MossMusicRequest) -> str:
     """Backward-compatible access to the full overview prompt."""
 
     return build_analysis_prompts(request)[0].instruction
+
+
+def add_segment_context(*, start_seconds: float, end_seconds: float, full_duration_seconds: float) -> str:
+    """Tell a bounded pass how to place its local audio results on the source timeline."""
+
+    return (
+        f"\n\nThis is a bounded segment of the original audio: "
+        f"{start_seconds:.3f} to {end_seconds:.3f} seconds of {full_duration_seconds:.3f} seconds. "
+        "Return only information supported by this segment. Use timestamps relative to the "
+        "beginning of the supplied segment; the runtime will place them on the original "
+        "timeline. Do not repeat events from outside this segment."
+    )
