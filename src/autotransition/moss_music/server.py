@@ -5,6 +5,7 @@ import mimetypes
 import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
@@ -44,6 +45,24 @@ def _request_from_http_payload(payload: dict[str, Any]) -> MossMusicRequest:
     )
 
 
+def _public_job_payload(job: dict[str, Any]) -> dict[str, Any]:
+    """Expose downloadable artifact URLs without leaking worker filesystem paths."""
+    payload = dict(job)
+    public_artifacts: list[dict[str, Any]] = []
+    job_id = str(payload.get("id") or "")
+    for item in payload.get("artifacts") or []:
+        if not isinstance(item, dict) or not item.get("name"):
+            continue
+        artifact = {key: value for key, value in item.items() if key != "path"}
+        artifact["downloadUrl"] = (
+            f"/v1/moss/jobs/{quote(job_id, safe='')}/artifacts/"
+            f"{quote(str(item['name']), safe='')}"
+        )
+        public_artifacts.append(artifact)
+    payload["artifacts"] = public_artifacts
+    return payload
+
+
 def create_moss_music_worker_app(config: MossMusicConfig | None = None, runtime: Any | None = None) -> FastAPI:
     config = config or MossMusicConfig.from_env()
     store = MossMusicArtifactStore(config.artifact_root)
@@ -77,7 +96,7 @@ def create_moss_music_worker_app(config: MossMusicConfig | None = None, runtime:
     async def submit(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             job = await worker.submit(_request_from_http_payload(payload))
-            return worker.get(job.id)
+            return _public_job_payload(worker.get(job.id))
         except HTTPException:
             raise
         except ValueError as exc:
@@ -86,7 +105,7 @@ def create_moss_music_worker_app(config: MossMusicConfig | None = None, runtime:
     @app.get("/v1/moss/jobs/{job_id}")
     async def get_job(job_id: str) -> dict[str, Any]:
         try:
-            return worker.get(job_id)
+            return _public_job_payload(worker.get(job_id))
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

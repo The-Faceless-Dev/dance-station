@@ -19,8 +19,9 @@ through the normal callback contract without manual artifact recovery.
 4. Make the canonical `analysis.json`, raw response, runtime metadata, request,
    and event log upload as one declared artifact set. Return both artifact IDs
    and the uploaded artifact manifest from `/process` completion.
-5. Expose the same complete artifact manifest from direct job status so a direct
-   Vast caller can retrieve the result without searching the container.
+5. Expose the same complete artifact manifest from direct job status, including
+   worker-relative download URLs and no container-local paths, so a direct Vast
+   caller can retrieve the result without searching the container.
 
 ## Affected Files
 

@@ -28,9 +28,23 @@ def test_direct_job_artifacts_are_downloadable(tmp_path) -> None:
     store = MossMusicArtifactStore(config.artifact_root)
     store.create_job(MossMusicJob(id="artifact-job", status="succeeded", request={}))
     store.finalize_json("artifact-job", "analysis.json", {"schema_version": 1, "runtime": "moss-music"})
+    store._atomic_json(
+        store.job_dir("artifact-job") / "job.json",
+        {
+            "id": "artifact-job",
+            "status": "succeeded",
+            "request": {},
+            "artifacts": [store.artifact("artifact-job", "analysis.json", "application/json").__dict__],
+        },
+    )
     app = create_moss_music_worker_app(config)
     try:
         with TestClient(app) as client:
+            job = client.get("/v1/moss/jobs/artifact-job")
+            assert job.status_code == 200
+            artifact = job.json()["artifacts"][0]
+            assert "path" not in artifact
+            assert artifact["downloadUrl"] == "/v1/moss/jobs/artifact-job/artifacts/analysis.json"
             response = client.get("/v1/moss/jobs/artifact-job/artifacts/analysis.json")
             assert response.status_code == 200
             assert json.loads(response.text)["runtime"] == "moss-music"
