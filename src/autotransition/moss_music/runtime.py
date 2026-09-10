@@ -290,6 +290,30 @@ class SGLangMossRuntime:
                     item["time_seconds"] = round(bounded_start, 6)
                 kept.append(item)
             bounded[collection] = kept
+            if collection == "visual_events" and len(kept) > 12:
+                unique: dict[str, dict[str, Any]] = {}
+                for item in kept:
+                    identity = json.dumps(
+                        {key: value for key, value in item.items() if key not in {"id", "source", "provenance"}},
+                        sort_keys=True,
+                        default=str,
+                    )
+                    unique.setdefault(identity, item)
+                ranked = sorted(
+                    unique.values(),
+                    key=lambda item: (
+                        -float(item.get("intensity", item.get("strength", 0)) or 0),
+                        -float(item.get("confidence", 0) or 0),
+                        float(item.get("start_seconds", 0) or 0),
+                    ),
+                )
+                bounded[collection] = sorted(
+                    ranked[:12],
+                    key=lambda item: (float(item.get("start_seconds", 0) or 0), item.get("id", "")),
+                )
+                warnings = list(bounded.get("warnings") or [])
+                warnings.append("Limited visual_events to 12 salient records for this segment")
+                bounded["warnings"] = warnings
         warnings = list(bounded.get("warnings") or [])
         if dropped:
             warnings.append(f"Dropped {dropped} model event(s) outside the supplied segment")

@@ -90,6 +90,17 @@ def test_parser_does_not_accept_a_nested_object_from_truncated_output() -> None:
         parse_moss_response('{"summary":"partial", "sections": [{"label":"intro"')
 
 
+def test_parser_recovers_complete_timed_records_from_truncated_pass() -> None:
+    parsed, _ = parse_moss_response(
+        '{"visual_events":[{"start":0,"end":1,"type":"drop","intensity":0.9},'
+        '{"start":2,"end":3,"type":"rise"',
+        required_keys={"visual_events", "warnings"},
+    )
+    assert len(parsed["visual_events"]) == 1
+    assert parsed["visual_events"][0]["type"] == "drop"
+    assert any("Recovered 1 complete timed record" in warning for warning in parsed["warnings"])
+
+
 def test_parser_accepts_json_wrapped_by_model_preamble() -> None:
     parsed, _ = parse_moss_response('Here is the requested JSON:\n{"beats": [], "warnings": []}\nDone.')
     assert parsed["beats"] == []
@@ -331,6 +342,16 @@ def test_segment_results_are_bounded_before_merge(tmp_path: Path) -> None:
     assert bounded["beats"] == []
     assert bounded["events"][0]["end_seconds"] == 3
     assert bounded["event_count"] == 1
+
+
+def test_segment_visual_events_are_deduplicated_and_capped(tmp_path: Path) -> None:
+    events = [
+        {"type": f"event-{index}", "start_seconds": index, "end_seconds": index + 0.1, "intensity": index / 20}
+        for index in range(20)
+    ]
+    bounded = SGLangMossRuntime._restrict_segment({"visual_events": events, "warnings": []}, 30)
+    assert len(bounded["visual_events"]) == 12
+    assert any("Limited visual_events" in warning for warning in bounded["warnings"])
 
 
 def test_segment_parse_error_keeps_raw_text_without_retry(tmp_path: Path) -> None:

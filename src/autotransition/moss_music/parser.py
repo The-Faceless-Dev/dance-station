@@ -79,6 +79,56 @@ def _json_object(text: str) -> dict[str, Any]:
     raise MossResponseError("MOSS response did not contain a valid JSON object")
 
 
+def _complete_nested_objects(text: str) -> list[dict[str, Any]]:
+    """Recover complete nested records when the model truncates the outer object."""
+
+    decoder = json.JSONDecoder()
+    recovered: list[dict[str, Any]] = []
+    for index, character in enumerate(text):
+        if character != "{":
+            continue
+        try:
+            value, _ = decoder.raw_decode(text, index)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict) and any(
+            key in value for key in ("start_seconds", "start", "time_seconds", "time", "end_seconds", "end")
+        ):
+            recovered.append(value)
+    return recovered
+
+
+def _partial_json_object(text: str, required_keys: set[str] | None) -> dict[str, Any] | None:
+    """Build a best-effort response from complete records inside truncated JSON."""
+
+    collection_names = (
+        "sections", "beats", "chords", "lyrics", "instruments", "voices",
+        "visual_cues", "visual_events", "events",
+    )
+    wanted = set(required_keys or collection_names)
+    recovered: dict[str, Any] = {}
+    recovered_count = 0
+    for collection in collection_names:
+        if collection not in wanted or f'"{collection}"' not in text:
+            continue
+        marker = f'"{collection}"'
+        start = text.find(marker) + len(marker)
+        values = []
+        for index, value in enumerate(_complete_nested_objects(text[start:])):
+            item = _timed_item(value, index=index, default_type=collection[:-1] if collection.endswith("s") else collection)
+            if item is not None:
+                values.append(value)
+        if values:
+            recovered[collection] = values
+            recovered_count += len(values)
+    if not recovered:
+        return None
+    recovered["warnings"] = [
+        f"Recovered {recovered_count} complete timed record(s) from an incomplete MOSS JSON response"
+    ]
+    return recovered
+
+
 def empty_moss_response(warning: str | None = None) -> dict[str, Any]:
     """Return an empty normalized view without discarding the raw model text."""
 
@@ -170,7 +220,12 @@ def parse_moss_response(response: Any, *, required_keys: set[str] | None = None)
     """Parse and normalize model JSON while retaining its exact text."""
 
     text = _response_text(response)
-    raw = _json_object(text)
+    try:
+        raw = _json_object(text)
+    except MossResponseError:
+        raw = _partial_json_object(text, required_keys)
+        if raw is None:
+            raise
     warnings = [str(value) for value in raw.get("warnings") or []]
     finish_reason = _finish_reason(response)
     if finish_reason in {"length", "max_tokens", "max_new_tokens"}:
