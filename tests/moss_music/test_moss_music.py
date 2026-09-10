@@ -14,6 +14,7 @@ from autotransition.moss_music.config import MossMusicConfig
 from autotransition.moss_music.contracts import MossAudioInput, MossMusicRequest
 from autotransition.moss_music.parser import MossResponseError, parse_moss_response
 from autotransition.moss_music.parser import merge_moss_passes
+from autotransition.moss_music.prompting import build_analysis_prompts
 from autotransition.moss_music.runtime import MossRuntimeResult
 from autotransition.moss_music.runtime import SGLangMossClient, SGLangMossRuntime
 from autotransition.moss_music.timeline import build_dense_timeline
@@ -91,6 +92,14 @@ def test_parser_does_not_accept_a_nested_object_from_truncated_output() -> None:
 def test_parser_accepts_json_wrapped_by_model_preamble() -> None:
     parsed, _ = parse_moss_response('Here is the requested JSON:\n{"beats": [], "warnings": []}\nDone.')
     assert parsed["beats"] == []
+
+
+def test_analysis_pass_prompts_only_request_their_own_fields() -> None:
+    request = MossMusicRequest(audio=MossAudioInput(source_url="https://example.test/song.mp3", filename="song.mp3"))
+    prompts = {item.name: item.instruction for item in build_analysis_prompts(request)}
+    assert '"beats": []' not in prompts["overview"]
+    assert '"sections": []' not in prompts["rhythm"]
+    assert 'exactly the keys shown below' in prompts["harmony"]
 
 
 def test_sglang_client_sends_official_audio_request_shape(monkeypatch, tmp_path: Path) -> None:
@@ -288,6 +297,25 @@ def test_sglang_runtime_segments_long_harmony_pass_and_offsets_timestamps(tmp_pa
     harmony = result.responses["harmony"]
     assert [item["start_seconds"] for item in harmony["chords"]] == [0.0, 0.1, 0.2]
     assert all(item["outputBudget"]["mode"] == "segmented" for item in result.metadata["passes"])
+
+
+def test_segment_results_are_bounded_before_merge(tmp_path: Path) -> None:
+    parsed = {
+        "sections": [{"start_seconds": 0, "end_seconds": 2}],
+        "beats": [{"start_seconds": 9, "end_seconds": 9}],
+        "chords": [],
+        "lyrics": [],
+        "instruments": [],
+        "voices": [],
+        "visual_cues": [],
+        "events": [{"start_seconds": 1, "end_seconds": 4}],
+        "warnings": [],
+        "event_count": 1,
+    }
+    bounded = SGLangMossRuntime._restrict_segment(parsed, 3)
+    assert bounded["beats"] == []
+    assert bounded["events"][0]["end_seconds"] == 3
+    assert bounded["event_count"] == 1
 
 
 def test_dense_timeline_covers_full_audio_at_80ms(tmp_path: Path) -> None:

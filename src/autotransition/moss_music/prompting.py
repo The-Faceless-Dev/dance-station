@@ -6,26 +6,9 @@ from .contracts import MossMusicRequest
 
 
 DEFAULT_ANALYSIS_PROMPT = """Analyze the supplied musical audio for downstream visual synchronization.
-Return only one valid JSON object, with no Markdown fences and no prose outside the object.
-Use absolute seconds from the beginning of the audio. Do not invent timestamps for events
-you cannot identify; use null or an empty list and include a warning instead.
-
-The object must contain these keys:
-{
-  "summary": "string",
-  "tempo_bpm": number or null,
-  "time_signature": "string or null",
-  "key": "string or null",
-  "sections": [],
-  "beats": [],
-  "chords": [],
-  "lyrics": [],
-  "instruments": [],
-  "voices": [],
-  "visual_cues": [],
-  "events": [],
-  "warnings": []
-}
+Return only the fields requested for the current analysis pass. Use absolute seconds
+from the beginning of the supplied audio. Do not invent timestamps for events you
+cannot identify; use an empty list or null scalar and include a warning instead.
 
 Every timed item must use start_seconds and end_seconds (or time_seconds for an
 instantaneous event), plus type or label, strength when meaningful, and confidence
@@ -81,33 +64,39 @@ ANALYSIS_PASSES = (
 )
 
 
+_FIELD_SHAPES = {
+    "summary": "string",
+    "tempo_bpm": "number or null",
+    "time_signature": "string or null",
+    "key": "string or null",
+    "sections": [],
+    "beats": [],
+    "chords": [],
+    "lyrics": [],
+    "instruments": [],
+    "voices": [],
+    "visual_cues": [],
+    "events": [],
+    "warnings": [],
+}
+
+
 def _prompt_for_pass(request: MossMusicRequest, analysis_pass: MossAnalysisPass) -> str:
     user_context = request.prompt.strip() if request.prompt and request.prompt.strip() else DEFAULT_ANALYSIS_PROMPT
-    schema = {
-        "summary": "string",
-        "tempo_bpm": "number or null",
-        "time_signature": "string or null",
-        "key": "string or null",
-        "sections": [],
-        "beats": [],
-        "chords": [],
-        "lyrics": [],
-        "instruments": [],
-        "voices": [],
-        "visual_cues": [],
-        "events": [],
-        "warnings": [],
-    }
+    schema = {key: _FIELD_SHAPES[key] for key in analysis_pass.required_keys}
     return (
         f"{user_context}\n\n"
         f"Analysis pass: {analysis_pass.name}. {analysis_pass.instruction}\n"
         "Return only one valid JSON object, with no Markdown fences and no prose outside it. "
-        "The object must contain every key shown below, even when a list is empty or a "
-        "scalar is null. Use absolute seconds from the beginning of the supplied audio. "
+        "The object must contain exactly the keys shown below, even when a list is empty "
+        "or a scalar is null. Do not add data for another analysis pass. Use absolute "
+        "seconds from the beginning of the supplied audio. "
         "Every timed item must use start_seconds and end_seconds, or time_seconds for an "
         "instantaneous event, plus type or label, strength when meaningful, and confidence "
-        "between 0 and 1 when it can be estimated. Do not invent events.\n"
-        f"Required JSON shape: {schema}\n\n"
+        "between 0 and 1 when it can be estimated. Do not invent a regular beat grid or "
+        "repeat events at fixed intervals. Include only events supported by the supplied "
+        "audio, then stop after the last supported item.\n"
+        f"Required JSON shape for this pass only: {schema}\n\n"
         f"Analysis profile: {request.analysis_profile}. The companion measured timeline uses "
         f"{request.event_resolution_ms} ms cells. Use the audio itself for interpretation."
     )

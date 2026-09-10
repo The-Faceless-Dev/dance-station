@@ -273,6 +273,47 @@ class SGLangMossRuntime:
             )
         return response, budget
 
+    @staticmethod
+    def _restrict_segment(parsed: dict[str, Any], duration_seconds: float) -> dict[str, Any]:
+        """Keep model events inside the audio segment that produced them."""
+
+        bounded = dict(parsed)
+        collections = ("sections", "beats", "chords", "lyrics", "instruments", "voices", "visual_cues", "events")
+        dropped = 0
+        clipped = 0
+        for collection in collections:
+            values = parsed.get(collection)
+            if not isinstance(values, list):
+                continue
+            kept: list[dict[str, Any]] = []
+            for value in values:
+                if not isinstance(value, dict):
+                    continue
+                start = float(value.get("start_seconds", value.get("time_seconds", 0)))
+                end = float(value.get("end_seconds", start))
+                if start > duration_seconds or end < 0:
+                    dropped += 1
+                    continue
+                item = dict(value)
+                bounded_start = max(0.0, start)
+                bounded_end = min(duration_seconds, max(bounded_start, end))
+                if bounded_start != start or bounded_end != end:
+                    clipped += 1
+                item["start_seconds"] = round(bounded_start, 6)
+                item["end_seconds"] = round(bounded_end, 6)
+                if "time_seconds" in item:
+                    item["time_seconds"] = round(bounded_start, 6)
+                kept.append(item)
+            bounded[collection] = kept
+        warnings = list(bounded.get("warnings") or [])
+        if dropped:
+            warnings.append(f"Dropped {dropped} model event(s) outside the supplied segment")
+        if clipped:
+            warnings.append(f"Clipped {clipped} model event endpoint(s) to the supplied segment")
+        bounded["warnings"] = warnings
+        bounded["event_count"] = len(bounded.get("events") or [])
+        return bounded
+
     def _generate_segmented_pass(
         self,
         *,
@@ -344,6 +385,7 @@ class SGLangMossRuntime:
             return first + second, first_raw + second_raw, first_meta + second_meta
         try:
             parsed, raw_text = parse_moss_response(response, required_keys=set(analysis_pass.required_keys))
+            parsed = self._restrict_segment(parsed, duration)
         except Exception as exc:
             raise MossSegmentError(
                 f"MOSS {analysis_pass.name} segment response could not be parsed: {exc}",
