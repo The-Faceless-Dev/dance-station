@@ -14,7 +14,9 @@ manual shell intervention.
   an arbitrary response-token ceiling in the worker.
 - Set the SGLang request budget from the backend's actual context capacity and
   prompt token count, so omission means maximum available context rather than
-  SGLang's 4096 default. Record the resolved context metadata.
+  SGLang's 4096 default. If SGLang reports its exact serialized input count,
+  recover the remaining context and retry without imposing a fixed ceiling.
+  Record the resolved context metadata.
 - Preserve the full MOSS prompt/schema and reject only genuinely incomplete
   responses; retain raw and response metadata on failure.
 - Make the container entrypoint usable with both the normal image command and

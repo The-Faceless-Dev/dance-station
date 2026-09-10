@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import time
 import wave
 from dataclasses import dataclass
@@ -112,6 +113,30 @@ class SGLangMossClient:
             "availableOutputTokens": available,
         }
 
+    @staticmethod
+    def recover_output_budget(error: str, budget: dict[str, Any]) -> dict[str, Any] | None:
+        """Use SGLang's measured input count when its serializer rejects a budget."""
+
+        match = re.search(
+            r"(\d+) tokens from the input messages and (\d+) tokens for the completion",
+            error,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            return None
+        input_tokens = int(match.group(1))
+        context_length = int(budget["contextLength"])
+        available = context_length - input_tokens - 1
+        if available < 1:
+            return None
+        return {
+            **budget,
+            "estimatedAvailableOutputTokens": budget["availableOutputTokens"],
+            "backendInputTokens": input_tokens,
+            "availableOutputTokens": available,
+            "budgetRecoveredFromBackendContextError": True,
+        }
+
     def health(self) -> dict[str, Any]:
         url = f"{self.config.sglang_url}{self.config.sglang_health_path}"
         try:
@@ -212,12 +237,31 @@ class SGLangMossRuntime:
                     temperature=request.temperature,
                 )
             except Exception as exc:
-                raise MossAnalysisError(
-                    f"MOSS-Music {analysis_pass.name} pass failed: {exc}",
-                    responses=responses,
-                    raw_texts=raw_texts,
-                    metadata={"backend": "sglang", "model": self.config.model_name, "passes": pass_metadata},
-                ) from exc
+                recovered_budget = self.client.recover_output_budget(str(exc), budget)
+                if recovered_budget is None:
+                    pass_metadata.append({"name": analysis_pass.name, "error": str(exc), "outputBudget": budget})
+                    raise MossAnalysisError(
+                        f"MOSS-Music {analysis_pass.name} pass failed: {exc}",
+                        responses=responses,
+                        raw_texts=raw_texts,
+                        metadata={"backend": "sglang", "model": self.config.model_name, "passes": pass_metadata},
+                    ) from exc
+                budget = recovered_budget
+                try:
+                    response = self.client.generate(
+                        prompt=analysis_pass.instruction,
+                        audio_path=audio.path,
+                        max_new_tokens=int(budget["availableOutputTokens"]),
+                        temperature=request.temperature,
+                    )
+                except Exception as retry_exc:
+                    pass_metadata.append({"name": analysis_pass.name, "error": str(retry_exc), "outputBudget": budget})
+                    raise MossAnalysisError(
+                        f"MOSS-Music {analysis_pass.name} pass failed after context recovery: {retry_exc}",
+                        responses=responses,
+                        raw_texts=raw_texts,
+                        metadata={"backend": "sglang", "model": self.config.model_name, "passes": pass_metadata},
+                    ) from retry_exc
             responses[analysis_pass.name] = response
             if isinstance(response, str):
                 raw_text = response

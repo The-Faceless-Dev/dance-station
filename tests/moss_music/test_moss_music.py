@@ -15,7 +15,7 @@ from autotransition.moss_music.contracts import MossAudioInput, MossMusicRequest
 from autotransition.moss_music.parser import MossResponseError, parse_moss_response
 from autotransition.moss_music.parser import merge_moss_passes
 from autotransition.moss_music.runtime import MossRuntimeResult
-from autotransition.moss_music.runtime import SGLangMossClient
+from autotransition.moss_music.runtime import SGLangMossClient, SGLangMossRuntime
 from autotransition.moss_music.timeline import build_dense_timeline
 from autotransition.moss_music.worker import MossMusicWorker
 
@@ -173,6 +173,19 @@ def test_sglang_client_uses_checkpoint_context_for_output_budget(monkeypatch, tm
     }
 
 
+def test_context_budget_recovers_from_sglang_measured_input() -> None:
+    budget = {"contextLength": 40960, "availableOutputTokens": 37551}
+    recovered = SGLangMossClient.recover_output_budget(
+        "Requested token count exceeds the model's maximum context length of 40960 tokens. "
+        "You requested a total of 41280 tokens: 3729 tokens from the input messages and 37551 tokens for the completion.",
+        budget,
+    )
+    assert recovered is not None
+    assert recovered["backendInputTokens"] == 3729
+    assert recovered["availableOutputTokens"] == 37230
+    assert recovered["budgetRecoveredFromBackendContextError"] is True
+
+
 def test_request_has_no_caller_token_budget() -> None:
     request = MossMusicRequest(audio=MossAudioInput(source_url="https://example.test/song.mp3", filename="song.mp3"))
     assert "max_new_tokens" not in request.to_dict()
@@ -186,6 +199,44 @@ def test_merge_moss_passes_preserves_pass_provenance() -> None:
     assert merged["passes"] == ["rhythm", "harmony"]
     assert merged["beats"][0]["source_pass"] == "rhythm"
     assert merged["chords"][0]["source_pass"] == "harmony"
+
+
+def test_sglang_runtime_runs_all_focused_passes_without_request_token_override(tmp_path: Path) -> None:
+    source = tmp_path / "tone.wav"
+    _write_wav(source)
+    audio = normalize_audio(source, tmp_path / "normalized")
+    calls: list[dict[str, object]] = []
+
+    class FakeClient:
+        def resolve_output_budget(self, *, prompt, audio_path):
+            return {"contextLength": 40960, "promptTokens": 100, "audioTokens": 3, "availableOutputTokens": 40857}
+
+        def generate(self, *, prompt, audio_path, max_new_tokens, temperature):
+            calls.append({"prompt": prompt, "max_new_tokens": max_new_tokens})
+            return {
+                "text": json.dumps({
+                    "summary": "pass",
+                    "tempo_bpm": 120,
+                    "time_signature": "4/4",
+                    "key": "C",
+                    "sections": [],
+                    "beats": [],
+                    "chords": [],
+                    "lyrics": [],
+                    "instruments": [],
+                    "voices": [],
+                    "visual_cues": [],
+                    "events": [],
+                    "warnings": [],
+                }),
+                "meta_info": {"finish_reason": {"type": "stop"}},
+            }
+
+    config = MossMusicConfig(model_root=tmp_path / "model", backend="sglang", device="cuda", gpu_required=True)
+    result = SGLangMossRuntime(config, client=FakeClient()).analyze(_request(source), audio, lambda *_: None)
+    assert len(calls) == 4
+    assert set(result.responses) == {"overview", "rhythm", "harmony", "lyrics_and_voices"}
+    assert all(call["max_new_tokens"] == 40857 for call in calls)
 
 
 def test_dense_timeline_covers_full_audio_at_80ms(tmp_path: Path) -> None:
