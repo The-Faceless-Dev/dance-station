@@ -94,15 +94,16 @@ def empty_moss_response(warning: str | None = None) -> dict[str, Any]:
         "instruments": [],
         "voices": [],
         "visual_cues": [],
+        "visual_events": [],
         "events": [],
         "event_count": 0,
         "warnings": [warning] if warning else [],
     }
 
 
-def _reject_truncated_response(response: Any) -> None:
+def _finish_reason(response: Any) -> str | None:
     if not isinstance(response, dict):
-        return
+        return None
     metadata = response.get("meta_info") or response.get("metaInfo") or {}
     candidates = [metadata, response]
     choices = response.get("choices")
@@ -114,8 +115,10 @@ def _reject_truncated_response(response: Any) -> None:
         reason = container.get("finish_reason") or container.get("finishReason")
         if isinstance(reason, dict):
             reason = reason.get("type") or reason.get("reason")
-        if str(reason or "").strip().lower() in {"length", "max_tokens", "max_new_tokens"}:
-            raise MossResponseError("MOSS backend stopped at its output limit; semantic response is incomplete")
+        normalized = str(reason or "").strip().lower()
+        if normalized:
+            return normalized
+    return None
 
 
 def _number(value: Any, *, minimum: float | None = None, maximum: float | None = None) -> float | None:
@@ -166,19 +169,22 @@ def _timed_item(value: Any, *, index: int, default_type: str, source: str = "mos
 def parse_moss_response(response: Any, *, required_keys: set[str] | None = None) -> tuple[dict[str, Any], str]:
     """Parse and normalize model JSON while retaining its exact text."""
 
-    _reject_truncated_response(response)
     text = _response_text(response)
     raw = _json_object(text)
+    warnings = [str(value) for value in raw.get("warnings") or []]
+    finish_reason = _finish_reason(response)
+    if finish_reason in {"length", "max_tokens", "max_new_tokens"}:
+        warnings.append("MOSS backend reported an output-length stop; normalized fields may be partial")
     if required_keys:
         missing = sorted(key for key in required_keys if key not in raw)
         if missing:
-            raise MossResponseError(f"MOSS response is missing required key(s): {', '.join(missing)}")
+            warnings.append(f"MOSS response omitted optional pass key(s): {', '.join(missing)}")
     parsed: dict[str, Any] = {
         "summary": str(raw.get("summary") or ""),
         "tempo_bpm": _number(raw.get("tempo_bpm", raw.get("tempoBpm")), minimum=1, maximum=400),
         "time_signature": raw.get("time_signature", raw.get("timeSignature")),
         "key": raw.get("key"),
-        "warnings": [str(value) for value in raw.get("warnings") or []],
+        "warnings": warnings,
     }
     collections = {
         "sections": "section",
@@ -188,6 +194,7 @@ def parse_moss_response(response: Any, *, required_keys: set[str] | None = None)
         "instruments": "instrument",
         "voices": "voice",
         "visual_cues": "visual_cue",
+        "visual_events": "visual_event",
     }
     all_events: list[dict[str, Any]] = []
     invalid_counts: dict[str, int] = {}
@@ -237,11 +244,12 @@ def merge_moss_passes(pass_results: list[tuple[str, dict[str, Any]]]) -> dict[st
         "instruments": [],
         "voices": [],
         "visual_cues": [],
+        "visual_events": [],
         "events": [],
         "warnings": [],
         "passes": [],
     }
-    collection_names = ("sections", "beats", "chords", "lyrics", "instruments", "voices", "visual_cues", "events")
+    collection_names = ("sections", "beats", "chords", "lyrics", "instruments", "voices", "visual_cues", "visual_events", "events")
     seen: dict[str, set[str]] = {name: set() for name in collection_names}
     for pass_name, parsed in pass_results:
         merged["passes"].append(pass_name)
@@ -285,6 +293,7 @@ def merge_moss_segments(segment_results: list[tuple[float, dict[str, Any]]]) -> 
         "instruments": [],
         "voices": [],
         "visual_cues": [],
+        "visual_events": [],
         "events": [],
         "warnings": [],
     }

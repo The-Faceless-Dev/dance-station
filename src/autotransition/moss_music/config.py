@@ -37,6 +37,7 @@ class MossMusicConfig:
     default_temperature: float = 0.0
     semantic_window_seconds: float = 60.0
     min_semantic_window_seconds: float = 5.0
+    semantic_output_token_limit: int = 2048
     request_timeout_seconds: float = 3600.0
     job_timeout_seconds: float = 3900.0
     max_timeline_cells: int = 100000
@@ -73,6 +74,7 @@ class MossMusicConfig:
             default_temperature=float(os.getenv("MOSS_MUSIC_DEFAULT_TEMPERATURE", "0")),
             semantic_window_seconds=float(os.getenv("MOSS_MUSIC_SEMANTIC_WINDOW_SECONDS", "60")),
             min_semantic_window_seconds=float(os.getenv("MOSS_MUSIC_MIN_SEMANTIC_WINDOW_SECONDS", "5")),
+            semantic_output_token_limit=int(os.getenv("MOSS_MUSIC_SEMANTIC_OUTPUT_TOKEN_LIMIT", "2048")),
             request_timeout_seconds=float(os.getenv("MOSS_MUSIC_REQUEST_TIMEOUT_SECONDS", "3600")),
             job_timeout_seconds=float(os.getenv("MOSS_MUSIC_JOB_TIMEOUT_SECONDS", "3900")),
             max_timeline_cells=int(os.getenv("MOSS_MUSIC_MAX_TIMELINE_CELLS", "100000")),
@@ -96,6 +98,8 @@ class MossMusicConfig:
             raise ValueError("MOSS semantic window durations must be positive")
         if self.min_semantic_window_seconds > self.semantic_window_seconds:
             raise ValueError("MOSS minimum semantic window cannot exceed the semantic window")
+        if self.semantic_output_token_limit < 128:
+            raise ValueError("MOSS semantic output token limit must be at least 128")
         if self.model_context_length is not None and self.model_context_length < 1:
             raise ValueError("MOSS model context length must be positive when provided")
         if self.request_timeout_seconds <= 0 or self.job_timeout_seconds <= 0:

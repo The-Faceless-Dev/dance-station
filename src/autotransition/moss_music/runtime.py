@@ -222,24 +222,38 @@ class SGLangMossRuntime:
             return response["text"]
         return json.dumps(response, sort_keys=True, default=str)
 
-    def _generate_with_budget(self, *, prompt: str, audio_path: Path, temperature: float) -> tuple[Any, dict[str, Any]]:
+    def _generate_with_budget(
+        self,
+        *,
+        prompt: str,
+        audio_path: Path,
+        temperature: float,
+        max_output_tokens: int | None = None,
+    ) -> tuple[Any, dict[str, Any]]:
         budget = self.client.resolve_output_budget(prompt=prompt, audio_path=audio_path)
+
+        def apply_output_limit(value: dict[str, Any]) -> dict[str, Any]:
+            available = int(value["availableOutputTokens"])
+            requested = min(available, max_output_tokens) if max_output_tokens is not None else available
+            return {**value, "requestedOutputTokens": requested}
+
+        budget = apply_output_limit(budget)
         try:
             response = self.client.generate(
                 prompt=prompt,
                 audio_path=audio_path,
-                max_new_tokens=int(budget["availableOutputTokens"]),
+                max_new_tokens=int(budget["requestedOutputTokens"]),
                 temperature=temperature,
             )
         except Exception as exc:
             recovered_budget = self.client.recover_output_budget(str(exc), budget)
             if recovered_budget is None:
                 raise
-            budget = recovered_budget
+            budget = apply_output_limit(recovered_budget)
             response = self.client.generate(
                 prompt=prompt,
                 audio_path=audio_path,
-                max_new_tokens=int(budget["availableOutputTokens"]),
+                max_new_tokens=int(budget["requestedOutputTokens"]),
                 temperature=temperature,
             )
         return response, budget
@@ -249,7 +263,7 @@ class SGLangMossRuntime:
         """Keep model events inside the audio segment that produced them."""
 
         bounded = dict(parsed)
-        collections = ("sections", "beats", "chords", "lyrics", "instruments", "voices", "visual_cues", "events")
+        collections = ("sections", "beats", "chords", "lyrics", "instruments", "voices", "visual_cues", "visual_events", "events")
         dropped = 0
         clipped = 0
         for collection in collections:
@@ -311,6 +325,7 @@ class SGLangMossRuntime:
             prompt=instruction,
             audio_path=segment_path,
             temperature=request.temperature,
+            max_output_tokens=min(analysis_pass.output_token_budget, self.config.semantic_output_token_limit),
         )
         raw_response_text = self._raw_text(response)
         parse_error: str | None = None
@@ -412,6 +427,7 @@ class SGLangMossRuntime:
                         prompt=analysis_pass.instruction,
                         audio_path=audio.path,
                         temperature=request.temperature,
+                        max_output_tokens=min(analysis_pass.output_token_budget, self.config.semantic_output_token_limit),
                     )
                     raw_text = self._raw_text(response)
             except Exception as exc:

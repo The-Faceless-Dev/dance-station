@@ -21,6 +21,7 @@ class MossAnalysisPass:
     name: str
     instruction: str
     required_keys: tuple[str, ...]
+    output_token_budget: int
 
 
 ANALYSIS_PASSES = (
@@ -28,38 +29,50 @@ ANALYSIS_PASSES = (
         name="overview",
         instruction=(
             "Return the musical overview: summary, tempo_bpm, time_signature, key, "
-            "sections, instruments, voices, visual_cues, and warnings. Include all "
-            "detectable sections with absolute timestamps."
+            "major sections, instruments, voices, visual_cues, and warnings. Include "
+            "major intro, verse, pre-chorus, chorus, bridge, breakdown, and outro "
+            "boundaries with absolute timestamps. Keep visual_cues sparse and useful "
+            "for visual planning; do not emit a beat grid or repeated low-level events."
         ),
         required_keys=("summary", "tempo_bpm", "time_signature", "key", "sections", "instruments", "voices", "visual_cues", "warnings"),
+        output_token_budget=1536,
     ),
     MossAnalysisPass(
         name="rhythm",
         instruction=(
-            "Return the complete rhythm interpretation: beats and musical events "
-            "such as kicks, snares, claps, hats, percussion, accents, fills, drops, "
-            "and other useful onset events. Preserve strength and confidence. Do not "
-            "limit the number of events; use the full audio and absolute timestamps."
+            "Return sparse, salient within-section musical changes that matter for "
+            "visual synchronization, under the visual_events field. Do not emit a "
+            "regular beat grid, every onset, or repeated filler events. Prioritize "
+            "meaningful builds, drops, breakdowns, fills, strong accents, groove or "
+            "rhythmic-density changes, and vocal or instrument entries/exits. Return "
+            "at most 12 salient visual_events for this segment. Each visual event "
+            "should include start_seconds, end_seconds, type, intensity from 0 to 1, "
+            "emotional_direction, a short description, musical_evidence, and confidence. "
+            "Use an empty list when no salient change is supported by the audio."
         ),
-        required_keys=("beats", "events", "warnings"),
+        required_keys=("visual_events", "warnings"),
+        output_token_budget=1536,
     ),
     MossAnalysisPass(
         name="harmony",
         instruction=(
-            "Return the complete harmonic interpretation: key, chord changes, chord "
-            "labels, and any meaningful harmonic events. Use absolute timestamps and "
-            "include confidence where possible."
+            "Return a concise harmonic interpretation: key and meaningful chord changes "
+            "only. Do not repeat a chord at regular intervals or emit a full beat grid. "
+            "Use absolute timestamps and include confidence where possible."
         ),
-        required_keys=("key", "chords", "events", "warnings"),
+        required_keys=("key", "chords"),
+        output_token_budget=1024,
     ),
     MossAnalysisPass(
         name="lyrics_and_voices",
         instruction=(
-            "Return all detectable timestamped lyrics, vocal phrases, vocal sections, "
-            "and voice descriptions. If the audio is instrumental, return an empty "
-            "lyrics list and explain that in warnings rather than inventing words."
+            "Return timestamped lyric lines or meaningful vocal phrases, not individual "
+            "word fragments or repeated filler. Include concise voice descriptions. If "
+            "the audio is instrumental, return an empty lyrics list and explain that in "
+            "warnings rather than inventing words."
         ),
-        required_keys=("lyrics", "voices", "events", "warnings"),
+        required_keys=("lyrics", "voices"),
+        output_token_budget=2048,
     ),
 )
 
@@ -76,6 +89,7 @@ _FIELD_SHAPES = {
     "instruments": [],
     "voices": [],
     "visual_cues": [],
+    "visual_events": [],
     "events": [],
     "warnings": [],
 }
@@ -95,7 +109,8 @@ def _prompt_for_pass(request: MossMusicRequest, analysis_pass: MossAnalysisPass)
         "instantaneous event, plus type or label, strength when meaningful, and confidence "
         "between 0 and 1 when it can be estimated. Do not invent a regular beat grid or "
         "repeat events at fixed intervals. Include only events supported by the supplied "
-        "audio, then stop after the last supported item.\n"
+        "audio, then stop after the last supported item. Missing optional fields are valid "
+        "when the pass has no supported value.\n"
         f"Required JSON shape for this pass only: {schema}\n\n"
         f"Analysis profile: {request.analysis_profile}. The companion measured timeline uses "
         f"{request.event_resolution_ms} ms cells. Use the audio itself for interpretation."
@@ -108,6 +123,7 @@ def build_analysis_prompts(request: MossMusicRequest) -> list[MossAnalysisPass]:
             name=analysis_pass.name,
             instruction=_prompt_for_pass(request, analysis_pass),
             required_keys=analysis_pass.required_keys,
+            output_token_budget=analysis_pass.output_token_budget,
         )
         for analysis_pass in ANALYSIS_PASSES
     ]

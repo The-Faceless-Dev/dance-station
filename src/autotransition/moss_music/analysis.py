@@ -43,6 +43,7 @@ def build_analysis(
         "instruments": semantic.get("instruments", []),
         "voices": semantic.get("voices", []),
         "visual_cues": semantic.get("visual_cues", []),
+        "visual_events": semantic.get("visual_events", []),
         "events": semantic.get("events", []),
         "warnings": semantic.get("warnings", []),
         "provenance": {

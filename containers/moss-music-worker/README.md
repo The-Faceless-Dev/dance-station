@@ -89,10 +89,15 @@ retained for provenance and debugging. The `/process`
 response includes the uploaded artifact IDs and remote-safe manifest. Direct
 jobs can retrieve each durable file from
 `/v1/moss/jobs/{job_id}/artifacts/{artifact_name}`. The worker applies only the
-30-minute audio limit by default. There is no caller-facing token limit. For each
-focused pass, the worker derives the available output budget from the checkpoint's
-actual context length minus the measured text and audio input; this avoids
-SGLang's accidental 4096-token default without inventing a smaller ceiling.
+30-minute audio limit to source audio by default. It does not reject a job because
+the model returns incomplete JSON: the exact response is retained and the
+structured view is best effort. Each focused semantic response uses a bounded,
+configurable completion budget so the model stops after the requested fields
+instead of attempting an exhaustive event dump. Set
+`MOSS_MUSIC_SEMANTIC_OUTPUT_TOKEN_LIMIT` to change the ceiling; it defaults to
+2048 and is applied per pass, after the checkpoint's actual context budget is
+calculated. This is an internal generation safeguard, not an audio or raw-data
+limit.
 If a focused pass reaches the checkpoint context boundary, it is automatically
 reanalyzed in bounded audio windows and merged back with absolute source-song
 timestamps. `MOSS_MUSIC_SEMANTIC_WINDOW_SECONDS` defaults to 60 seconds and

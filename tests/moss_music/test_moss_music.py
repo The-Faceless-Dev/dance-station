@@ -76,12 +76,13 @@ def test_parser_rejects_non_json() -> None:
         parse_moss_response("MOSS says the song is energetic")
 
 
-def test_parser_rejects_length_truncated_backend_response() -> None:
-    with pytest.raises(MossResponseError, match="incomplete"):
-        parse_moss_response({
-            "text": '{"summary":"partial',
-            "meta_info": {"finish_reason": {"type": "length"}},
-        })
+def test_parser_keeps_valid_fields_when_backend_reports_length_stop() -> None:
+    parsed, _ = parse_moss_response({
+        "text": '{"summary":"partial","warnings":[]}',
+        "meta_info": {"finish_reason": {"type": "length"}},
+    })
+    assert parsed["summary"] == "partial"
+    assert any("output-length stop" in warning for warning in parsed["warnings"])
 
 
 def test_parser_does_not_accept_a_nested_object_from_truncated_output() -> None:
@@ -94,12 +95,25 @@ def test_parser_accepts_json_wrapped_by_model_preamble() -> None:
     assert parsed["beats"] == []
 
 
+def test_parser_retains_valid_pass_fields_when_optional_keys_are_missing() -> None:
+    parsed, _ = parse_moss_response(
+        '{"key":"B minor","chords":[{"chord":"Bm","start":0,"end":2}]}',
+        required_keys={"key", "chords", "events", "warnings"},
+    )
+    assert parsed["key"] == "B minor"
+    assert parsed["chords"][0]["type"] == "chord"
+    assert parsed["event_count"] == 1
+    assert any("omitted optional pass" in warning for warning in parsed["warnings"])
+
+
 def test_analysis_pass_prompts_only_request_their_own_fields() -> None:
     request = MossMusicRequest(audio=MossAudioInput(source_url="https://example.test/song.mp3", filename="song.mp3"))
     prompts = {item.name: item.instruction for item in build_analysis_prompts(request)}
     assert '"beats": []' not in prompts["overview"]
     assert '"sections": []' not in prompts["rhythm"]
     assert 'exactly the keys shown below' in prompts["harmony"]
+    assert 'Do not emit a regular beat grid' in prompts["rhythm"]
+    assert 'visual_events' in prompts["rhythm"]
 
 
 def test_sglang_client_sends_official_audio_request_shape(monkeypatch, tmp_path: Path) -> None:
@@ -207,12 +221,13 @@ def test_request_has_no_caller_token_budget() -> None:
 
 def test_merge_moss_passes_preserves_pass_provenance() -> None:
     merged = merge_moss_passes([
-        ("rhythm", {"summary": "", "tempo_bpm": 120, "time_signature": None, "key": None, "sections": [], "beats": [{"id": "moss-beat-000001", "start_seconds": 0.08, "end_seconds": 0.08}], "chords": [], "lyrics": [], "instruments": [], "voices": [], "visual_cues": [], "events": [], "warnings": [], "event_count": 1}),
-        ("harmony", {"summary": "", "tempo_bpm": None, "time_signature": None, "key": "C minor", "sections": [], "beats": [], "chords": [{"id": "moss-chord-000001", "start_seconds": 0, "end_seconds": 1, "type": "Cm"}], "lyrics": [], "instruments": [], "voices": [], "visual_cues": [], "events": [], "warnings": [], "event_count": 1}),
+        ("rhythm", {"summary": "", "tempo_bpm": 120, "time_signature": None, "key": None, "sections": [], "beats": [{"id": "moss-beat-000001", "start_seconds": 0.08, "end_seconds": 0.08}], "chords": [], "lyrics": [], "instruments": [], "voices": [], "visual_cues": [], "visual_events": [{"id": "moss-visual-000001", "start_seconds": 0.08, "end_seconds": 0.4, "type": "drop", "intensity": 0.9}], "events": [], "warnings": [], "event_count": 1}),
+        ("harmony", {"summary": "", "tempo_bpm": None, "time_signature": None, "key": "C minor", "sections": [], "beats": [], "chords": [{"id": "moss-chord-000001", "start_seconds": 0, "end_seconds": 1, "type": "Cm"}], "lyrics": [], "instruments": [], "voices": [], "visual_cues": [], "visual_events": [], "events": [], "warnings": [], "event_count": 1}),
     ])
     assert merged["passes"] == ["rhythm", "harmony"]
     assert merged["beats"][0]["source_pass"] == "rhythm"
     assert merged["chords"][0]["source_pass"] == "harmony"
+    assert merged["visual_events"][0]["source_pass"] == "rhythm"
 
 
 def test_sglang_runtime_runs_all_focused_passes_without_request_token_override(tmp_path: Path) -> None:
@@ -250,7 +265,7 @@ def test_sglang_runtime_runs_all_focused_passes_without_request_token_override(t
     result = SGLangMossRuntime(config, client=FakeClient()).analyze(_request(source), audio, lambda *_: None)
     assert len(calls) == 4
     assert set(result.responses) == {"overview", "rhythm", "harmony", "lyrics_and_voices"}
-    assert all(call["max_new_tokens"] == 40857 for call in calls)
+    assert [call["max_new_tokens"] for call in calls] == [1536, 1536, 1024, 2048]
 
 
 def test_sglang_runtime_segments_long_harmony_pass_and_offsets_timestamps(tmp_path: Path) -> None:
