@@ -32,7 +32,6 @@ class MossMusicConfig:
     max_event_resolution_ms: int = 500
     max_audio_seconds: float = 1800.0
     max_download_bytes: int = 1024 * 1024 * 1024
-    max_new_tokens: int = 4096
     max_prompt_characters: int = 16000
     default_temperature: float = 0.0
     request_timeout_seconds: float = 3600.0
@@ -62,7 +61,6 @@ class MossMusicConfig:
             max_event_resolution_ms=int(os.getenv("MOSS_MUSIC_MAX_EVENT_RESOLUTION_MS", "500")),
             max_audio_seconds=float(os.getenv("MOSS_MUSIC_MAX_AUDIO_SECONDS", "1800")),
             max_download_bytes=int(os.getenv("MOSS_MUSIC_MAX_DOWNLOAD_BYTES", str(1024 * 1024 * 1024))),
-            max_new_tokens=int(os.getenv("MOSS_MUSIC_MAX_NEW_TOKENS", "4096")),
             max_prompt_characters=int(os.getenv("MOSS_MUSIC_MAX_PROMPT_CHARACTERS", "16000")),
             default_temperature=float(os.getenv("MOSS_MUSIC_DEFAULT_TEMPERATURE", "0")),
             request_timeout_seconds=float(os.getenv("MOSS_MUSIC_REQUEST_TIMEOUT_SECONDS", "3600")),
@@ -82,8 +80,8 @@ class MossMusicConfig:
             raise ValueError("MOSS event resolution is outside its configured bounds")
         if self.max_audio_seconds <= 0 or self.max_download_bytes <= 0:
             raise ValueError("MOSS audio limits must be positive")
-        if self.max_new_tokens < 1 or self.max_prompt_characters < 1:
-            raise ValueError("MOSS token and prompt limits must be positive")
+        if self.max_prompt_characters < 1:
+            raise ValueError("MOSS prompt limit must be positive")
         if self.request_timeout_seconds <= 0 or self.job_timeout_seconds <= 0:
             raise ValueError("MOSS timeouts must be positive")
         if self.max_timeline_cells < 1:

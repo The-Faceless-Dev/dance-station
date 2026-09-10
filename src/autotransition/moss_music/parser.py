@@ -42,17 +42,37 @@ def _json_object(text: str) -> dict[str, Any]:
                 return value
         except json.JSONDecodeError:
             pass
+    # Only decode from the first object boundary. Scanning every `{` can turn
+    # a truncated outer response into a falsely successful nested object.
     decoder = json.JSONDecoder()
-    for index, character in enumerate(stripped):
-        if character != "{":
-            continue
+    start = stripped.find("{")
+    if start >= 0:
         try:
-            value, _ = decoder.raw_decode(stripped[index:])
+            value, end = decoder.raw_decode(stripped[start:])
         except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
+            value = None
+            end = 0
+        if isinstance(value, dict) and not stripped[start + end :].strip():
             return value
     raise MossResponseError("MOSS response did not contain a valid JSON object")
+
+
+def _reject_truncated_response(response: Any) -> None:
+    if not isinstance(response, dict):
+        return
+    metadata = response.get("meta_info") or response.get("metaInfo") or {}
+    candidates = [metadata, response]
+    choices = response.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        candidates.append(choices[0])
+    for container in candidates:
+        if not isinstance(container, dict):
+            continue
+        reason = container.get("finish_reason") or container.get("finishReason")
+        if isinstance(reason, dict):
+            reason = reason.get("type") or reason.get("reason")
+        if str(reason or "").strip().lower() in {"length", "max_tokens", "max_new_tokens"}:
+            raise MossResponseError("MOSS backend stopped at its output limit; semantic response is incomplete")
 
 
 def _number(value: Any, *, minimum: float | None = None, maximum: float | None = None) -> float | None:
@@ -103,6 +123,7 @@ def _timed_item(value: Any, *, index: int, default_type: str, source: str = "mos
 def parse_moss_response(response: Any) -> tuple[dict[str, Any], str]:
     """Parse and normalize model JSON while retaining its exact text."""
 
+    _reject_truncated_response(response)
     text = _response_text(response)
     raw = _json_object(text)
     parsed: dict[str, Any] = {

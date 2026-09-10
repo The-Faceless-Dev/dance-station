@@ -88,7 +88,11 @@ def request_from_payload(payload: dict[str, Any]) -> MossMusicRequest:
         event_resolution_ms=int(parameters.get("event_resolution_ms", parameters.get("eventResolutionMs", 80))),
         include_semantic_events=bool(parameters.get("include_semantic_events", parameters.get("includeSemanticEvents", True))),
         include_dense_features=bool(parameters.get("include_dense_features", parameters.get("includeDenseFeatures", True))),
-        max_new_tokens=int(parameters.get("max_new_tokens", parameters.get("maxNewTokens", 4096))),
+        max_new_tokens=(
+            int(raw_max_new_tokens)
+            if (raw_max_new_tokens := parameters.get("max_new_tokens", parameters.get("maxNewTokens"))) is not None
+            else None
+        ),
         temperature=float(parameters.get("temperature", 0.0)),
         external_job_id=_job_id(payload),
         payment_intent_id=str(parameters.get("payment_intent_id") or parameters.get("paymentIntentId") or "") or None,
@@ -97,6 +101,19 @@ def request_from_payload(payload: dict[str, Any]) -> MossMusicRequest:
 
 def _artifact_role(name: str) -> str:
     return "primary" if Path(name).name == "analysis.json" else "metadata"
+
+
+def _uploaded_artifact(artifact: dict[str, Any], artifact_id: str) -> dict[str, Any]:
+    """Return remote-safe metadata without exposing the worker filesystem path."""
+
+    return {
+        "id": artifact_id,
+        "artifactId": artifact_id,
+        "name": Path(str(artifact.get("name") or "artifact")).name,
+        "mediaType": str(artifact.get("media_type") or artifact.get("mediaType") or "application/octet-stream"),
+        "sizeBytes": int(artifact.get("size_bytes") or artifact.get("sizeBytes") or 0),
+        "sha256": str(artifact.get("sha256") or ""),
+    }
 
 
 def _upload_artifact(url: str, token: str, path: Path, artifact: dict[str, Any]) -> str:
@@ -153,14 +170,27 @@ async def _progress(url: str, token: str, job_id: str, job: dict[str, Any], sequ
         print(json.dumps({"event": "moss_progress_callback_failed", "jobId": job_id, "error": str(exc)}), flush=True)
 
 
-async def _fail_callback(complete_url: str, token: str, job_id: str, code: str, message: str) -> None:
+async def _fail_callback(
+    complete_url: str,
+    token: str,
+    job_id: str,
+    code: str,
+    message: str,
+    artifact_ids: list[str] | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+) -> None:
     fail_url = f"{complete_url.rsplit('/complete', 1)[0]}/fail"
     try:
         await asyncio.to_thread(
             _post_json,
             fail_url,
             token,
-            {"errorCode": code[:120], "errorMessage": message[:4000], "artifactIds": []},
+            {
+                "errorCode": code[:120],
+                "errorMessage": message[:4000],
+                "artifactIds": artifact_ids or [],
+                "artifacts": artifacts or [],
+            },
             timeout=10,
         )
     except Exception as exc:
@@ -197,26 +227,53 @@ async def run_queue_job(payload: dict[str, Any], worker: MossMusicWorker, config
                 if current.get("status") != "succeeded":
                     failure = current.get("failure") or {}
                     message = f"[{failure.get('code', 'moss_music_worker_failed')}] stage={failure.get('stage', 'unknown')}: {failure.get('message', 'MOSS-Music analysis failed')}"
+                    failure_artifact_ids: list[str] = []
+                    failure_artifacts: list[dict[str, Any]] = []
                     for artifact in current.get("artifacts") or []:
                         path = Path(str(artifact.get("path") or ""))
                         if path.is_file():
                             try:
-                                await asyncio.to_thread(_upload_artifact, callback_url, token, path, artifact)
+                                artifact_id = await asyncio.to_thread(_upload_artifact, callback_url, token, path, artifact)
+                                failure_artifact_ids.append(artifact_id)
+                                failure_artifacts.append(_uploaded_artifact(artifact, artifact_id))
                             except Exception as upload_error:
                                 print(json.dumps({"event": "moss_failure_artifact_upload_failed", "jobId": job_id, "error": str(upload_error)}), flush=True)
-                    await _fail_callback(complete_url, token, job_id, failure.get("code", "moss_music_worker_failed"), message)
+                    await _fail_callback(
+                        complete_url,
+                        token,
+                        job_id,
+                        failure.get("code", "moss_music_worker_failed"),
+                        message,
+                        failure_artifact_ids,
+                        failure_artifacts,
+                    )
                     failure_callback_sent = True
                     await _progress(progress_url, token, job_id, current, sequence + 1, message, "failed")
                     raise RuntimeError(message)
                 artifact_ids = []
+                uploaded_artifacts = []
                 for artifact in current.get("artifacts") or []:
                     path = Path(str(artifact.get("path") or ""))
                     if not path.is_file():
                         raise RuntimeError(f"MOSS-Music artifact is missing: {artifact.get('name')}")
-                    artifact_ids.append(await asyncio.to_thread(_upload_artifact, callback_url, token, path, artifact))
-                await asyncio.to_thread(_post_json, complete_url, token, {"artifactIds": artifact_ids})
+                    artifact_id = await asyncio.to_thread(_upload_artifact, callback_url, token, path, artifact)
+                    artifact_ids.append(artifact_id)
+                    uploaded_artifacts.append(_uploaded_artifact(artifact, artifact_id))
+                await asyncio.to_thread(
+                    _post_json,
+                    complete_url,
+                    token,
+                    {"artifactIds": artifact_ids, "artifacts": uploaded_artifacts},
+                )
                 await _progress(progress_url, token, job_id, current, sequence + 1, "MOSS-Music worker completed the job", "succeeded")
-                return {"schema_version": 1, "runtime": "moss-music", "status": "succeeded", "job_id": job_id, "artifact_ids": artifact_ids}
+                return {
+                    "schema_version": 1,
+                    "runtime": "moss-music",
+                    "status": "succeeded",
+                    "job_id": job_id,
+                    "artifact_ids": artifact_ids,
+                    "artifacts": uploaded_artifacts,
+                }
             await asyncio.sleep(2)
         raise TimeoutError(f"MOSS-Music job exceeded the {config.job_timeout_seconds:.0f}s worker timeout")
     except Exception as exc:

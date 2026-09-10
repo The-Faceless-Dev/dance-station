@@ -65,7 +65,12 @@ def test_callback_uploads_success_artifacts_and_completes(monkeypatch, tmp_path:
         result = asyncio.run(run_queue_job(payload, worker, config))
         assert result["status"] == "succeeded"
         assert "analysis.json" in uploaded
-        assert any(url.endswith("/complete") for url, _ in posted)
+        complete_payloads = [body for url, body in posted if url.endswith("/complete")]
+        assert len(complete_payloads) == 1
+        assert len(complete_payloads[0]["artifactIds"]) == len(uploaded)
+        assert {item["name"] for item in complete_payloads[0]["artifacts"]} == set(uploaded)
+        assert {item["name"] for item in result["artifacts"]} == set(uploaded)
+        assert all("path" not in item for item in result["artifacts"])
         assert any(body.get("runtime") == "moss-music" for _, body in posted)
     finally:
         worker.shutdown()

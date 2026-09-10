@@ -54,15 +54,15 @@ class SGLangMossClient:
             "body": response.text[-1000:],
         }
 
-    def generate(self, *, prompt: str, audio_path: Path, max_new_tokens: int, temperature: float) -> Any:
+    def generate(self, *, prompt: str, audio_path: Path, max_new_tokens: int | None, temperature: float) -> Any:
         url = f"{self.config.sglang_url}{self.config.sglang_endpoint}"
+        sampling_params: dict[str, Any] = {"temperature": temperature}
+        if max_new_tokens is not None:
+            sampling_params["max_new_tokens"] = max_new_tokens
         payload = {
             "text": prompt,
             "audio_data": str(audio_path),
-            "sampling_params": {
-                "max_new_tokens": max_new_tokens,
-                "temperature": temperature,
-            },
+            "sampling_params": sampling_params,
         }
         try:
             with httpx.Client(timeout=self.config.request_timeout_seconds) as client:

@@ -67,7 +67,6 @@ Direct job submission:
   "event_resolution_ms": 80,
   "include_dense_features": true,
   "include_semantic_events": true,
-  "max_new_tokens": 4096,
   "temperature": 0
 }
 ```
@@ -80,4 +79,9 @@ POST /process
 
 The final `analysis.json` is the canonical artifact. `moss-raw.txt`,
 `moss-response.json`, `audio-metadata.json`, `moss-runtime.json`, `request.json`,
-and `events.jsonl` are retained for provenance and debugging.
+and `events.jsonl` are retained for provenance and debugging. The `/process`
+response includes the uploaded artifact IDs and remote-safe manifest. Direct
+jobs can retrieve each durable file from
+`/v1/moss/jobs/{job_id}/artifacts/{artifact_name}`. The worker applies only the
+30-minute audio limit by default; `max_new_tokens` is omitted unless an explicit
+caller supplies it as a backend diagnostic override.

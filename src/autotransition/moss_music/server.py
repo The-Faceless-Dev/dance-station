@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
 
 from .callback import install_callback_routes
 from .artifacts import MossMusicArtifactStore
@@ -31,7 +33,11 @@ def _request_from_http_payload(payload: dict[str, Any]) -> MossMusicRequest:
         event_resolution_ms=int(payload.get("event_resolution_ms", payload.get("eventResolutionMs", 80))),
         include_semantic_events=bool(payload.get("include_semantic_events", payload.get("includeSemanticEvents", True))),
         include_dense_features=bool(payload.get("include_dense_features", payload.get("includeDenseFeatures", True))),
-        max_new_tokens=int(payload.get("max_new_tokens", payload.get("maxNewTokens", 4096))),
+        max_new_tokens=(
+            int(raw_max_new_tokens)
+            if (raw_max_new_tokens := payload.get("max_new_tokens", payload.get("maxNewTokens"))) is not None
+            else None
+        ),
         temperature=float(payload.get("temperature", 0.0)),
         external_job_id=str(payload.get("job_id") or payload.get("external_job_id") or "") or None,
         payment_intent_id=str(payload.get("payment_intent_id") or payload.get("paymentIntentId") or "") or None,
@@ -83,6 +89,18 @@ def create_moss_music_worker_app(config: MossMusicConfig | None = None, runtime:
             return worker.get(job_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/v1/moss/jobs/{job_id}/artifacts/{artifact_name}")
+    async def get_artifact(job_id: str, artifact_name: str) -> FileResponse:
+        try:
+            artifact = store.artifact(job_id, artifact_name)
+        except (FileNotFoundError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail="MOSS-Music artifact was not found") from exc
+        return FileResponse(
+            artifact.path,
+            media_type=artifact.media_type or mimetypes.guess_type(artifact.name)[0] or "application/octet-stream",
+            filename=artifact.name,
+        )
 
     app.state.moss_music_worker = worker
     return app

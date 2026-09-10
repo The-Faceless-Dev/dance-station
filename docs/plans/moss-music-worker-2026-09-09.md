@@ -95,7 +95,6 @@ The worker request should support:
   "include_semantic_events": true,
   "include_dense_features": true,
   "moss_model": "configured-default",
-  "max_new_tokens": 4096,
   "temperature": 0.0,
   "callback": {}
 }
@@ -229,10 +228,9 @@ GiB GPUs without rebuilding it.
 * An 80 ms grid does not make LLM-generated beat/chord timestamps exact. Consumers
   should use deterministic measured features for frame-accurate visual timing and
   treat MOSS events as interpretation with confidence/provenance.
-* Full-song structured output may exceed a practical token budget. The runtime must
-  support bounded task-specific passes or time-windowed semantic analysis later,
-  with absolute timestamp offsets and deterministic merge behavior. It must not
-  silently truncate a song.
+* Semantic output must not be truncated by an arbitrary worker token budget. The
+  backend may stop at its own completion condition; the worker rejects a response
+  explicitly terminated by a length limit and retains the raw response for repair.
 * JSON is the initial interoperability format because agents and the site can use
   it directly. Large dense arrays may later gain a compact companion artifact,
   while `analysis.json` remains the canonical manifest.

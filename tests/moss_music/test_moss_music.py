@@ -74,6 +74,19 @@ def test_parser_rejects_non_json() -> None:
         parse_moss_response("MOSS says the song is energetic")
 
 
+def test_parser_rejects_length_truncated_backend_response() -> None:
+    with pytest.raises(MossResponseError, match="incomplete"):
+        parse_moss_response({
+            "text": '{"summary":"partial',
+            "meta_info": {"finish_reason": {"type": "length"}},
+        })
+
+
+def test_parser_does_not_accept_a_nested_object_from_truncated_output() -> None:
+    with pytest.raises(MossResponseError):
+        parse_moss_response('{"summary":"partial", "sections": [{"label":"intro"')
+
+
 def test_sglang_client_sends_official_audio_request_shape(monkeypatch, tmp_path: Path) -> None:
     seen: dict[str, object] = {}
 
@@ -110,6 +123,42 @@ def test_sglang_client_sends_official_audio_request_shape(monkeypatch, tmp_path:
         "text": "return json",
         "audio_data": str(audio),
         "sampling_params": {"max_new_tokens": 128, "temperature": 0},
+    }
+
+
+def test_sglang_client_omits_backend_token_limit_by_default(monkeypatch, tmp_path: Path) -> None:
+    seen: dict[str, object] = {}
+
+    class Response:
+        status_code = 200
+        text = '{"text":"{}"}'
+
+        def json(self):
+            return {"text": "{}"}
+
+    class Client:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, json):
+            seen["payload"] = json
+            return Response()
+
+    monkeypatch.setattr("autotransition.moss_music.runtime.httpx.Client", Client)
+    config = MossMusicConfig(backend="sglang", device="cuda", gpu_required=True, check_backend_on_preflight=False)
+    audio = tmp_path / "normalized.wav"
+    audio.write_bytes(b"audio")
+    SGLangMossClient(config).generate(prompt="return json", audio_path=audio, max_new_tokens=None, temperature=0)
+    assert seen["payload"] == {
+        "text": "return json",
+        "audio_data": str(audio),
+        "sampling_params": {"temperature": 0},
     }
 
 
