@@ -88,6 +88,11 @@ def test_parser_does_not_accept_a_nested_object_from_truncated_output() -> None:
         parse_moss_response('{"summary":"partial", "sections": [{"label":"intro"')
 
 
+def test_parser_accepts_json_wrapped_by_model_preamble() -> None:
+    parsed, _ = parse_moss_response('Here is the requested JSON:\n{"beats": [], "warnings": []}\nDone.')
+    assert parsed["beats"] == []
+
+
 def test_sglang_client_sends_official_audio_request_shape(monkeypatch, tmp_path: Path) -> None:
     seen: dict[str, object] = {}
 
@@ -279,10 +284,10 @@ def test_sglang_runtime_segments_long_harmony_pass_and_offsets_timestamps(tmp_pa
         min_semantic_window_seconds=0.05,
     )
     result = SGLangMossRuntime(config, client=FakeClient()).analyze(_request(source), audio, lambda *_: None)
-    assert len(calls) == 6
+    assert len(calls) == 12
     harmony = result.responses["harmony"]
     assert [item["start_seconds"] for item in harmony["chords"]] == [0.0, 0.1, 0.2]
-    assert result.metadata["passes"][2]["outputBudget"]["mode"] == "segmented"
+    assert all(item["outputBudget"]["mode"] == "segmented" for item in result.metadata["passes"])
 
 
 def test_dense_timeline_covers_full_audio_at_80ms(tmp_path: Path) -> None:

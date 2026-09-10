@@ -32,6 +32,16 @@ class MossAnalysisError(MossBackendError):
         self.metadata = metadata
 
 
+class MossSegmentError(MossResponseError):
+    """A semantic segment failed with its response preserved for diagnostics."""
+
+    def __init__(self, message: str, *, response: Any, raw_text: str, metadata: dict[str, Any]):
+        super().__init__(message)
+        self.response = response
+        self.raw_text = raw_text
+        self.metadata = metadata
+
+
 @dataclass(frozen=True)
 class MossRuntimeResult:
     response: Any
@@ -290,11 +300,21 @@ class SGLangMossRuntime:
             audio_path=segment_path,
             temperature=request.temperature,
         )
+        raw_response_text = self._raw_text(response)
         if self._is_truncated(response):
             if duration <= self.config.min_semantic_window_seconds:
-                raise MossResponseError(
+                raise MossSegmentError(
                     f"MOSS {analysis_pass.name} segment remained truncated at "
-                    f"{duration:.3f}s, the configured minimum semantic window"
+                    f"{duration:.3f}s, the configured minimum semantic window",
+                    response=response,
+                    raw_text=raw_response_text,
+                    metadata={
+                        "startSeconds": round(start_seconds, 6),
+                        "endSeconds": round(end_seconds, 6),
+                        "outputCharacters": len(raw_response_text),
+                        "outputBudget": budget,
+                        "truncated": True,
+                    },
                 )
             midpoint = start_seconds + duration / 2
             first, first_raw, first_meta = self._generate_segmented_pass(
@@ -322,7 +342,22 @@ class SGLangMossRuntime:
                 segment_count_hint=segment_count_hint + 1,
             )
             return first + second, first_raw + second_raw, first_meta + second_meta
-        parsed, raw_text = parse_moss_response(response, required_keys=set(analysis_pass.required_keys))
+        try:
+            parsed, raw_text = parse_moss_response(response, required_keys=set(analysis_pass.required_keys))
+        except Exception as exc:
+            raise MossSegmentError(
+                f"MOSS {analysis_pass.name} segment response could not be parsed: {exc}",
+                response=response,
+                raw_text=raw_response_text,
+                metadata={
+                    "startSeconds": round(start_seconds, 6),
+                    "endSeconds": round(end_seconds, 6),
+                    "outputCharacters": len(raw_response_text),
+                    "outputBudget": budget,
+                    "parseErrorType": type(exc).__name__,
+                    "parseError": str(exc),
+                },
+            ) from exc
         progress(
             min(pass_start + pass_span * 0.95, pass_start + pass_span),
             f"MOSS-Music {analysis_pass.name} segment {segment_index + 1}/{max(1, segment_count_hint)} received",
@@ -395,7 +430,7 @@ class SGLangMossRuntime:
             progress(start, f"Preparing MOSS-Music {analysis_pass.name} pass ({index + 1}/{len(passes)})")
             started = time.monotonic()
             prompt_hash = hashlib.sha256(analysis_pass.instruction.encode("utf-8")).hexdigest()
-            force_segmented = analysis_pass.name == "harmony" and audio.duration_seconds > self.config.semantic_window_seconds
+            force_segmented = audio.duration_seconds > self.config.semantic_window_seconds
             segment_metadata: list[dict[str, Any]] = []
             try:
                 if force_segmented:
@@ -431,7 +466,13 @@ class SGLangMossRuntime:
                     else:
                         raw_text = self._raw_text(response)
             except Exception as exc:
-                pass_metadata.append({"name": analysis_pass.name, "error": str(exc)})
+                failure_pass_metadata: dict[str, Any] = {"name": analysis_pass.name, "error": str(exc)}
+                if isinstance(exc, MossSegmentError):
+                    failure_key = f"{analysis_pass.name}.segment.{exc.metadata.get('startSeconds', 0):.3f}"
+                    responses[failure_key] = exc.response
+                    raw_texts[failure_key] = exc.raw_text
+                    failure_pass_metadata["segmentFailure"] = exc.metadata
+                pass_metadata.append(failure_pass_metadata)
                 raise MossAnalysisError(
                     f"MOSS-Music {analysis_pass.name} pass failed: {exc}",
                     responses=responses,

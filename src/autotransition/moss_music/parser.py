@@ -42,18 +42,40 @@ def _json_object(text: str) -> dict[str, Any]:
                 return value
         except json.JSONDecodeError:
             pass
-    # Only decode from the first object boundary. Scanning every `{` can turn
-    # a truncated outer response into a falsely successful nested object.
-    decoder = json.JSONDecoder()
+    # Models sometimes add a harmless preamble or trailing explanation even
+    # when asked for JSON-only output. Decode the first balanced outer object
+    # while respecting quoted braces. We intentionally do not scan nested `{`
+    # boundaries: that could turn a truncated outer response into a false
+    # success by accepting an inner object.
     start = stripped.find("{")
     if start >= 0:
-        try:
-            value, end = decoder.raw_decode(stripped[start:])
-        except json.JSONDecodeError:
-            value = None
-            end = 0
-        if isinstance(value, dict) and not stripped[start + end :].strip():
-            return value
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(stripped)):
+            character = stripped[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    in_string = False
+                continue
+            if character == '"':
+                in_string = True
+            elif character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        value = json.loads(stripped[start : index + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(value, dict):
+                        return value
+                    break
     raise MossResponseError("MOSS response did not contain a valid JSON object")
 
 

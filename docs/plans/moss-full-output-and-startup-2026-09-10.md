@@ -56,4 +56,6 @@ adaptively splitting only a pass that reaches the model context boundary into
 configurable audio windows, offsetting timestamps back onto the original song
 timeline, and merging the complete pass. The default semantic window is 60
 seconds and is controlled by worker configuration rather than a caller token
-limit.
+limit. All four semantic passes now use that bounded path for long audio, not
+only harmony. Segment parse failures retain the exact backend response,
+segment range, and resolved output budget in the failed job artifacts.
