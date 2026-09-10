@@ -120,12 +120,16 @@ def _timed_item(value: Any, *, index: int, default_type: str, source: str = "mos
     return normalized
 
 
-def parse_moss_response(response: Any) -> tuple[dict[str, Any], str]:
+def parse_moss_response(response: Any, *, required_keys: set[str] | None = None) -> tuple[dict[str, Any], str]:
     """Parse and normalize model JSON while retaining its exact text."""
 
     _reject_truncated_response(response)
     text = _response_text(response)
     raw = _json_object(text)
+    if required_keys:
+        missing = sorted(key for key in required_keys if key not in raw)
+        if missing:
+            raise MossResponseError(f"MOSS response is missing required key(s): {', '.join(missing)}")
     parsed: dict[str, Any] = {
         "summary": str(raw.get("summary") or ""),
         "tempo_bpm": _number(raw.get("tempo_bpm", raw.get("tempoBpm")), minimum=1, maximum=400),
@@ -173,3 +177,51 @@ def parse_moss_response(response: Any) -> tuple[dict[str, Any], str]:
         parsed["events"] = sorted(all_events, key=lambda value: (value["start_seconds"], value["id"]))
         parsed["event_count"] = len(parsed["events"])
     return parsed, text
+
+
+def merge_moss_passes(pass_results: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """Merge focused responses without losing pass provenance or duplicates."""
+
+    merged: dict[str, Any] = {
+        "summary": "",
+        "tempo_bpm": None,
+        "time_signature": None,
+        "key": None,
+        "sections": [],
+        "beats": [],
+        "chords": [],
+        "lyrics": [],
+        "instruments": [],
+        "voices": [],
+        "visual_cues": [],
+        "events": [],
+        "warnings": [],
+        "passes": [],
+    }
+    collection_names = ("sections", "beats", "chords", "lyrics", "instruments", "voices", "visual_cues", "events")
+    seen: dict[str, set[str]] = {name: set() for name in collection_names}
+    for pass_name, parsed in pass_results:
+        merged["passes"].append(pass_name)
+        for scalar in ("summary", "tempo_bpm", "time_signature", "key"):
+            if merged[scalar] in (None, "") and parsed.get(scalar) not in (None, ""):
+                merged[scalar] = parsed[scalar]
+        for warning in parsed.get("warnings", []):
+            if warning not in merged["warnings"]:
+                merged["warnings"].append(warning)
+        for collection in collection_names:
+            for item in parsed.get(collection, []):
+                enriched = dict(item)
+                enriched["source_pass"] = pass_name
+                enriched["id"] = f"{pass_name}:{item.get('id', len(merged[collection]))}"
+                identity = json.dumps(
+                    {key: value for key, value in enriched.items() if key not in {"id", "source_pass", "provenance"}},
+                    sort_keys=True,
+                    default=str,
+                )
+                if identity in seen[collection]:
+                    continue
+                seen[collection].add(identity)
+                merged[collection].append(enriched)
+    merged["events"].sort(key=lambda value: (value.get("start_seconds", 0), value.get("id", "")))
+    merged["event_count"] = len(merged["events"])
+    return merged

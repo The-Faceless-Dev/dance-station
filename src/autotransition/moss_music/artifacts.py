@@ -44,7 +44,16 @@ class MossMusicArtifactStore:
         path = self.job_dir(job_id) / "job.json"
         if not path.is_file():
             raise FileNotFoundError(f"MOSS-Music job was not found: {job_id}")
-        return json.loads(path.read_text(encoding="utf-8"))
+        last_error: Exception | None = None
+        for attempt in range(8):
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (PermissionError, OSError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt == 7:
+                    raise
+                time.sleep(0.02 * (attempt + 1))
+        raise RuntimeError(f"could not read MOSS-Music job state: {path}: {last_error}")
 
     def reconcile_interrupted_jobs(self) -> list[str]:
         interrupted: list[str] = []

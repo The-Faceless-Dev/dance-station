@@ -34,11 +34,6 @@ def _request_from_http_payload(payload: dict[str, Any]) -> MossMusicRequest:
         event_resolution_ms=int(payload.get("event_resolution_ms", payload.get("eventResolutionMs", 80))),
         include_semantic_events=bool(payload.get("include_semantic_events", payload.get("includeSemanticEvents", True))),
         include_dense_features=bool(payload.get("include_dense_features", payload.get("includeDenseFeatures", True))),
-        max_new_tokens=(
-            int(raw_max_new_tokens)
-            if (raw_max_new_tokens := payload.get("max_new_tokens", payload.get("maxNewTokens"))) is not None
-            else None
-        ),
         temperature=float(payload.get("temperature", 0.0)),
         external_job_id=str(payload.get("job_id") or payload.get("external_job_id") or "") or None,
         payment_intent_id=str(payload.get("payment_intent_id") or payload.get("paymentIntentId") or "") or None,

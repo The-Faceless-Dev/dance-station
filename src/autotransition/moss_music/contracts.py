@@ -61,9 +61,6 @@ class MossMusicRequest:
     event_resolution_ms: int = 80
     include_semantic_events: bool = True
     include_dense_features: bool = True
-    # None leaves completion length to the backend/model stop condition. A
-    # caller may provide an explicit backend override for diagnostics.
-    max_new_tokens: int | None = None
     temperature: float = 0.0
     external_job_id: str | None = None
     payment_intent_id: str | None = None
@@ -78,8 +75,6 @@ class MossMusicRequest:
             raise ValueError(f"prompt must be {config.max_prompt_characters} characters or fewer")
         if not config.min_event_resolution_ms <= self.event_resolution_ms <= config.max_event_resolution_ms:
             raise ValueError("event_resolution_ms is outside the configured bounds")
-        if self.max_new_tokens is not None and self.max_new_tokens < 1:
-            raise ValueError("max_new_tokens must be positive when provided")
         if not math.isfinite(self.temperature) or not 0 <= self.temperature <= 2:
             raise ValueError("temperature must be between 0 and 2")
         for name, value in (("external_job_id", self.external_job_id), ("payment_intent_id", self.payment_intent_id)):

@@ -17,8 +17,9 @@ from .audio import acquire_audio, normalize_audio
 from .config import MossMusicConfig
 from .contracts import MossMusicFailure, MossMusicJob, MossMusicRequest
 from .observability import MossMusicEventLogger
-from .parser import parse_moss_response
-from .runtime import MossRuntime, MossRuntimeResult, create_runtime
+from .parser import merge_moss_passes, parse_moss_response
+from .prompting import build_analysis_prompts
+from .runtime import MossAnalysisError, MossRuntime, MossRuntimeResult, create_runtime
 from .timeline import build_dense_timeline
 
 
@@ -145,9 +146,30 @@ class MossMusicWorker:
                 self.store.finalize_json(job_id, "moss-response.json", runtime_result.response)
                 raw_path = attempt_dir / "moss-raw.txt"
                 raw_path.write_text(runtime_result.raw_text, encoding="utf-8")
+                for pass_name, raw_text in runtime_result.raw_texts.items():
+                    (attempt_dir / f"moss-raw-{pass_name}.txt").write_text(raw_text, encoding="utf-8")
                 progress("parse_and_validate", 0.0, "Validating structured MOSS-Music response")
-                semantic, raw_text = parse_moss_response(runtime_result.response)
-                logger.emit("semantic_response_validated", rawCharacters=len(raw_text), eventCount=semantic["event_count"])
+                if runtime_result.responses:
+                    parsed_passes = []
+                    pass_specs = {item.name: item for item in build_analysis_prompts(request)}
+                    for index, (pass_name, response) in enumerate(runtime_result.responses.items()):
+                        spec = pass_specs.get(pass_name)
+                        parsed, raw_text = parse_moss_response(response, required_keys=set(spec.required_keys) if spec else None)
+                        parsed_passes.append((pass_name, parsed))
+                        logger.emit(
+                            "semantic_pass_validated",
+                            passName=pass_name,
+                            passIndex=index + 1,
+                            passCount=len(runtime_result.responses),
+                            rawCharacters=len(raw_text),
+                            eventCount=parsed["event_count"],
+                        )
+                        progress("parse_and_validate", (index + 1) / len(runtime_result.responses), f"Validated {pass_name} semantic pass")
+                    semantic = merge_moss_passes(parsed_passes)
+                else:
+                    semantic, raw_text = parse_moss_response(runtime_result.response)
+                    progress("parse_and_validate", 1.0, "Structured MOSS-Music response validated")
+                logger.emit("semantic_response_validated", eventCount=semantic["event_count"], passCount=len(runtime_result.responses) or 1)
                 progress("parse_and_validate", 1.0, "Structured MOSS-Music response validated")
             else:
                 semantic = None
@@ -184,9 +206,13 @@ class MossMusicWorker:
             )
             self.store.finalize_json(job_id, "request.json", request.to_dict())
             self.store.finalize_json(job_id, "moss-runtime.json", runtime_result.metadata)
+            if runtime_result.responses:
+                self.store.finalize_json(job_id, "moss-semantic.json", semantic)
             raw_attempt_path = attempt_dir / "moss-raw.txt"
             if raw_attempt_path.is_file():
                 self.store.finalize_file(job_id, raw_attempt_path, "moss-raw.txt")
+            for raw_path in sorted(attempt_dir.glob("moss-raw-*.txt")):
+                self.store.finalize_file(job_id, raw_path, raw_path.name)
             events_path = self.store.job_dir(job_id) / "events.jsonl"
             if events_path.is_file():
                 self.store.finalize_file(job_id, events_path, "events.jsonl")
@@ -201,6 +227,9 @@ class MossMusicWorker:
                 ("moss-raw.txt", "text/plain"),
                 ("events.jsonl", "application/jsonl"),
             ]
+            if runtime_result.responses:
+                names.append(("moss-semantic.json", "application/json"))
+                names.extend((path.name, "text/plain") for path in sorted((self.store.job_dir(job_id) / "final").glob("moss-raw-*.txt")))
             artifacts = [self.store.artifact(job_id, name, media_type).__dict__ for name, media_type in names]
             self._set_state(
                 job_id,
@@ -214,11 +243,25 @@ class MossMusicWorker:
         except Exception as exc:
             logger.exception("job_failed", exc)
             current = self.store.read_job(job_id)
+            if isinstance(exc, MossAnalysisError):
+                runtime_result = MossRuntimeResult(
+                    response={"passes": exc.responses},
+                    raw_text="\n\n".join(f"[{name}]\n{text}" for name, text in exc.raw_texts.items()),
+                    metadata=exc.metadata,
+                    responses=exc.responses,
+                    raw_texts=exc.raw_texts,
+                )
             if runtime_result is not None:
                 self.store.finalize_json(job_id, "moss-response.json", runtime_result.response)
+                self.store.finalize_json(job_id, "moss-runtime.json", runtime_result.metadata)
                 raw_attempt_path = self.store.attempt_dir(job_id, 1) / "moss-raw.txt"
+                raw_attempt_path.write_text(runtime_result.raw_text, encoding="utf-8")
                 if raw_attempt_path.is_file():
                     self.store.finalize_file(job_id, raw_attempt_path, "moss-raw.txt")
+                for pass_name, raw_text in runtime_result.raw_texts.items():
+                    pass_path = self.store.attempt_dir(job_id, 1) / f"moss-raw-{pass_name}.txt"
+                    pass_path.write_text(raw_text, encoding="utf-8")
+                    self.store.finalize_file(job_id, pass_path, pass_path.name)
             failure = MossMusicFailure(
                 code="moss_music_worker_failed",
                 message=str(exc) or type(exc).__name__,
@@ -242,9 +285,14 @@ class MossMusicWorker:
                 self.store.finalize_file(job_id, event_log, "events.jsonl")
             artifacts = [self.store.artifact(job_id, "failure-summary.json", "application/json").__dict__]
             artifacts.append(self.store.artifact(job_id, "events.jsonl", "application/jsonl").__dict__)
-            raw_path = self.store.job_dir(job_id) / "final" / "moss-raw.txt"
-            if raw_path.is_file():
-                artifacts.append(self.store.artifact(job_id, "moss-raw.txt", "text/plain").__dict__)
+            for name, media_type in (
+                ("moss-response.json", "application/json"),
+                ("moss-runtime.json", "application/json"),
+            ):
+                if (self.store.job_dir(job_id) / "final" / name).is_file():
+                    artifacts.append(self.store.artifact(job_id, name, media_type).__dict__)
+            for raw_path in sorted((self.store.job_dir(job_id) / "final").glob("moss-raw*.txt")):
+                artifacts.append(self.store.artifact(job_id, raw_path.name, "text/plain").__dict__)
             self._set_state(
                 job_id,
                 status="failed",

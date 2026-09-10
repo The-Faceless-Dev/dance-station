@@ -12,6 +12,9 @@ container and runs one analysis job at a time. Set
 `MOSS_MUSIC_SGLANG_AUTOSTART=false` when SGLang is supplied by another process.
 Set `SALAD_QUEUE_WORKER_ENABLED=false` for direct HTTP dispatch, which is the
 intended starting point for a future Vast adapter.
+The entrypoint sets writable HOME, XDG cache, and FlashInfer workspace paths and
+waits for `/ready` before starting the external queue worker. This also makes the
+normal image entrypoint usable when a provider launches the container as root.
 
 The worker does not download model weights while processing a job. Build the final
 image with a model-bearing named context:
@@ -77,11 +80,16 @@ GET  /v1/moss/jobs/{job_id}
 POST /process
 ```
 
-The final `analysis.json` is the canonical artifact. `moss-raw.txt`,
-`moss-response.json`, `audio-metadata.json`, `moss-runtime.json`, `request.json`,
-and `events.jsonl` are retained for provenance and debugging. The `/process`
+The final `analysis.json` is the canonical artifact. MOSS semantic interpretation
+is collected in focused overview, rhythm, harmony, and lyrics/voices passes while
+the same backend remains loaded; all raw pass responses are retained alongside
+`moss-response.json`. `moss-raw.txt`, `moss-semantic.json`,
+`audio-metadata.json`, `moss-runtime.json`, `request.json`, and `events.jsonl` are
+retained for provenance and debugging. The `/process`
 response includes the uploaded artifact IDs and remote-safe manifest. Direct
 jobs can retrieve each durable file from
 `/v1/moss/jobs/{job_id}/artifacts/{artifact_name}`. The worker applies only the
-30-minute audio limit by default; `max_new_tokens` is omitted unless an explicit
-caller supplies it as a backend diagnostic override.
+30-minute audio limit by default. There is no caller-facing token limit. For each
+focused pass, the worker derives the available output budget from the checkpoint's
+actual context length minus the measured text and audio input; this avoids
+SGLang's accidental 4096-token default without inventing a smaller ceiling.

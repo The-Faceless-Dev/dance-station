@@ -13,6 +13,7 @@ from autotransition.moss_music.audio import normalize_audio
 from autotransition.moss_music.config import MossMusicConfig
 from autotransition.moss_music.contracts import MossAudioInput, MossMusicRequest
 from autotransition.moss_music.parser import MossResponseError, parse_moss_response
+from autotransition.moss_music.parser import merge_moss_passes
 from autotransition.moss_music.runtime import MossRuntimeResult
 from autotransition.moss_music.runtime import SGLangMossClient
 from autotransition.moss_music.timeline import build_dense_timeline
@@ -126,7 +127,7 @@ def test_sglang_client_sends_official_audio_request_shape(monkeypatch, tmp_path:
     }
 
 
-def test_sglang_client_omits_backend_token_limit_by_default(monkeypatch, tmp_path: Path) -> None:
+def test_sglang_client_uses_checkpoint_context_for_output_budget(monkeypatch, tmp_path: Path) -> None:
     seen: dict[str, object] = {}
 
     class Response:
@@ -151,15 +152,40 @@ def test_sglang_client_omits_backend_token_limit_by_default(monkeypatch, tmp_pat
             return Response()
 
     monkeypatch.setattr("autotransition.moss_music.runtime.httpx.Client", Client)
-    config = MossMusicConfig(backend="sglang", device="cuda", gpu_required=True, check_backend_on_preflight=False)
+    config = MossMusicConfig(
+        backend="sglang",
+        device="cuda",
+        gpu_required=True,
+        check_backend_on_preflight=False,
+        model_context_length=40960,
+        model_root=tmp_path / "model",
+    )
+    config.model_root.mkdir()
+    (config.model_root / "config.json").write_text(json.dumps({"language_config": {"max_position_embeddings": 40960}}))
     audio = tmp_path / "normalized.wav"
-    audio.write_bytes(b"audio")
-    SGLangMossClient(config).generate(prompt="return json", audio_path=audio, max_new_tokens=None, temperature=0)
+    _write_wav(audio, duration=1.0)
+    budget = SGLangMossClient(config).resolve_output_budget(prompt="return json", audio_path=audio)
+    SGLangMossClient(config).generate(prompt="return json", audio_path=audio, max_new_tokens=budget["availableOutputTokens"], temperature=0)
     assert seen["payload"] == {
         "text": "return json",
         "audio_data": str(audio),
-        "sampling_params": {"temperature": 0},
+        "sampling_params": {"max_new_tokens": budget["availableOutputTokens"], "temperature": 0},
     }
+
+
+def test_request_has_no_caller_token_budget() -> None:
+    request = MossMusicRequest(audio=MossAudioInput(source_url="https://example.test/song.mp3", filename="song.mp3"))
+    assert "max_new_tokens" not in request.to_dict()
+
+
+def test_merge_moss_passes_preserves_pass_provenance() -> None:
+    merged = merge_moss_passes([
+        ("rhythm", {"summary": "", "tempo_bpm": 120, "time_signature": None, "key": None, "sections": [], "beats": [{"id": "moss-beat-000001", "start_seconds": 0.08, "end_seconds": 0.08}], "chords": [], "lyrics": [], "instruments": [], "voices": [], "visual_cues": [], "events": [], "warnings": [], "event_count": 1}),
+        ("harmony", {"summary": "", "tempo_bpm": None, "time_signature": None, "key": "C minor", "sections": [], "beats": [], "chords": [{"id": "moss-chord-000001", "start_seconds": 0, "end_seconds": 1, "type": "Cm"}], "lyrics": [], "instruments": [], "voices": [], "visual_cues": [], "events": [], "warnings": [], "event_count": 1}),
+    ])
+    assert merged["passes"] == ["rhythm", "harmony"]
+    assert merged["beats"][0]["source_pass"] == "rhythm"
+    assert merged["chords"][0]["source_pass"] == "harmony"
 
 
 def test_dense_timeline_covers_full_audio_at_80ms(tmp_path: Path) -> None:

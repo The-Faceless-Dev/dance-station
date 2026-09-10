@@ -21,6 +21,7 @@ class MossMusicConfig:
     sglang_url: str = "http://127.0.0.1:30000"
     sglang_endpoint: str = "/generate"
     sglang_health_path: str = "/health"
+    model_context_length: int | None = None
     device: str = "cuda"
     dtype: str = "bfloat16"
     gpu_required: bool = True
@@ -50,6 +51,11 @@ class MossMusicConfig:
             sglang_url=os.getenv("MOSS_MUSIC_SGLANG_URL", "http://127.0.0.1:30000").rstrip("/"),
             sglang_endpoint=os.getenv("MOSS_MUSIC_SGLANG_ENDPOINT", "/generate"),
             sglang_health_path=os.getenv("MOSS_MUSIC_SGLANG_HEALTH_PATH", "/health"),
+            model_context_length=(
+                int(raw_context_length)
+                if (raw_context_length := os.getenv("MOSS_MUSIC_MODEL_CONTEXT_LENGTH"))
+                else None
+            ),
             device=os.getenv("MOSS_MUSIC_DEVICE", "cuda"),
             dtype=os.getenv("MOSS_MUSIC_DTYPE", "bfloat16"),
             gpu_required=_bool("MOSS_MUSIC_GPU_REQUIRED", True),
@@ -82,6 +88,8 @@ class MossMusicConfig:
             raise ValueError("MOSS audio limits must be positive")
         if self.max_prompt_characters < 1:
             raise ValueError("MOSS prompt limit must be positive")
+        if self.model_context_length is not None and self.model_context_length < 1:
+            raise ValueError("MOSS model context length must be positive when provided")
         if self.request_timeout_seconds <= 0 or self.job_timeout_seconds <= 0:
             raise ValueError("MOSS timeouts must be positive")
         if self.max_timeline_cells < 1:
@@ -101,6 +109,7 @@ class MossMusicConfig:
             "modelPresent": model_path.exists(),
             "backend": self.backend,
             "sglangUrl": self.sglang_url,
+            "modelContextLength": self.model_context_length,
             "device": self.device,
             "dtype": self.dtype,
             "gpuRequired": self.gpu_required,
