@@ -17,7 +17,7 @@ from .audio import acquire_audio, normalize_audio
 from .config import MossMusicConfig
 from .contracts import MossMusicFailure, MossMusicJob, MossMusicRequest
 from .observability import MossMusicEventLogger
-from .parser import merge_moss_passes, parse_moss_response
+from .parser import empty_moss_response, merge_moss_passes, parse_moss_response
 from .prompting import build_analysis_prompts
 from .runtime import MossAnalysisError, MossRuntime, MossRuntimeResult, create_runtime
 from .timeline import build_dense_timeline
@@ -148,29 +148,45 @@ class MossMusicWorker:
                 raw_path.write_text(runtime_result.raw_text, encoding="utf-8")
                 for pass_name, raw_text in runtime_result.raw_texts.items():
                     (attempt_dir / f"moss-raw-{pass_name}.txt").write_text(raw_text, encoding="utf-8")
-                progress("parse_and_validate", 0.0, "Validating structured MOSS-Music response")
+                progress("prepare_structured_view", 0.0, "Preparing best-effort structured MOSS-Music view")
                 if runtime_result.responses:
                     parsed_passes = []
                     pass_specs = {item.name: item for item in build_analysis_prompts(request)}
                     for index, (pass_name, response) in enumerate(runtime_result.responses.items()):
                         spec = pass_specs.get(pass_name)
-                        parsed, raw_text = parse_moss_response(response, required_keys=set(spec.required_keys) if spec else None)
+                        raw_text = runtime_result.raw_texts.get(pass_name, runtime_result.raw_text)
+                        try:
+                            parsed, parsed_raw_text = parse_moss_response(response, required_keys=set(spec.required_keys) if spec else None)
+                            raw_text = parsed_raw_text if not raw_text else raw_text
+                        except ValueError as exc:
+                            parsed = empty_moss_response(f"Raw MOSS response was not normalized: {exc}")
+                            logger.emit(
+                                "semantic_pass_unparsed",
+                                passName=pass_name,
+                                passIndex=index + 1,
+                                passCount=len(runtime_result.responses),
+                                rawCharacters=len(raw_text),
+                                warning=str(exc),
+                            )
                         parsed_passes.append((pass_name, parsed))
                         logger.emit(
-                            "semantic_pass_validated",
+                            "semantic_pass_received",
                             passName=pass_name,
                             passIndex=index + 1,
                             passCount=len(runtime_result.responses),
                             rawCharacters=len(raw_text),
                             eventCount=parsed["event_count"],
                         )
-                        progress("parse_and_validate", (index + 1) / len(runtime_result.responses), f"Validated {pass_name} semantic pass")
+                        progress("prepare_structured_view", (index + 1) / len(runtime_result.responses), f"Received {pass_name} semantic pass")
                     semantic = merge_moss_passes(parsed_passes)
                 else:
-                    semantic, raw_text = parse_moss_response(runtime_result.response)
-                    progress("parse_and_validate", 1.0, "Structured MOSS-Music response validated")
-                logger.emit("semantic_response_validated", eventCount=semantic["event_count"], passCount=len(runtime_result.responses) or 1)
-                progress("parse_and_validate", 1.0, "Structured MOSS-Music response validated")
+                    try:
+                        semantic, raw_text = parse_moss_response(runtime_result.response)
+                    except ValueError as exc:
+                        semantic = empty_moss_response(f"Raw MOSS response was not normalized: {exc}")
+                    progress("prepare_structured_view", 1.0, "Raw MOSS response received")
+                logger.emit("semantic_response_received", eventCount=semantic["event_count"], passCount=len(runtime_result.responses) or 1)
+                progress("prepare_structured_view", 1.0, "Raw MOSS response received")
             else:
                 semantic = None
                 runtime_result = MossRuntimeResult(response={}, raw_text="", metadata={"disabled": True})

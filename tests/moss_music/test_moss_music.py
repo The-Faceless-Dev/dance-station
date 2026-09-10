@@ -318,7 +318,7 @@ def test_segment_results_are_bounded_before_merge(tmp_path: Path) -> None:
     assert bounded["event_count"] == 1
 
 
-def test_segment_parse_error_retries_once_and_preserves_both_responses(tmp_path: Path) -> None:
+def test_segment_parse_error_keeps_raw_text_without_retry(tmp_path: Path) -> None:
     source = tmp_path / "tone.wav"
     _write_wav(source, duration=0.12)
     audio = normalize_audio(source, tmp_path / "normalized")
@@ -361,9 +361,10 @@ def test_segment_parse_error_retries_once_and_preserves_both_responses(tmp_path:
     )
     runtime = SGLangMossRuntime(config, client=FakeClient())
     result = runtime.analyze(_request(source), audio, lambda *_: None)
-    assert len(calls) == 9
-    assert "The previous response was malformed" in calls[1]
-    assert "[accepted retry response]" in result.raw_texts["overview"]
+    assert len(calls) == 8
+    assert not any("The previous response was malformed" in prompt for prompt in calls)
+    assert '{"summary":"bad"' in result.raw_texts["overview"]
+    assert result.metadata["passes"][0]["segments"][0]["parseError"]
 
 
 def test_dense_timeline_covers_full_audio_at_80ms(tmp_path: Path) -> None:
@@ -400,7 +401,7 @@ def test_worker_persists_analysis_and_all_debug_artifacts(tmp_path: Path) -> Non
         worker.shutdown()
 
 
-def test_worker_turns_invalid_model_output_into_failure_with_raw_response(tmp_path: Path) -> None:
+def test_worker_returns_invalid_model_output_with_raw_response(tmp_path: Path) -> None:
     source = tmp_path / "tone.wav"
     _write_wav(source)
 
@@ -413,10 +414,10 @@ def test_worker_turns_invalid_model_output_into_failure_with_raw_response(tmp_pa
     try:
         job = asyncio.run(worker.submit(_request(source)))
         result = _wait_for(worker, job.id)
-        assert result["status"] == "failed"
-        assert result["failureCode"] == "moss_music_worker_failed"
+        assert result["status"] == "succeeded"
         assert (tmp_path / "jobs" / job.id / "final" / "moss-raw.txt").read_text() == "not json"
-        assert (tmp_path / "jobs" / job.id / "final" / "failure-summary.json").is_file()
+        analysis = json.loads((tmp_path / "jobs" / job.id / "final" / "analysis.json").read_text())
+        assert analysis["warnings"]
     finally:
         worker.shutdown()
 

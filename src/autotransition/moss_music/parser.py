@@ -79,6 +79,27 @@ def _json_object(text: str) -> dict[str, Any]:
     raise MossResponseError("MOSS response did not contain a valid JSON object")
 
 
+def empty_moss_response(warning: str | None = None) -> dict[str, Any]:
+    """Return an empty normalized view without discarding the raw model text."""
+
+    return {
+        "summary": "",
+        "tempo_bpm": None,
+        "time_signature": None,
+        "key": None,
+        "sections": [],
+        "beats": [],
+        "chords": [],
+        "lyrics": [],
+        "instruments": [],
+        "voices": [],
+        "visual_cues": [],
+        "events": [],
+        "event_count": 0,
+        "warnings": [warning] if warning else [],
+    }
+
+
 def _reject_truncated_response(response: Any) -> None:
     if not isinstance(response, dict):
         return

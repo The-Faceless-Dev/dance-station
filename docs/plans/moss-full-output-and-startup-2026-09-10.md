@@ -17,8 +17,10 @@ manual shell intervention.
   SGLang's 4096 default. If SGLang reports its exact serialized input count,
   recover the remaining context and retry without imposing a fixed ceiling.
   Record the resolved context metadata.
-- Preserve the full MOSS prompt/schema and reject only genuinely incomplete
-  responses; retain raw and response metadata on failure.
+- Preserve every model response as raw output. Build a best-effort normalized
+  semantic view for convenience, but never retry or reject a job because the
+  model returned malformed JSON or a length-marked response. Keep parse warnings
+  and the original text alongside the successful full result.
 - Make the container entrypoint usable with both the normal image command and
   Vast's SSH-direct launch mode, including writable HOME/cache setup and a
   readiness wait before the external queue/heartbeat process is started.
@@ -52,14 +54,12 @@ manual shell intervention.
 The first recovery image proved startup and GPU inference, but the full-song
 harmony pass consumed the checkpoint context completion budget and was rejected
 as truncated. The runtime now keeps the caller free of token controls while
-adaptively splitting only a pass that reaches the model context boundary into
-configurable audio windows, offsetting timestamps back onto the original song
-timeline, and merging the complete pass. The default semantic window is 60
-seconds and is controlled by worker configuration rather than a caller token
-limit. All four semantic passes now use that bounded path for long audio, not
-only harmony. Each pass requests only its own output fields, preventing the
-model from emitting unrelated event grids. Segment parsing bounds timestamps
-to the supplied audio window, and failures retain the exact backend response,
-segment range, and resolved output budget in the failed job artifacts. A
-malformed segment receives one same-window strict-JSON retry, with both
-responses retained when that retry also fails.
+using configurable audio windows for long audio, offsetting timestamps back
+onto the original song timeline, and merging the best-effort structured view.
+The default semantic window is 60 seconds and is controlled by worker
+configuration rather than a caller token limit. All four semantic passes use
+that bounded path for long audio. Each pass requests only its own output fields,
+preventing the model from emitting unrelated event grids. Segment timestamps
+are bounded when they can be normalized, while every original model response is
+always retained as a raw artifact. Malformed or length-marked JSON is a warning,
+not a second inference and not a job failure.
