@@ -318,6 +318,54 @@ def test_segment_results_are_bounded_before_merge(tmp_path: Path) -> None:
     assert bounded["event_count"] == 1
 
 
+def test_segment_parse_error_retries_once_and_preserves_both_responses(tmp_path: Path) -> None:
+    source = tmp_path / "tone.wav"
+    _write_wav(source, duration=0.12)
+    audio = normalize_audio(source, tmp_path / "normalized")
+    calls: list[str] = []
+
+    class FakeClient:
+        def resolve_output_budget(self, *, prompt, audio_path):
+            return {"contextLength": 40960, "promptTokens": 100, "audioTokens": 3, "availableOutputTokens": 40857}
+
+        def generate(self, *, prompt, audio_path, max_new_tokens, temperature):
+            calls.append(prompt)
+            if len(calls) == 1:
+                return {"text": '{"summary":"bad", "sections": [{"end": 1.000"}]}' }
+            return {
+                "text": json.dumps({
+                    "summary": "retry",
+                    "tempo_bpm": 120,
+                    "time_signature": "4/4",
+                    "key": "C",
+                    "sections": [],
+                    "beats": [],
+                    "chords": [],
+                    "lyrics": [],
+                    "instruments": [],
+                    "voices": [],
+                    "visual_cues": [],
+                    "events": [],
+                    "warnings": [],
+                }),
+                "meta_info": {"finish_reason": {"type": "stop"}},
+            }
+
+    config = MossMusicConfig(
+        model_root=tmp_path / "model",
+        backend="sglang",
+        device="cuda",
+        gpu_required=True,
+        semantic_window_seconds=0.1,
+        min_semantic_window_seconds=0.05,
+    )
+    runtime = SGLangMossRuntime(config, client=FakeClient())
+    result = runtime.analyze(_request(source), audio, lambda *_: None)
+    assert len(calls) == 9
+    assert "The previous response was malformed" in calls[1]
+    assert "[accepted retry response]" in result.raw_texts["overview"]
+
+
 def test_dense_timeline_covers_full_audio_at_80ms(tmp_path: Path) -> None:
     source = tmp_path / "tone.wav"
     _write_wav(source)

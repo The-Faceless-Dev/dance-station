@@ -60,4 +60,6 @@ limit. All four semantic passes now use that bounded path for long audio, not
 only harmony. Each pass requests only its own output fields, preventing the
 model from emitting unrelated event grids. Segment parsing bounds timestamps
 to the supplied audio window, and failures retain the exact backend response,
-segment range, and resolved output budget in the failed job artifacts.
+segment range, and resolved output budget in the failed job artifacts. A
+malformed segment receives one same-window strict-JSON retry, with both
+responses retained when that retry also fails.

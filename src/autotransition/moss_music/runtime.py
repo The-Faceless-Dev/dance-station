@@ -383,23 +383,64 @@ class SGLangMossRuntime:
                 segment_count_hint=segment_count_hint + 1,
             )
             return first + second, first_raw + second_raw, first_meta + second_meta
+        retry_metadata: dict[str, Any] | None = None
         try:
             parsed, raw_text = parse_moss_response(response, required_keys=set(analysis_pass.required_keys))
             parsed = self._restrict_segment(parsed, duration)
-        except Exception as exc:
-            raise MossSegmentError(
-                f"MOSS {analysis_pass.name} segment response could not be parsed: {exc}",
-                response=response,
-                raw_text=raw_response_text,
-                metadata={
-                    "startSeconds": round(start_seconds, 6),
-                    "endSeconds": round(end_seconds, 6),
-                    "outputCharacters": len(raw_response_text),
-                    "outputBudget": budget,
-                    "parseErrorType": type(exc).__name__,
-                    "parseError": str(exc),
-                },
-            ) from exc
+        except MossResponseError as initial_error:
+            retry_instruction = (
+                f"{instruction}\n\n"
+                "The previous response was malformed. Retry the same analysis now. "
+                "Output strict JSON only: use double quotes around every key and string, "
+                "do not quote numeric values, close every array and object, and do not add "
+                "any explanation before or after the JSON object."
+            )
+            retry_response, retry_budget = self._generate_with_budget(
+                prompt=retry_instruction,
+                audio_path=segment_path,
+                temperature=request.temperature,
+            )
+            retry_raw_text = self._raw_text(retry_response)
+            retry_metadata = {
+                "initialParseError": str(initial_error),
+                "initialOutputCharacters": len(raw_response_text),
+                "initialOutputBudget": budget,
+                "retryOutputCharacters": len(retry_raw_text),
+                "retryOutputBudget": retry_budget,
+            }
+            if self._is_truncated(retry_response):
+                raise MossSegmentError(
+                    f"MOSS {analysis_pass.name} segment retry remained truncated",
+                    response={"initial": response, "retry": retry_response},
+                    raw_text=f"[initial response]\n{raw_response_text}\n[retry response]\n{retry_raw_text}",
+                    metadata={
+                        "startSeconds": round(start_seconds, 6),
+                        "endSeconds": round(end_seconds, 6),
+                        "outputCharacters": len(raw_response_text) + len(retry_raw_text),
+                        "outputBudget": retry_budget,
+                        "retry": retry_metadata,
+                        "truncated": True,
+                    },
+                )
+            try:
+                parsed, _ = parse_moss_response(retry_response, required_keys=set(analysis_pass.required_keys))
+                parsed = self._restrict_segment(parsed, duration)
+            except MossResponseError as retry_error:
+                raise MossSegmentError(
+                    f"MOSS {analysis_pass.name} segment response could not be parsed after retry: {retry_error}",
+                    response={"initial": response, "retry": retry_response},
+                    raw_text=f"[initial response]\n{raw_response_text}\n[retry response]\n{retry_raw_text}",
+                    metadata={
+                        "startSeconds": round(start_seconds, 6),
+                        "endSeconds": round(end_seconds, 6),
+                        "outputCharacters": len(raw_response_text) + len(retry_raw_text),
+                        "outputBudget": retry_budget,
+                        "retry": retry_metadata,
+                        "parseErrorType": type(retry_error).__name__,
+                        "parseError": str(retry_error),
+                    },
+                ) from retry_error
+            raw_text = f"[initial response]\n{raw_response_text}\n[accepted retry response]\n{retry_raw_text}"
         progress(
             min(pass_start + pass_span * 0.95, pass_start + pass_span),
             f"MOSS-Music {analysis_pass.name} segment {segment_index + 1}/{max(1, segment_count_hint)} received",
@@ -412,7 +453,8 @@ class SGLangMossRuntime:
                     "startSeconds": round(start_seconds, 6),
                     "endSeconds": round(end_seconds, 6),
                     "outputCharacters": len(raw_text),
-                    "outputBudget": budget,
+                    "outputBudget": retry_metadata.get("retryOutputBudget", budget) if retry_metadata else budget,
+                    **({"retry": retry_metadata} if retry_metadata else {}),
                 }
             ],
         )
