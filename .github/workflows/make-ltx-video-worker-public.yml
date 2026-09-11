@@ -1,0 +1,55 @@
+name: Make LTX video worker public
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
+    paths:
+      - .github/workflows/make-ltx-video-worker-public.yml
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  PACKAGE: faceless-ltx-video-worker
+  IMAGE: ghcr.io/the-faceless-dev/faceless-ltx-video-worker
+  TAG: ltx-2.5-nvfp4-5090-r1
+
+jobs:
+  make-public:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set package visibility to public
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || github.token }}
+        run: |
+          set -euo pipefail
+          response_file=$(mktemp)
+          status=$(curl --silent --show-error --location \
+            --output "${response_file}" --write-out '%{http_code}' \
+            --request PATCH \
+            --url "https://api.github.com/user/packages/container/${PACKAGE}" \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            --header 'Content-Type: application/json' \
+            --data '{"visibility":"public"}')
+          echo "GitHub package visibility response: HTTP ${status}"
+          jq '{name,visibility,updated_at,message,documentation_url}' "${response_file}"
+          test "${status}" -ge 200
+          test "${status}" -lt 300
+          test "$(jq -r '.visibility // empty' "${response_file}")" = public
+
+      - name: Verify anonymous GHCR pullability
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_url="https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${TAG}"
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+            "${manifest_url}")
+          echo "Anonymous GHCR manifest check: HTTP ${status}"
+          test "${status}" = 200
