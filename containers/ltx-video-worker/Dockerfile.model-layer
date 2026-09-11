@@ -1,0 +1,25 @@
+# Local packaging helper. The production Dockerfile remains the canonical
+# dependency build; this file adds the verified model bundle to a completed
+# runtime-base image without rebuilding that base.
+
+FROM ltx-video-worker:runtime-base
+
+COPY --from=ltxmodels / /models/ltx-2.5/
+
+RUN test -s /models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors \
+    && test "$(stat -c '%s' /models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors)" = "18721732720" \
+    && test -s /models/ltx-2.5/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors \
+    && test "$(stat -c '%s' /models/ltx-2.5/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors)" = "26263860594" \
+    && test -s /models/ltx-2.5/vae/ltx-2.5-video-vae-conv-bf16.safetensors \
+    && test "$(stat -c '%s' /models/ltx-2.5/vae/ltx-2.5-video-vae-conv-bf16.safetensors)" = "1452269922" \
+    && test -s /models/ltx-2.5/vae/ltx-2.5-audio-vae-bf16.safetensors \
+    && test "$(stat -c '%s' /models/ltx-2.5/vae/ltx-2.5-audio-vae-bf16.safetensors)" = "364866540" \
+    && test -s /models/ltx-2.5/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors \
+    && test "$(stat -c '%s' /models/ltx-2.5/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors)" = "995778752"
+
+USER ltx
+
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
+ENTRYPOINT ["/usr/local/bin/ltx-video-worker-entrypoint"]

@@ -28,6 +28,32 @@ GHCR publishing and private-image pulls must use the repository/deployment crede
 
 That workflow authenticates with `secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN`; GitHub injects `GITHUB_TOKEN` only while the workflow runs, so it should not be expected in a local `.env` or process environment. Use that workflow for Wan code-only overlays and inspect it before concluding that GHCR credentials are missing. Never substitute the local Docker Desktop credential, a local GitHub login, or an unrelated machine credential. Keep the established public package names and publish path unchanged. If the repository workflow or its configured secret is unavailable, report that explicitly rather than silently switching credentials or changing package visibility.
 
+### GHCR Publish Gate
+
+The absence of `GHCR_PUSH_TOKEN`, `GITHUB_TOKEN`, or `SALAD_GHCR_*` in a local
+`.env`, process environment, or Docker credential store is **never** a reason
+to stop a publish, ask the user for credentials, or report that GHCR access is
+missing. Those checks do not test the GitHub Actions credential path. The
+workflow reference must be inspected and the appropriate CI publish path must
+be run or verified first.
+
+`GITHUB_TOKEN` is intentionally ephemeral and exists only inside the GitHub
+Actions job. `GHCR_PUSH_TOKEN` is a repository/environment secret and its value
+must not be copied to disk. `SALAD_GHCR_READ_TOKEN` is a pull credential, not a
+publish credential, and must never be used for a push. Never use the local
+Docker credential helper, local GitHub login, or any other machine credential
+as a substitute.
+
+For a locally built image, distinguish the image source from the credential
+source: use the repository's CI/deployment credential and an appropriate
+model-bearing or code-overlay workflow. The Wan overlay workflow is only for
+Wan code-only overlays; it must not be treated as the publish path for a new
+model-bearing image such as LTX. If no appropriate CI workflow exists, record
+that exact workflow limitation and continue preparing the publish path; do
+not misdiagnose it as a missing local token. A credential blocker may only be
+reported after the correct CI workflow has been inspected and its actual run
+or configured-secret lookup has failed.
+
 ## Wan Overlay Publishing
 
 Wan production images use a model-bearing base plus a small code/dependency
