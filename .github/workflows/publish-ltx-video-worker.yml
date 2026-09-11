@@ -27,7 +27,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/faceless-ltx-video-worker
+  # Docker image references must be lowercase even when the GitHub owner is
+  # displayed with capital letters.
+  IMAGE: ghcr.io/the-faceless-dev/faceless-ltx-video-worker
   MODEL_REPOSITORY: comfyicu/LTX-2.5
 
 jobs:
