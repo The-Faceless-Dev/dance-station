@@ -3,6 +3,8 @@
 ARG BASE_IMAGE=pytorch/pytorch:2.8.0-cuda12.8-cudnn9-devel
 FROM ${BASE_IMAGE} AS runtime-base
 
+LABEL org.opencontainers.image.source="https://github.com/The-Faceless-Dev/dance-station"
+
 ARG LTX_REPOSITORY=https://github.com/Lightricks/LTX-2.git
 ARG LTX_REF=a95ab856bf29407b6b066ede0abe1846050db56c
 
