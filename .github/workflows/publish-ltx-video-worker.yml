@@ -54,33 +54,6 @@ jobs:
           docker system prune --all --force --volumes || true
           df -h /
 
-      - name: Install model downloader
-        shell: bash
-        run: python3 -m pip install --no-cache-dir --upgrade "huggingface_hub>=0.34.0"
-
-      - name: Download verified LTX model bundle
-        shell: bash
-        env:
-          HF_HUB_ENABLE_HF_TRANSFER: "1"
-          HF_XET_HIGH_PERFORMANCE: "1"
-          HF_XET_NUM_CONCURRENT_RANGE_GETS: "64"
-        run: |
-          set -euo pipefail
-          mkdir -p ltx-models
-          hf download "$MODEL_REPOSITORY" \
-            diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors \
-            text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors \
-            vae/ltx-2.5-video-vae-conv-bf16.safetensors \
-            vae/ltx-2.5-audio-vae-bf16.safetensors \
-            latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors \
-            --local-dir ltx-models
-
-      - name: Verify model bundle
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 tools/ltx_video/verify_model_bundle.py ltx-models
-
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -91,15 +64,33 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish model-bearing image
+      - name: Build and publish runtime base
         shell: bash
         env:
-          TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r1' }}
+          BASE_TAG: ltx-2.5-runtime-base-${{ github.sha }}
         run: |
           set -euo pipefail
           docker buildx build \
             --file containers/ltx-video-worker/Dockerfile \
-            --build-context ltxmodels=ltx-models \
+            --target runtime-base \
+            --platform linux/amd64 \
+            --tag "$IMAGE:$BASE_TAG" \
+            --provenance=false \
+            --sbom=false \
+            --push \
+            .
+
+      - name: Build and publish model-bearing image
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r1' }}
+          BASE_TAG: ltx-2.5-runtime-base-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --file containers/ltx-video-worker/Dockerfile.registry \
+            --build-arg BASE_IMAGE="$IMAGE:$BASE_TAG" \
+            --build-arg MODEL_REPOSITORY="$MODEL_REPOSITORY" \
             --platform linux/amd64 \
             --tag "$IMAGE:$TAG" \
             --provenance=false \

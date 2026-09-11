@@ -1,0 +1,55 @@
+# syntax=docker/dockerfile:1.7
+
+# The CI publisher builds the dependency/runtime base first, then creates the
+# model-bearing image from that pushed base. Downloading directly into the
+# image avoids keeping a second 44+ GiB model bundle in the runner workspace.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG MODEL_REPOSITORY=comfyicu/LTX-2.5
+
+USER root
+ENV HF_HOME=/tmp/huggingface \
+    HF_HUB_ENABLE_HF_TRANSFER=1 \
+    HF_XET_HIGH_PERFORMANCE=1 \
+    HF_XET_NUM_CONCURRENT_RANGE_GETS=64 \
+    HF_HUB_DISABLE_TELEMETRY=1
+
+RUN python -m pip install --no-cache-dir "huggingface_hub[hf_xet]>=0.34.0" \
+    && mkdir -p /models/ltx-2.5/diffusion_models \
+       /models/ltx-2.5/text_encoders \
+       /models/ltx-2.5/vae \
+       /models/ltx-2.5/latent_upscale_models
+
+RUN hf download "${MODEL_REPOSITORY}" \
+      diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors \
+      --local-dir /models/ltx-2.5 \
+    && test "$(stat -c '%s' /models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors)" = "18721732720"
+
+RUN hf download "${MODEL_REPOSITORY}" \
+      text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors \
+      --local-dir /models/ltx-2.5 \
+    && test "$(stat -c '%s' /models/ltx-2.5/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors)" = "26263860594"
+
+RUN hf download "${MODEL_REPOSITORY}" \
+      vae/ltx-2.5-video-vae-conv-bf16.safetensors \
+      --local-dir /models/ltx-2.5 \
+    && test "$(stat -c '%s' /models/ltx-2.5/vae/ltx-2.5-video-vae-conv-bf16.safetensors)" = "1452269922"
+
+RUN hf download "${MODEL_REPOSITORY}" \
+      vae/ltx-2.5-audio-vae-bf16.safetensors \
+      --local-dir /models/ltx-2.5 \
+    && test "$(stat -c '%s' /models/ltx-2.5/vae/ltx-2.5-audio-vae-bf16.safetensors)" = "364866540"
+
+RUN hf download "${MODEL_REPOSITORY}" \
+      latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors \
+      --local-dir /models/ltx-2.5 \
+    && test "$(stat -c '%s' /models/ltx-2.5/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors)" = "995778752" \
+    && python /app/tools/ltx_video/verify_model_bundle.py /models/ltx-2.5 \
+    && rm -rf /tmp/huggingface
+
+USER ltx
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
+ENTRYPOINT ["/usr/local/bin/ltx-video-worker-entrypoint"]
