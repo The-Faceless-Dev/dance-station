@@ -1,6 +1,16 @@
 name: Publish LTX video worker
 
 on:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
+    paths:
+      - .github/workflows/publish-ltx-video-worker.yml
+      - containers/ltx-video-worker/**
+      - src/autotransition/ltx_video/**
+      - tools/ltx_video/**
+      - pyproject.toml
+      - README.md
   workflow_dispatch:
     inputs:
       tag:
@@ -84,7 +94,7 @@ jobs:
       - name: Build and publish model-bearing image
         shell: bash
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r1' }}
         run: |
           set -euo pipefail
           docker buildx build \
@@ -101,7 +111,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r1' }}
         run: |
           set -euo pipefail
           package='faceless-ltx-video-worker'
@@ -120,7 +130,7 @@ jobs:
       - name: Verify anonymous pullability
         shell: bash
         env:
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r1' }}
         run: |
           set -euo pipefail
           manifest_url="https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${TAG}"
