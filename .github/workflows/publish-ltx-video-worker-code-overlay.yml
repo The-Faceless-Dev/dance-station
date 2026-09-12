@@ -17,7 +17,7 @@ on:
       tag:
         description: Public code-overlay tag
         required: true
-        default: ltx-2.5-nvfp4-5090-r3
+        default: ltx-2.5-nvfp4-5090-r4
 
 permissions:
   contents: read
@@ -30,7 +30,7 @@ concurrency:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
   BASE_TAG: ${{ inputs.base_tag || 'ltx-2.5-nvfp4-5090-r1' }}
-  TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r3' }}
+  TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r4' }}
 
 jobs:
   publish:
@@ -61,6 +61,7 @@ jobs:
         run: |
           set -euo pipefail
           repository="${TARGET_IMAGE#ghcr.io/}"
+          repository="${repository%:${TAG}}"
           pull_token=$(curl --fail --silent --show-error \
             "https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull" \
             | jq --raw-output '.token')
