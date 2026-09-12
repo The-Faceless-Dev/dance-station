@@ -17,7 +17,7 @@ on:
       tag:
         description: Public code-overlay tag
         required: true
-        default: ltx-2.5-nvfp4-5090-r2
+        default: ltx-2.5-nvfp4-5090-r3
 
 permissions:
   contents: read
@@ -30,7 +30,7 @@ concurrency:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
   BASE_TAG: ${{ inputs.base_tag || 'ltx-2.5-nvfp4-5090-r1' }}
-  TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r2' }}
+  TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r3' }}
 
 jobs:
   publish:
@@ -60,8 +60,14 @@ jobs:
           TARGET_IMAGE: ${{ env.IMAGE }}:${{ env.TAG }}
         run: |
           set -euo pipefail
-          manifest_url="https://ghcr.io/v2/${TARGET_IMAGE#ghcr.io/}/manifests/${TAG}"
+          repository="${TARGET_IMAGE#ghcr.io/}"
+          pull_token=$(curl --fail --silent --show-error \
+            "https://ghcr.io/token?service=ghcr.io&scope=repository:${repository}:pull" \
+            | jq --raw-output '.token')
+          test -n "${pull_token}"
+          manifest_url="https://ghcr.io/v2/${repository}/manifests/${TAG}"
           status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${pull_token}" \
             --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
             "$manifest_url")
           echo "Anonymous LTX overlay manifest check: HTTP $status"
