@@ -1,0 +1,15 @@
+# Code-only overlay for the already public, model-bearing LTX image.
+# Runtime fixes must not rebuild or redownload the 40+ GiB model bundle.
+
+ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:ltx-2.5-nvfp4-5090-r1
+FROM ${BASE_IMAGE}
+
+USER root
+COPY src/autotransition/ltx_video /app/src/autotransition/ltx_video
+RUN chown -R ltx:ltx /app/src/autotransition/ltx_video
+
+USER ltx
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=5 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
+ENTRYPOINT ["/usr/local/bin/ltx-video-worker-entrypoint"]

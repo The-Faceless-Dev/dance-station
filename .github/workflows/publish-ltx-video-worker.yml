@@ -1,16 +1,6 @@
 name: Publish LTX video worker
 
 on:
-  push:
-    branches:
-      - wan-animate-int8-convrot-experiment
-    paths:
-      - .github/workflows/publish-ltx-video-worker.yml
-      - containers/ltx-video-worker/**
-      - src/autotransition/ltx_video/**
-      - tools/ltx_video/**
-      - pyproject.toml
-      - README.md
   workflow_dispatch:
     inputs:
       tag:

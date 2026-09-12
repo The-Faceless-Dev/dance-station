@@ -37,3 +37,10 @@ may be slower than Flash for text encoding, but avoids the production failure
 and does not affect video denoising. Run the LTX tests, the full test suite,
 Python compilation, then publish a code-only image update and verify a real
 video-only Vast generation before reporting success.
+
+## Publishing Correction
+
+The existing model-bearing workflow is now manual-only. Runtime changes use
+`Dockerfile.overlay` and `publish-ltx-video-worker-code-overlay.yml` against
+the public model-bearing tag, so a code fix adds one small layer instead of
+rebuilding the model bundle.
