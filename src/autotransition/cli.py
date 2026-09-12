@@ -34,6 +34,10 @@ from autotransition.runtime.ace_step import (
 from autotransition.runtime.side_step import build_side_step_install_commands, run_side_step_install, side_step_status
 from autotransition.ui import create_app
 from autotransition.avatar.worker import create_avatar_worker_app
+from autotransition.flux_image.config import FluxImageConfig
+from autotransition.flux_image.worker import create_flux_image_worker_app
+from autotransition.qwen_image.config import QwenImageConfig
+from autotransition.qwen_image.server import create_qwen_image_worker_app
 
 app = typer.Typer(help="Build and manage AI music transition pipeline artifacts.")
 models_app = typer.Typer(help="List, inspect, and install ACE-Step models.")
@@ -59,6 +63,46 @@ def avatar_worker(
         raise typer.BadParameter("uvicorn is required to run the avatar worker.") from exc
     typer.echo(f"Avatar worker: http://{host}:{port}")
     uvicorn.run(create_avatar_worker_app(config), host=host, port=port)
+
+
+@app.command("flux-image-worker")
+def flux_image_worker(
+    host: str = typer.Option("0.0.0.0", help="FLUX image worker bind host."),
+    port: int = typer.Option(8080, help="FLUX image worker bind port."),
+    artifact_root: Path | None = typer.Option(None, help="Override the durable FLUX image job directory."),
+) -> None:
+    """Run the native FLUX.2 Klein 4B queue worker."""
+
+    config = FluxImageConfig.from_env()
+    if artifact_root is not None:
+        config = FluxImageConfig(**{**config.__dict__, "artifact_root": artifact_root})
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise typer.BadParameter("uvicorn and fastapi are required to run the FLUX image worker.") from exc
+
+    typer.echo(f"FLUX.2 Klein image worker: http://{host}:{port}")
+    uvicorn.run(create_flux_image_worker_app(config), host=host, port=port)
+
+
+@app.command("qwen-image-worker")
+def qwen_image_worker(
+    host: str = typer.Option("0.0.0.0", help="Qwen image worker bind host."),
+    port: int = typer.Option(8080, help="Qwen image worker bind port."),
+    artifact_root: Path | None = typer.Option(None, help="Override the durable Qwen image job directory."),
+) -> None:
+    """Run the native Qwen-Image-2512 Q8 image worker."""
+
+    config = QwenImageConfig.from_env()
+    if artifact_root is not None:
+        config = QwenImageConfig(**{**config.__dict__, "artifact_root": artifact_root})
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise typer.BadParameter("uvicorn and fastapi are required to run the Qwen image worker.") from exc
+
+    typer.echo(f"Qwen-Image-2512 worker: http://{host}:{port}")
+    uvicorn.run(create_qwen_image_worker_app(config), host=host, port=port)
 
 
 @app.command()
