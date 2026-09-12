@@ -4,6 +4,7 @@ import gc
 import json
 import logging
 import shutil
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -42,6 +43,20 @@ class LtxRuntimeResult:
 
 def _emit(progress: ProgressCallback, stage: str, fraction: float, message: str, details: dict[str, Any] | None = None) -> None:
     progress(stage, max(0.0, min(1.0, float(fraction))), message, details)
+
+
+def _tiling_to_dict(tiling: Any) -> dict[str, Any] | None:
+    if tiling is None:
+        return None
+    result: dict[str, Any] = {}
+    for name in ("frames", "height", "width"):
+        value = getattr(tiling, name, None)
+        if value is not None:
+            result[name] = {
+                "tileSize": int(getattr(value, "tile_size", 0)),
+                "overlap": int(getattr(value, "overlap", 0)),
+            }
+    return result or None
 
 
 def _configure_fast_attention(torch: Any, *, enforce: bool) -> dict[str, Any]:
@@ -192,7 +207,7 @@ def _parse_ltx_imports() -> dict[str, Any]:
         from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
         from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
         from ltx_core.model.transformer.compiling import CompilationConfig
-        from ltx_core.model.video_vae import AUTO_TILING, get_video_chunks_number
+        from ltx_core.model.video_vae import AUTO_TILING, DimensionSizeConfig, TileSizeConfig, get_video_chunks_number
         from ltx_core.model.video_vae.transformer import DiffVAEMode
         from ltx_pipelines.distilled import DistilledPipeline, should_use_ancestral_sampler
         from ltx_pipelines.utils.args import ImageConditioningInput
@@ -219,7 +234,13 @@ def _parse_ltx_imports() -> dict[str, Any]:
     return locals()
 
 
-def _video_only_pipeline_factory(imports: dict[str, Any], *, enforce_fast_attention: bool) -> type:
+def _video_only_pipeline_factory(
+    imports: dict[str, Any],
+    *,
+    enforce_fast_attention: bool,
+    vae_temporal_tile_frames: int,
+    vae_temporal_overlap_frames: int,
+) -> type:
     """Create a video-only variant of the official distilled two-stage pipeline.
 
     The upstream distilled pipeline is intentionally audio-video. This small adapter keeps its
@@ -240,6 +261,8 @@ def _video_only_pipeline_factory(imports: dict[str, Any], *, enforce_fast_attent
     ModalitySpec = imports["ModalitySpec"]
     SimpleDenoiser = imports["SimpleDenoiser"]
     AUTO_TILING = imports["AUTO_TILING"]
+    DimensionSizeConfig = imports["DimensionSizeConfig"]
+    TileSizeConfig = imports["TileSizeConfig"]
     DiffVAEMode = imports["DiffVAEMode"]
     should_use_ancestral_sampler = imports["should_use_ancestral_sampler"]
     EulerAncestralDiffusionStep = __import__(
@@ -329,6 +352,37 @@ def _video_only_pipeline_factory(imports: dict[str, Any], *, enforce_fast_attent
                 return result
             return conditioner(build)
 
+        def _tiling_config(self, *, scale_factors: Any, height: int, width: int, frames: int) -> Any:
+            auto_config = ensure_tiling_config(
+                AUTO_TILING,
+                scale_factors=scale_factors,
+                vae_checkpoint_path=self.video_decoder.checkpoint_path,
+                video_shape=VideoPixelShape(batch=1, frames=frames, height=height, width=width, fps=24.0),
+                diffvae_optimization=self.video_decoder.diffvae_optimization,
+                device=self.device,
+            )
+            if auto_config is None:
+                return None
+            # Keep the upstream spatial recommendation, but cap temporal VAE
+            # work to a bounded frame tile. This is the decode working set, not
+            # an inference window, so it does not change the requested output.
+            bounded = TileSizeConfig(
+                frames=DimensionSizeConfig(
+                    tile_size=vae_temporal_tile_frames,
+                    overlap=vae_temporal_overlap_frames,
+                ),
+                height=auto_config.height,
+                width=auto_config.width,
+            )
+            return ensure_tiling_config(
+                bounded,
+                scale_factors=scale_factors,
+                vae_checkpoint_path=self.video_decoder.checkpoint_path,
+                video_shape=VideoPixelShape(batch=1, frames=frames, height=height, width=width, fps=24.0),
+                diffvae_optimization=self.video_decoder.diffvae_optimization,
+                device=self.device,
+            )
+
         def __call__(self, *, prompt: str, seed: int, height: int, width: int, frame_rate: float, images: list[tuple[Any, str]], num_frames: int, stage_1_output: Path | None = None) -> Any:
             assert_resolution(height=height, width=width, is_two_stage=True)
             generator = torch.Generator(device=self.device).manual_seed(seed)
@@ -338,13 +392,11 @@ def _video_only_pipeline_factory(imports: dict[str, Any], *, enforce_fast_attent
             (ctx_p,) = self.prompt_encoder([prompt])
             video_context = ctx_p.video_encoding
             scale_factors = tiling_scale_factors_for_vae(self.video_decoder.checkpoint_path)
-            tiling_config = ensure_tiling_config(
-                AUTO_TILING,
+            tiling_config = self._tiling_config(
                 scale_factors=scale_factors,
-                vae_checkpoint_path=self.video_decoder.checkpoint_path,
-                video_shape=VideoPixelShape(batch=1, frames=num_frames, height=height, width=width, fps=frame_rate),
-                diffvae_optimization=self.video_decoder.diffvae_optimization,
-                device=self.device,
+                height=height,
+                width=width,
+                frames=num_frames,
             )
             stage_1_h, stage_1_w = height // 2, width // 2
             stage_1_conditionings = self._conditionings(
@@ -367,13 +419,11 @@ def _video_only_pipeline_factory(imports: dict[str, Any], *, enforce_fast_attent
                 raise RuntimeError("LTX video-only stage 1 returned no video state")
             if stage_1_output is not None:
                 _emit(self.progress, "decode_stage_1", 0.0, "Encoding retained stage 1 preview")
-                stage_1_tiling = ensure_tiling_config(
-                    AUTO_TILING,
+                stage_1_tiling = self._tiling_config(
                     scale_factors=scale_factors,
-                    vae_checkpoint_path=self.video_decoder.checkpoint_path,
-                    video_shape=VideoPixelShape(batch=1, frames=num_frames, height=stage_1_h, width=stage_1_w, fps=frame_rate),
-                    diffvae_optimization=self.video_decoder.diffvae_optimization,
-                    device=self.device,
+                    height=stage_1_h,
+                    width=stage_1_w,
+                    frames=num_frames,
                 )
                 stage_1_decoded = self.video_decoder(video_state.latent, stage_1_tiling, generator, dtype=self.dtype)
                 encode_video(
@@ -418,6 +468,45 @@ def _video_only_pipeline_factory(imports: dict[str, Any], *, enforce_fast_attent
 class LtxVideoRuntime:
     def __init__(self, config: LtxVideoConfig):
         self.config = config
+        self._residency_lock = threading.RLock()
+        self._requires_reset = False
+        self._last_cleanup_report: dict[str, Any] | None = None
+
+    @property
+    def last_cleanup_report(self) -> dict[str, Any] | None:
+        return self._last_cleanup_report
+
+    def residency_status(self) -> dict[str, Any]:
+        return {
+            "requiresReset": self._requires_reset,
+            "memory": gpu_memory_snapshot(self.config.device).to_dict(),
+            "lastCleanup": self._last_cleanup_report,
+        }
+
+    def reset_residency(self) -> dict[str, Any]:
+        """Trim CUDA allocations and report whether a process restart is still needed."""
+        with self._residency_lock:
+            before = gpu_memory_snapshot(self.config.device)
+            clear_cuda_cache()
+            after = gpu_memory_snapshot(self.config.device)
+            allocated_delta = before.allocated_bytes - after.allocated_bytes
+            reserved_delta = before.reserved_bytes - after.reserved_bytes
+            remaining_gb = after.allocated_bytes / (1024**3) if after.available else 0.0
+            requires_process_restart = bool(
+                after.available and remaining_gb > self.config.residency_reset_threshold_gb
+            )
+            report = {
+                "before": before.to_dict(),
+                "after": after.to_dict(),
+                "releasedAllocatedGb": round(allocated_delta / (1024**3), 3),
+                "releasedReservedGb": round(reserved_delta / (1024**3), 3),
+                "requiresProcessRestart": requires_process_restart,
+                "thresholdGb": self.config.residency_reset_threshold_gb,
+            }
+            self._requires_reset = requires_process_restart
+            self._last_cleanup_report = report
+            logger.info("LTX CUDA residency reset: %s", report)
+            return report
 
     def preflight(self) -> dict[str, Any]:
         report = self.config.preflight()
@@ -453,6 +542,13 @@ class LtxVideoRuntime:
                     report["reason"] = report.get("reason") or "Flash SDP is not the only enabled CUDA attention backend"
         except Exception as exc:
             report["attention"] = {"errorType": type(exc).__name__, "error": str(exc)}
+        report["residency"] = self.residency_status()
+        if self._requires_reset:
+            report["ready"] = False
+            report["reason"] = report.get("reason") or (
+                "GPU residency is above the safe reset threshold; call POST /v1/worker/reset "
+                "or restart the worker process before submitting another job"
+            )
         try:
             import ltx_core  # noqa: F401
             import ltx_pipelines  # noqa: F401
@@ -505,6 +601,18 @@ class LtxVideoRuntime:
         seed = request.seed if request.seed is not None else __import__("secrets").randbelow(2**32)
         output_dir.mkdir(parents=True, exist_ok=True)
         started = time.monotonic()
+        current_stage = {"name": "validate_request"}
+        memory_phases: dict[str, dict[str, Any]] = {}
+
+        def report(stage: str, fraction: float, message: str, details: dict[str, Any] | None = None) -> None:
+            current_stage["name"] = stage
+            progress(stage, fraction, message, details)
+
+        def capture_memory(name: str) -> dict[str, Any]:
+            snapshot = gpu_memory_snapshot(self.config.device).to_dict()
+            memory_phases[name] = snapshot
+            return snapshot
+
         memory_plan = build_memory_plan(
             width=width,
             height=height,
@@ -515,27 +623,28 @@ class LtxVideoRuntime:
             reserve_vram_gb=self.config.reserve_vram_gb,
             device=self.config.device,
             conditioning_count=len(request.conditioning_images),
+            vae_temporal_tile_frames=self.config.vae_temporal_tile_frames,
         )
         if not memory_plan["gpu"].get("available", False) and self.config.gpu_required:
             raise LtxRuntimeError("cuda_unavailable", "CUDA is required for LTX video generation", stage="preflight_memory", details=memory_plan)
         if memory_plan["gpu"].get("available") and not memory_plan["fitsCurrentFreeMemory"]:
             raise LtxRuntimeError("vram_budget_exceeded", "LTX job exceeds the current free VRAM budget", stage="preflight_memory", details=memory_plan)
-        _emit(progress, "preflight_memory", 1.0, "GPU memory plan accepted", memory_plan)
+        report("preflight_memory", 1.0, "GPU memory plan accepted", memory_plan)
         imports = _parse_ltx_imports()
         torch = imports["torch"]
         device = torch.device(self.config.device)
         attention = _configure_fast_attention(torch, enforce=self.config.enforce_fast_attention)
-        _emit(progress, "preflight_memory", 1.0, "CUDA attention policy selected", attention)
+        report("preflight_memory", 1.0, "CUDA attention policy selected", attention)
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
-        memory_before_inference = gpu_memory_snapshot(self.config.device).to_dict()
+        memory_before_inference = capture_memory("before_inference")
         model_paths = imports["ModelPaths"].from_split(
             transformer_path=str(self.config.transformer_path),
             text_encoder_path=str(self.config.text_encoder_path),
             video_vae_path=str(self.config.video_vae_path),
             audio_vae_path=str(self.config.audio_vae_path) if request.audio_mode == "generated" and self.config.audio_vae_path else None,
         )
-        _emit(progress, "acquire_inputs", 0.0, "Acquiring conditioning inputs")
+        report("acquire_inputs", 0.0, "Acquiring conditioning inputs")
         attempt_dir = output_dir / "inputs"
         normalized_images: list[tuple[Any, str]] = []
         for index, item in enumerate(request.conditioning_images):
@@ -550,20 +659,22 @@ class LtxVideoRuntime:
                 ),
                 item.mode,
             ))
-            _emit(progress, "normalize_inputs", (index + 1) / max(1, len(request.conditioning_images)), f"Normalized conditioning image {index + 1}/{len(request.conditioning_images)}")
+            report("normalize_inputs", (index + 1) / max(1, len(request.conditioning_images)), f"Normalized conditioning image {index + 1}/{len(request.conditioning_images)}")
         source_audio: Path | None = None
         if request.audio_mode == "source":
             source_audio = acquire_input(request.source_audio_url, request.source_audio_path, attempt_dir / "source-audio", self.config)
-        _emit(progress, "acquire_inputs", 1.0, "Inputs acquired")
-        _emit(progress, "normalize_inputs", 1.0, "Inputs normalized")
+        report("acquire_inputs", 1.0, "Inputs acquired")
+        report("normalize_inputs", 1.0, "Inputs normalized")
         loras: list[Any] = []
         for index, item in enumerate(request.loras):
             path = awaitable_acquire_lora(item, attempt_dir, self.config)
             loras.append(imports["LoraPathStrengthAndSDOps"](str(path), float(item.get("strength", 1.0)), imports["LTXV_LORA_COMFY_RENAMING_MAP"]))
             logger.info("LTX LoRA prepared index=%d path=%s strength=%s", index, path, item.get("strength", 1.0))
-        _emit(progress, "load_models", 0.0, "Loading LTX 2.5 model components", {"audioMode": request.audio_mode, "quantization": self.config.quantization, "offloadMode": self.config.offload_mode})
+        report("load_models", 0.0, "Loading LTX 2.5 model components", {"audioMode": request.audio_mode, "quantization": self.config.quantization, "offloadMode": self.config.offload_mode})
         pipeline: Any | None = None
         result: Any | None = None
+        video_stream: Any | None = None
+        metadata: dict[str, Any] = {}
         quantization: Any | None = None
         offload_mode: Any | None = None
         compilation: Any | None = None
@@ -587,13 +698,15 @@ class LtxVideoRuntime:
                     pipeline.prompt_encoder,
                     torch,
                     enforce_fast_attention=self.config.enforce_fast_attention,
-                    progress=progress,
+                    progress=report,
                 )
-                pipeline.stage = _ProgressDiffusionStage(pipeline.stage, progress)
+                pipeline.stage = _ProgressDiffusionStage(pipeline.stage, report)
             else:
                 pipeline_cls = _video_only_pipeline_factory(
                     imports,
                     enforce_fast_attention=self.config.enforce_fast_attention,
+                    vae_temporal_tile_frames=self.config.vae_temporal_tile_frames,
+                    vae_temporal_overlap_frames=self.config.vae_temporal_overlap_frames,
                 )
                 pipeline = pipeline_cls(
                     model_paths=model_paths,
@@ -603,10 +716,10 @@ class LtxVideoRuntime:
                     quantization=quantization,
                     offload_mode=offload_mode,
                     compilation_config=compilation,
-                    progress=progress,
+                    progress=report,
                 )
-            _emit(progress, "load_models", 1.0, "LTX model components loaded")
-            _emit(progress, "encode_prompt", 0.0, "Encoding prompt")
+            report("load_models", 1.0, "LTX model components loaded", {"memory": capture_memory("after_model_load")})
+            report("encode_prompt", 0.0, "Encoding prompt")
             # The upstream call includes prompt encoding; this event brackets that work.
             stage_1_output = output_dir / "stage-1.mp4" if retain_intermediates and request.audio_mode != "generated" else None
             pipeline_images = (
@@ -619,6 +732,10 @@ class LtxVideoRuntime:
             # inference-only decode. ``inference_mode`` creates immutable
             # inference tensors and makes that path fail; ``no_grad`` keeps
             # autograd disabled without changing tensor semantics.
+            # The pipeline returns a lazy VAE decoder iterator. Keep the
+            # no-grad scope open until that iterator has been consumed; ending
+            # it after pipeline() silently enabled autograd for every decoder
+            # feature map and caused the 46.6 GB allocator spike.
             with torch.no_grad():
                 result = pipeline(
                     prompt=request.prompt,
@@ -630,38 +747,45 @@ class LtxVideoRuntime:
                     num_frames=frames,
                     **({"stage_1_output": stage_1_output} if stage_1_output is not None else {}),
                 )
-            _emit(progress, "encode_prompt", 1.0, "Prompt encoded")
-            _emit(progress, "stage_1_denoise", 1.0, "Stage 1 denoising complete")
-            _emit(progress, "spatial_upscale", 1.0, "Latent spatial upscale complete")
-            _emit(progress, "stage_2_refine", 1.0, "Stage 2 refinement complete")
-            _emit(progress, "decode_video", 0.0, "Decoding video frames")
-            render_mp4 = output_dir / "render.mp4"
-            imports["encode_video"](
-                video=result.video,
-                fps=int(round(request.frame_rate)),
-                audio=result.audio if request.audio_mode == "generated" else None,
-                output_path=str(render_mp4),
-                video_chunks_number=imports["get_video_chunks_number"](result.num_frames, result.tiling_config),
-            )
-            _emit(progress, "decode_video", 1.0, "Video decoded and encoded")
+                report("encode_prompt", 1.0, "Prompt encoded")
+                report("stage_1_denoise", 1.0, "Stage 1 denoising complete")
+                report("spatial_upscale", 1.0, "Latent spatial upscale complete")
+                report("stage_2_refine", 1.0, "Stage 2 refinement complete")
+                report("decode_video", 0.0, "Decoding video frames", {"memory": capture_memory("before_decode")})
+                render_mp4 = output_dir / "render.mp4"
+                video_stream = result.video
+                try:
+                    imports["encode_video"](
+                        video=video_stream,
+                        fps=int(round(request.frame_rate)),
+                        audio=result.audio if request.audio_mode == "generated" else None,
+                        output_path=str(render_mp4),
+                        video_chunks_number=imports["get_video_chunks_number"](result.num_frames, result.tiling_config),
+                    )
+                finally:
+                    close_stream = getattr(video_stream, "close", None)
+                    if callable(close_stream):
+                        close_stream()
+                    video_stream = None
+                report("decode_video", 1.0, "Video decoded and encoded", {"memory": capture_memory("after_decode")})
             audio_path: Path | None = None
             if request.audio_mode == "generated" and result.audio is not None:
                 audio_path = output_dir / "audio.wav"
                 imports["encode_audio"](result.audio, str(audio_path))
-                _emit(progress, "decode_audio", 1.0, "Generated audio decoded")
+                report("decode_audio", 1.0, "Generated audio decoded")
             elif request.audio_mode == "source" and source_audio is not None:
-                _emit(progress, "mux_audio", 0.0, "Muxing source audio")
+                report("mux_audio", 0.0, "Muxing source audio")
                 audio_path = source_audio
                 muxed = output_dir / "render-with-audio.mp4"
                 mux_audio(render_mp4, source_audio, muxed, output_format="mp4")
                 render_mp4 = muxed
-                _emit(progress, "mux_audio", 1.0, "Source audio muxed")
+                report("mux_audio", 1.0, "Source audio muxed")
             final_path = output_dir / f"output.{request.output_format}"
             if request.output_format == "mp4":
                 shutil.copy2(render_mp4, final_path)
             else:
                 transcode_video(render_mp4, final_path, output_format="webm")
-            _emit(progress, "encode_output", 1.0, f"Wrote {final_path.name}")
+            report("encode_output", 1.0, f"Wrote {final_path.name}")
             conditioning_manifest = {
                 "schemaVersion": 1,
                 "target": {"width": width, "height": height, "aspectRatio": resolved_aspect_ratio},
@@ -696,12 +820,16 @@ class LtxVideoRuntime:
                 "memoryPlan": memory_plan,
                 "memoryBeforeInference": memory_before_inference,
                 "memoryAfter": gpu_memory_snapshot(self.config.device).to_dict(),
+                "memoryPhases": memory_phases,
+                "vaeTemporalTileFrames": self.config.vae_temporal_tile_frames,
+                "vaeTemporalOverlapFrames": self.config.vae_temporal_overlap_frames,
+                "decodeTiling": _tiling_to_dict(result.tiling_config),
                 "elapsedSeconds": round(time.monotonic() - started, 3),
                 "videoOnlyTransformer": request.audio_mode != "generated",
                 "retainIntermediates": bool(retain_intermediates),
             }
             (output_dir / "generation-metadata.json").write_text(json.dumps(metadata, indent=2, default=str) + "\n", encoding="utf-8")
-            _emit(progress, "finalize", 1.0, "LTX video generation finalized", metadata)
+            report("finalize", 1.0, "LTX video generation finalized", metadata)
             intermediate_paths = (stage_1_output,) if stage_1_output is not None and stage_1_output.is_file() else ()
             return LtxRuntimeResult(final_path, audio_path, metadata, intermediate_paths)
         except LtxRuntimeError:
@@ -710,12 +838,16 @@ class LtxVideoRuntime:
             raise LtxRuntimeError(
                 "ltx_inference_failed",
                 f"LTX inference failed: {type(exc).__name__}: {exc}",
-                stage="stage_1_denoise",
-                details={"memoryAfter": gpu_memory_snapshot(self.config.device).to_dict()},
+                stage=current_stage["name"],
+                details={"memoryAfter": gpu_memory_snapshot(self.config.device).to_dict(), "memoryPhases": memory_phases},
             ) from exc
         finally:
             # Explicitly drop model and tensor owners. Mutating locals() is not
             # guaranteed to update Python's fast-local storage.
+            close_stream = getattr(video_stream, "close", None)
+            if callable(close_stream):
+                close_stream()
+            video_stream = None
             pipeline = None
             result = None
             quantization = None
@@ -723,7 +855,10 @@ class LtxVideoRuntime:
             compilation = None
             loras.clear()
             gc.collect()
-            clear_cuda_cache()
+            cleanup_report = self.reset_residency()
+            if metadata:
+                metadata["cleanup"] = cleanup_report
+                (output_dir / "generation-metadata.json").write_text(json.dumps(metadata, indent=2, default=str) + "\n", encoding="utf-8")
 
 
 def build_quantization(imports: dict[str, Any], config: LtxVideoConfig) -> Any:

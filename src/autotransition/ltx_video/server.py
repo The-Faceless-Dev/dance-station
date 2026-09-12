@@ -56,7 +56,12 @@ def create_ltx_video_worker_app(config: LtxVideoConfig | None = None, runtime: A
     async def status() -> dict[str, Any]:
         with worker._lock:
             active = list(worker._futures)
-        return {"runtime": "ltx-video", "model": config.model_name, "preflight": runtime.preflight(), "activeJobs": active}
+        residency = getattr(runtime, "residency_status", lambda: None)()
+        return {"runtime": "ltx-video", "model": config.model_name, "preflight": runtime.preflight(), "residency": residency, "activeJobs": active}
+
+    @app.post("/v1/worker/reset")
+    async def reset_worker() -> dict[str, Any]:
+        return {"ok": True, "runtime": "ltx-video", "reset": worker.reset_residency()}
 
     @app.post("/v1/ltx/jobs")
     async def submit(payload: dict[str, Any]) -> dict[str, Any]:

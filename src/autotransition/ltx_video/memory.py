@@ -57,8 +57,15 @@ def clear_cuda_cache() -> None:
         import torch
 
         if torch.cuda.is_available():
+            # Synchronize before trimming so work launched by a failed lazy
+            # decoder cannot still reference blocks when empty_cache runs.
+            try:
+                torch.cuda.synchronize()
+            except Exception:
+                pass
             torch.cuda.empty_cache()
             torch.cuda.ipc_collect()
+            gc.collect()
     except Exception:
         pass
 
@@ -72,6 +79,7 @@ def estimate_peak_vram_gb(
     offload_mode: str,
     quantization: str = "none",
     conditioning_count: int = 0,
+    vae_temporal_tile_frames: int = 40,
 ) -> dict[str, float]:
     """Conservative planning estimate, not a substitute for measured peak memory.
 
@@ -85,6 +93,8 @@ def estimate_peak_vram_gb(
     activation_gb = 2.1 + video_tokens * 0.00022
     if conditioning_count < 0:
         raise ValueError("conditioning_count cannot be negative")
+    if vae_temporal_tile_frames < 8 or vae_temporal_tile_frames % 8 != 0:
+        raise ValueError("vae_temporal_tile_frames must be a positive multiple of 8")
     if offload_mode == "none":
         # The official 22B NVFP4 file is about 18.7 GiB. Keep a small amount of
         # headroom in the estimate for loader metadata and quantized buffers.
@@ -98,12 +108,15 @@ def estimate_peak_vram_gb(
     embeddings_gb = 0.75
     upsampler_gb = 1.5
     vae_gb = 2.0 + (0.75 if width >= 1024 or height >= 1024 else 0.0)
+    decode_latent_frames = min(latent_frames, vae_temporal_tile_frames // 8 + 1)
+    decode_spatial_tokens = max(1, width // 32) * max(1, height // 32)
+    decode_activation_gb = 2.1 + (decode_latent_frames * decode_spatial_tokens * 0.00022)
     audio_gb = 2.0 if audio else 0.0
     conditioning_gb = conditioning_count * 0.15
     prompt_phase_gb = text_encoder_gb + embeddings_gb
     denoise_phase_gb = transformer_gb + activation_gb + audio_gb + conditioning_gb
     upscale_phase_gb = upsampler_gb + activation_gb * 0.25
-    decode_phase_gb = vae_gb + activation_gb * 0.5
+    decode_phase_gb = vae_gb + decode_activation_gb * 0.5
     phase_peaks = {
         "promptEncodingGb": round(prompt_phase_gb, 3),
         "denoisingGb": round(denoise_phase_gb, 3),
@@ -119,6 +132,9 @@ def estimate_peak_vram_gb(
         "embeddingsProcessorGb": embeddings_gb,
         "upsamplerResidencyGb": upsampler_gb,
         "activationGb": round(activation_gb, 3),
+        "decodeActivationGb": round(decode_activation_gb, 3),
+        "decodeLatentFrames": float(decode_latent_frames),
+        "vaeTemporalTileFrames": float(vae_temporal_tile_frames),
         "vaeAndDecodeGb": vae_gb,
         "audioGb": audio_gb,
         "conditioningGb": round(conditioning_gb, 3),
@@ -139,6 +155,7 @@ def build_memory_plan(
     reserve_vram_gb: float,
     device: str = "cuda",
     conditioning_count: int = 0,
+    vae_temporal_tile_frames: int = 40,
 ) -> dict[str, Any]:
     estimate = estimate_peak_vram_gb(
         width=width,
@@ -148,6 +165,7 @@ def build_memory_plan(
         offload_mode=offload_mode,
         quantization=quantization,
         conditioning_count=conditioning_count,
+        vae_temporal_tile_frames=vae_temporal_tile_frames,
     )
     snapshot = gpu_memory_snapshot(device)
     available_gb = snapshot.free_bytes / (1024**3) if snapshot.available else 0.0

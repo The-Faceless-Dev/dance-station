@@ -55,3 +55,24 @@ def test_memory_plan_exposes_vram_budget() -> None:
     assert plan["videoTokens"] > 0
     assert plan["estimatedPeakGb"] > plan["transformerResidencyGb"]
     assert "fitsCurrentFreeMemory" in plan
+
+
+def test_memory_plan_accounts_for_bounded_vae_decode_tiles() -> None:
+    full = build_memory_plan(
+        width=576,
+        height=1024,
+        frames=241,
+        audio=False,
+        offload_mode="none",
+        quantization="nvfp4-prequant",
+        reserve_vram_gb=1.5,
+        vae_temporal_tile_frames=40,
+    )
+    assert full["decodeLatentFrames"] == 6
+    assert full["decodeLatentFrames"] < full["latentFrames"]
+    assert full["vaeTemporalTileFrames"] == 40
+
+
+def test_config_rejects_invalid_vae_temporal_tiling() -> None:
+    with pytest.raises(ValueError, match="temporal tiling"):
+        replace(LtxVideoConfig(), vae_temporal_tile_frames=41).validate()

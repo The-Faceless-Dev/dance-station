@@ -37,6 +37,11 @@ class LtxVideoConfig:
     allow_local_inputs: bool = False
     allow_custom_dimensions: bool = True
     reserve_vram_gb: float = 1.5
+    # ConvVAE decode is temporally tiled so long clips do not retain a full
+    # clip's intermediate feature maps. Both values are in output video frames.
+    vae_temporal_tile_frames: int = 40
+    vae_temporal_overlap_frames: int = 16
+    residency_reset_threshold_gb: float = 2.0
     max_width: int = 2048
     max_height: int = 2048
     max_frames: int = 0
@@ -94,6 +99,9 @@ class LtxVideoConfig:
             allow_local_inputs=_bool("LTX_VIDEO_ALLOW_LOCAL_INPUTS", cls.allow_local_inputs),
             allow_custom_dimensions=_bool("LTX_VIDEO_ALLOW_CUSTOM_DIMENSIONS", cls.allow_custom_dimensions),
             reserve_vram_gb=float(os.getenv("LTX_VIDEO_RESERVE_VRAM_GB", str(cls.reserve_vram_gb))),
+            vae_temporal_tile_frames=int(os.getenv("LTX_VIDEO_VAE_TEMPORAL_TILE_FRAMES", str(cls.vae_temporal_tile_frames))),
+            vae_temporal_overlap_frames=int(os.getenv("LTX_VIDEO_VAE_TEMPORAL_OVERLAP_FRAMES", str(cls.vae_temporal_overlap_frames))),
+            residency_reset_threshold_gb=float(os.getenv("LTX_VIDEO_RESIDENCY_RESET_THRESHOLD_GB", str(cls.residency_reset_threshold_gb))),
             max_width=int(os.getenv("LTX_VIDEO_MAX_WIDTH", str(cls.max_width))),
             max_height=int(os.getenv("LTX_VIDEO_MAX_HEIGHT", str(cls.max_height))),
             max_frames=int(os.getenv("LTX_VIDEO_MAX_FRAMES", str(cls.max_frames))),
@@ -125,6 +133,19 @@ class LtxVideoConfig:
             raise ValueError("LTX_VIDEO_OFFLOAD_MODE must be none, cpu, or disk")
         if self.reserve_vram_gb < 0 or self.max_width < 32 or self.max_height < 32:
             raise ValueError("LTX video memory and dimension limits are invalid")
+        if self.residency_reset_threshold_gb < 0:
+            raise ValueError("LTX_VIDEO_RESIDENCY_RESET_THRESHOLD_GB cannot be negative")
+        if (
+            self.vae_temporal_tile_frames < 8
+            or self.vae_temporal_tile_frames % 8 != 0
+            or self.vae_temporal_overlap_frames < 0
+            or self.vae_temporal_overlap_frames % 8 != 0
+            or self.vae_temporal_overlap_frames >= self.vae_temporal_tile_frames
+        ):
+            raise ValueError(
+                "LTX VAE temporal tiling must use frame counts divisible by 8 with "
+                "0 <= overlap < tile size"
+            )
         if self.max_frames < 0 or self.max_duration_seconds < 0:
             raise ValueError("LTX video limits cannot be negative")
         if self.max_conditioning_images < 0 or self.max_download_bytes <= 0:

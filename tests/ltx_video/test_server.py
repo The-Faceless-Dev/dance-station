@@ -12,8 +12,18 @@ from autotransition.ltx_video.server import create_ltx_video_worker_app
 
 
 class ServerFakeRuntime:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
     def preflight(self) -> dict[str, object]:
         return {"runtime": "ltx-video", "ready": True, "attention": {"flashSdp": True}}
+
+    def residency_status(self) -> dict[str, object]:
+        return {"requiresReset": False, "memory": {"allocatedGb": 0.0}}
+
+    def reset_residency(self) -> dict[str, object]:
+        self.reset_calls += 1
+        return {"releasedAllocatedGb": 1.0, "requiresProcessRestart": False}
 
     def generate(self, request, output_dir: Path, progress):  # type: ignore[no-untyped-def]
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -28,13 +38,18 @@ class ServerFakeRuntime:
 
 def test_direct_http_lifecycle_hides_local_artifact_paths(tmp_path: Path) -> None:
     config = LtxVideoConfig(artifact_root=tmp_path / "jobs")
-    app = create_ltx_video_worker_app(config, runtime=ServerFakeRuntime())
+    runtime = ServerFakeRuntime()
+    app = create_ltx_video_worker_app(config, runtime=runtime)
     worker = app.state.ltx_video_worker
     try:
         with TestClient(app) as client:
             health = client.get("/health")
             assert health.status_code == 200
             assert health.json()["ok"] is True
+            reset = client.post("/v1/worker/reset")
+            assert reset.status_code == 200
+            assert reset.json()["reset"]["requiresProcessRestart"] is False
+            assert runtime.reset_calls == 1
 
             submitted = client.post(
                 "/v1/ltx/jobs",

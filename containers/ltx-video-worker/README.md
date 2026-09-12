@@ -79,6 +79,7 @@ powershell -ExecutionPolicy Bypass -File tools\ltx_video\download_model_bundle.p
 GET  /health
 GET  /ready
 GET  /v1/worker/status
+POST /v1/worker/reset
 POST /v1/ltx/jobs
 GET  /v1/ltx/jobs/{job_id}
 GET  /v1/ltx/jobs/{job_id}/artifacts/{name}
@@ -147,3 +148,12 @@ final/events.jsonl
 Generated audio additionally produces `final/audio.wav`. Failure artifacts
 contain the exception type, traceback, stage, memory report, and a stable error
 code suitable for launch-server refund/error handling.
+
+The worker exposes `POST /v1/worker/reset` when no job is active. It trims the
+CUDA allocator and returns before/after residency. A failed lazy decode is
+closed and trimmed automatically; if allocations remain above
+`LTX_VIDEO_RESIDENCY_RESET_THRESHOLD_GB`, the status becomes not-ready and the
+worker requires a reset or process restart before accepting another job. The
+ConvVAE decode working set defaults to 40 output frames with 16-frame overlap
+and can be changed with `LTX_VIDEO_VAE_TEMPORAL_TILE_FRAMES` and
+`LTX_VIDEO_VAE_TEMPORAL_OVERLAP_FRAMES`.

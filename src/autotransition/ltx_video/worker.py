@@ -57,6 +57,7 @@ class LtxVideoWorker:
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ltx-video-worker")
         self._futures: dict[str, Future[Any]] = {}
         self._lock = threading.Lock()
+        self._resetting = False
 
     async def submit(self, request: LtxVideoRequest) -> LtxVideoJob:
         request.validate(self.config)
@@ -79,8 +80,10 @@ class LtxVideoWorker:
         job_id = request.external_job_id or uuid4().hex
         now = utc_now()
         job = LtxVideoJob(id=job_id, status="queued", request=request.to_dict(), created_at=now, updated_at=now)
-        self.store.create_job(job)
         with self._lock:
+            if self._resetting:
+                raise HTTPException(status_code=409, detail="worker residency reset is in progress")
+            self.store.create_job(job)
             self._futures[job.id] = self.executor.submit(self._run, request, job.id)
         return job
 
@@ -89,6 +92,24 @@ class LtxVideoWorker:
 
     def shutdown(self) -> None:
         self.executor.shutdown(wait=False, cancel_futures=False)
+
+    def reset_residency(self) -> dict[str, Any]:
+        """Trim worker GPU residency only when no job is running."""
+        with self._lock:
+            active = [job_id for job_id, future in self._futures.items() if not future.done()]
+            if active:
+                raise HTTPException(status_code=409, detail={"message": "cannot reset while a job is active", "activeJobs": active})
+            if self._resetting:
+                raise HTTPException(status_code=409, detail="worker residency reset is already in progress")
+            self._resetting = True
+        try:
+            reset = getattr(self.runtime, "reset_residency", None)
+            if not callable(reset):
+                raise HTTPException(status_code=501, detail="runtime does not support residency reset")
+            return reset()
+        finally:
+            with self._lock:
+                self._resetting = False
 
     def _set_state(self, job_id: str, **fields: Any) -> dict[str, Any]:
         payload = self.store.read_job(job_id)
@@ -197,6 +218,11 @@ class LtxVideoWorker:
                 code, stage, details = exc.code, exc.stage, exc.details
             else:
                 code, stage, details = ("ltx_video_worker_failed", current.get("stage") or "validate_request", {})
+            details = dict(details)
+            cleanup = getattr(self.runtime, "last_cleanup_report", None)
+            if cleanup:
+                details["cleanup"] = cleanup
+                self.store.write_event(job_id, {"event": "residency_cleanup", "cleanup": cleanup})
             failure = LtxFailure(
                 code=code,
                 message=str(exc) or type(exc).__name__,
