@@ -614,7 +614,12 @@ class LtxVideoRuntime:
                 if request.audio_mode == "generated"
                 else normalized_images
             )
-            with torch.inference_mode():
+            # The upstream LTX VAE uses a custom convolution path that can
+            # attempt to save an input tensor for backward even during its
+            # inference-only decode. ``inference_mode`` creates immutable
+            # inference tensors and makes that path fail; ``no_grad`` keeps
+            # autograd disabled without changing tensor semantics.
+            with torch.no_grad():
                 result = pipeline(
                     prompt=request.prompt,
                     seed=seed,
