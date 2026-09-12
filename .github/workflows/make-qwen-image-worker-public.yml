@@ -37,10 +37,32 @@ jobs:
           docker buildx imagetools inspect "${IMAGE}:${TAG}" --raw \
             | jq -e '.config.digest and (.layers | length > 0)' >/dev/null
 
+      - name: Link package to this workflow repository
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEED_TAG: qwen-image-visibility-seed-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' \
+            'FROM scratch' \
+            'LABEL org.opencontainers.image.source="https://github.com/The-Faceless-Dev/dance-station"' \
+            > /tmp/Dockerfile
+          printf '%s\n' "${GH_TOKEN}" | docker login ghcr.io \
+            --username "${GITHUB_ACTOR}" --password-stdin
+          docker buildx build \
+            --file /tmp/Dockerfile \
+            --platform linux/amd64 \
+            --tag "${IMAGE}:${SEED_TAG}" \
+            --provenance=false \
+            --sbom=false \
+            --push \
+            /tmp
+
       - name: Set package visibility to public
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           identity_file=$(mktemp)
