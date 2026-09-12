@@ -15,6 +15,7 @@ permissions:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-qwen-image-worker
   PACKAGE: faceless-qwen-image-worker
+  PACKAGE_OWNER: The-Faceless-Dev
   TAG: qwen-image-2512-q8-20260912-r1
 
 jobs:
@@ -51,6 +52,7 @@ jobs:
             'https://api.github.com/user')
           echo "GitHub credential identity response: HTTP ${identity_status}"
           jq '{login,id,type}' "${identity_file}"
+          echo "::notice title=GitHub credential identity::$(jq -c '{login,id,type}' "${identity_file}")"
 
           response_file=$(mktemp)
           header_file=$(mktemp)
@@ -68,6 +70,20 @@ jobs:
           jq '{name,visibility,updated_at,message,documentation_url}' "${response_file}"
           scopes=$(grep -i '^x-oauth-scopes:' "${header_file}" | sed 's/^[^:]*:[[:space:]]*//' | tr -d '\r' || true)
           echo "GitHub credential OAuth scopes: ${scopes:-not reported}"
+          if [ "${status}" = 404 ]; then
+            echo "Authenticated-user package endpoint did not find the package; retrying with its explicit owner endpoint."
+            status=$(curl --silent --show-error --location \
+              --output "${response_file}" --write-out '%{http_code}' \
+              --request PATCH \
+              --url "https://api.github.com/users/${PACKAGE_OWNER}/packages/container/${PACKAGE}" \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              --header 'Content-Type: application/json' \
+              --data '{"visibility":"public"}')
+            echo "GitHub explicit-owner visibility response: HTTP ${status}"
+            jq '{name,visibility,updated_at,message,documentation_url}' "${response_file}"
+          fi
           api_error=$(jq -c '{message,documentation_url,status}' "${response_file}" 2>/dev/null || true)
           echo "::error title=Package visibility API response::HTTP ${status} ${api_error}"
           test "${status}" -ge 200
