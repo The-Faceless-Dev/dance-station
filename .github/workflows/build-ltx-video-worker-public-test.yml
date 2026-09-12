@@ -1,0 +1,95 @@
+name: Build LTX video worker in public test registry
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
+    paths:
+      - .github/workflows/build-ltx-video-worker-public-test.yml
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
+  MODEL_REPOSITORY: comfyicu/LTX-2.5
+  TAG: ltx-2.5-nvfp4-5090-r1
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Reclaim runner disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/powershell \
+            /usr/local/share/chromium \
+            /opt/hostedtoolcache/CodeQL
+          sudo apt-get clean
+          docker system prune --all --force --volumes || true
+          df -h /
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN || github.token }}
+
+      - name: Build and publish public runtime base
+        shell: bash
+        env:
+          BASE_TAG: ltx-2.5-public-runtime-base-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --file containers/ltx-video-worker/Dockerfile \
+            --target runtime-base \
+            --platform linux/amd64 \
+            --tag "$IMAGE:$BASE_TAG" \
+            --provenance=false \
+            --sbom=false \
+            --push \
+            .
+
+      - name: Build and publish public LTX image
+        shell: bash
+        env:
+          BASE_TAG: ltx-2.5-public-runtime-base-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker buildx build \
+            --file containers/ltx-video-worker/Dockerfile.registry \
+            --build-arg BASE_IMAGE="$IMAGE:$BASE_TAG" \
+            --build-arg MODEL_REPOSITORY="$MODEL_REPOSITORY" \
+            --platform linux/amd64 \
+            --tag "$IMAGE:$TAG" \
+            --provenance=false \
+            --sbom=false \
+            --push \
+            .
+
+      - name: Verify anonymous pullability
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest_url="https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${TAG}"
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+            "$manifest_url")
+          echo "Anonymous LTX test manifest check: HTTP ${status}"
+          test "$status" = 200
