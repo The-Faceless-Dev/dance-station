@@ -37,8 +37,10 @@ GB free and were rejected before model loading.
   reset if the allocator cannot be returned to the configured reserve. The
   worker must not accept another expensive job while its memory state is
   unsafe.
-* Keep strict Flash SDP for video and isolated Gemma attention unchanged.
-  Keep audio disabled for this request and do not add CPU offload.
+* Keep strict Flash SDP for video. Gemma prompt encoding uses an explicitly
+  scoped math-SDP context, including a temporary math-backend enable because
+  the global strict video policy disables it; all SDP flags are restored before
+  denoising. Keep audio disabled for this request and do not add CPU offload.
 
 ## Affected Files
 

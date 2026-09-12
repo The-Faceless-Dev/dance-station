@@ -22,6 +22,10 @@ Components are loaded lazily and released after each job. The worker records
 the preflight estimate, actual CUDA memory snapshots, selected quantization,
 conditioning, and every lifecycle stage. NVFP4 refuses non-Blackwell GPUs and
 the worker never silently falls back to CPU or another quantization policy.
+The video path remains strict Flash SDP; Gemma prompt encoding temporarily
+enables math SDP in a scoped context because its attention shapes are not
+compatible with the video Flash policy, then restores the video policy before
+denoising.
 Whole-job progress and stage-local progress are persisted in `events.jsonl`,
 sent through the launch-server callback, and printed as structured events in
 the Vast container log.

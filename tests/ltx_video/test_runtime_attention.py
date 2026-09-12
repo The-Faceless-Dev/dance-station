@@ -95,9 +95,14 @@ def test_gemma_math_policy_is_scoped_and_exits_cleanly() -> None:
     with _gemma_attention_context(torch) as policy:
         assert policy["backend"] == "sdpa_math"
         assert policy["isolated"] is True
+        assert policy["mathSdp"] is True
         assert state["active"] is not None
+        assert torch.cuda.math is True
+        assert torch.cuda.flash is False
 
     assert state["active"] is None
+    assert torch.cuda.math is False
+    assert torch.cuda.flash is False
 
 
 def test_prompt_encoder_restores_video_policy_after_encoding() -> None:

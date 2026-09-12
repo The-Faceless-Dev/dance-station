@@ -99,22 +99,66 @@ def _gemma_attention_context(torch: Any):
         yield {"backend": "default", "isolated": False, "device": "cpu"}
         return
 
+    cuda = getattr(getattr(torch, "backends", None), "cuda", None)
+    if cuda is None:
+        raise RuntimeError("PyTorch CUDA backends are unavailable for Gemma prompt encoding")
+
+    def _enabled(name: str) -> bool | None:
+        reader = getattr(cuda, name, None)
+        return bool(reader()) if callable(reader) else None
+
+    previous = {
+        "flash": _enabled("flash_sdp_enabled"),
+        "memoryEfficient": _enabled("mem_efficient_sdp_enabled"),
+        "math": _enabled("math_sdp_enabled"),
+        "cudnn": _enabled("cudnn_sdp_enabled"),
+    }
+
+    # The production video policy intentionally disables math SDP. Explicitly
+    # enable math for this short Gemma-only pass, then restore every flag.
+    cuda.enable_flash_sdp(False)
+    cuda.enable_mem_efficient_sdp(False)
+    cuda.enable_math_sdp(True)
+    if hasattr(cuda, "enable_cudnn_sdp"):
+        cuda.enable_cudnn_sdp(False)
+
     attention = getattr(getattr(torch, "nn", None), "attention", None)
     modern_kernel = getattr(attention, "sdpa_kernel", None)
     sdp_backend = getattr(attention, "SDPBackend", None)
-    if callable(modern_kernel) and sdp_backend is not None and hasattr(sdp_backend, "MATH"):
-        with modern_kernel([sdp_backend.MATH]):
-            yield {"backend": "sdpa_math", "isolated": True, "api": "torch.nn.attention.sdpa_kernel"}
-        return
+    try:
+        if callable(modern_kernel) and sdp_backend is not None and hasattr(sdp_backend, "MATH"):
+            with modern_kernel([sdp_backend.MATH]):
+                yield {
+                    "backend": "sdpa_math",
+                    "isolated": True,
+                    "api": "torch.nn.attention.sdpa_kernel",
+                    "mathSdp": True,
+                }
+            return
 
-    legacy_kernel = getattr(getattr(torch, "backends", None), "cuda", None)
-    legacy_kernel = getattr(legacy_kernel, "sdp_kernel", None)
-    if callable(legacy_kernel):
-        with legacy_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False, enable_cudnn=False):
-            yield {"backend": "sdpa_math", "isolated": True, "api": "torch.backends.cuda.sdp_kernel"}
-        return
+        legacy_kernel = getattr(cuda, "sdp_kernel", None)
+        if callable(legacy_kernel):
+            with legacy_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False, enable_cudnn=False):
+                yield {
+                    "backend": "sdpa_math",
+                    "isolated": True,
+                    "api": "torch.backends.cuda.sdp_kernel",
+                    "mathSdp": True,
+                }
+            return
 
-    raise RuntimeError("PyTorch does not expose an isolated SDP context for Gemma prompt encoding")
+        raise RuntimeError("PyTorch does not expose an isolated SDP context for Gemma prompt encoding")
+    finally:
+        restore = {
+            "enable_flash_sdp": previous["flash"],
+            "enable_mem_efficient_sdp": previous["memoryEfficient"],
+            "enable_math_sdp": previous["math"],
+            "enable_cudnn_sdp": previous["cudnn"],
+        }
+        for name, value in restore.items():
+            setter = getattr(cuda, name, None)
+            if callable(setter) and value is not None:
+                setter(value)
 
 
 class _ScopedPromptEncoder:
