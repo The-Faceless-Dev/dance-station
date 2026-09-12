@@ -56,6 +56,16 @@ or configured-secret lookup has failed.
 
 ## Wan Overlay Publishing
 
+### Vast Cost Hard Stop
+
+**Never select, allocate, restart, or launch a Vast instance costing more than
+$1.00 USD per hour. Period.** This is a hard safety limit, not a preference or
+a tie-breaker. Reject offers above the limit before allocation, even when their
+network speed is higher. Among offers at or below $1.00/hour, prefer the
+fastest eligible single-GPU machine and record both network speed and hourly
+cost before starting it. If no eligible offer is at or below $1.00/hour, stop
+without creating an instance and report that no safe offer is available.
+
 Wan production images use a model-bearing base plus a small code/dependency
 overlay. Preserve this process exactly; do not create a new Docker build or
 stack successive overlays for a code/config-only change.
