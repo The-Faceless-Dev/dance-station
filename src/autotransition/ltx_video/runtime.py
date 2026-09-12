@@ -88,77 +88,34 @@ def _configure_fast_attention(torch: Any, *, enforce: bool) -> dict[str, Any]:
 
 @contextmanager
 def _gemma_attention_context(torch: Any):
-    """Use a Gemma-compatible SDP backend without changing video attention.
+    """Use a Gemma-compatible attention backend without changing video attention.
 
-    Gemma 4 is invoked through Transformers and can reject the exact Flash SDP
-    shape that the LTX video transformer requires. The prompt pass is short,
-    so use PyTorch's universal math SDP backend only for that pass. The caller
-    must restore the strict video policy after this context exits.
+    Gemma 4's attention mask is not accepted by the strict video Flash SDP
+    policy. Its prompt pass is short, so the caller installs Transformers'
+    explicit eager implementation only for this pass and restores the strict
+    video policy before denoising.
     """
     if not torch.cuda.is_available():
         yield {"backend": "default", "isolated": False, "device": "cpu"}
         return
 
-    cuda = getattr(getattr(torch, "backends", None), "cuda", None)
-    if cuda is None:
-        raise RuntimeError("PyTorch CUDA backends are unavailable for Gemma prompt encoding")
+    yield {"backend": "transformers_eager", "isolated": True, "api": "set_attn_implementation"}
 
-    def _enabled(name: str) -> bool | None:
-        reader = getattr(cuda, name, None)
-        return bool(reader()) if callable(reader) else None
 
-    previous = {
-        "flash": _enabled("flash_sdp_enabled"),
-        "memoryEfficient": _enabled("mem_efficient_sdp_enabled"),
-        "math": _enabled("math_sdp_enabled"),
-        "cudnn": _enabled("cudnn_sdp_enabled"),
-    }
+def _configure_gemma_eager_model(encoder: Any) -> Any:
+    """Force eager attention on the transient HF Gemma module used for encoding."""
+    model = getattr(encoder, "model", None)
+    setter = getattr(model, "set_attn_implementation", None)
+    if callable(setter):
+        setter("eager")
+        return encoder
 
-    # The production video policy intentionally disables math SDP. Explicitly
-    # enable math for this short Gemma-only pass, then restore every flag.
-    cuda.enable_flash_sdp(False)
-    cuda.enable_mem_efficient_sdp(False)
-    cuda.enable_math_sdp(True)
-    if hasattr(cuda, "enable_cudnn_sdp"):
-        cuda.enable_cudnn_sdp(False)
+    config = getattr(model, "config", None)
+    if config is not None and hasattr(config, "_attn_implementation"):
+        config._attn_implementation = "eager"
+        return encoder
 
-    attention = getattr(getattr(torch, "nn", None), "attention", None)
-    modern_kernel = getattr(attention, "sdpa_kernel", None)
-    sdp_backend = getattr(attention, "SDPBackend", None)
-    try:
-        if callable(modern_kernel) and sdp_backend is not None and hasattr(sdp_backend, "MATH"):
-            with modern_kernel([sdp_backend.MATH]):
-                yield {
-                    "backend": "sdpa_math",
-                    "isolated": True,
-                    "api": "torch.nn.attention.sdpa_kernel",
-                    "mathSdp": True,
-                }
-            return
-
-        legacy_kernel = getattr(cuda, "sdp_kernel", None)
-        if callable(legacy_kernel):
-            with legacy_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False, enable_cudnn=False):
-                yield {
-                    "backend": "sdpa_math",
-                    "isolated": True,
-                    "api": "torch.backends.cuda.sdp_kernel",
-                    "mathSdp": True,
-                }
-            return
-
-        raise RuntimeError("PyTorch does not expose an isolated SDP context for Gemma prompt encoding")
-    finally:
-        restore = {
-            "enable_flash_sdp": previous["flash"],
-            "enable_mem_efficient_sdp": previous["memoryEfficient"],
-            "enable_math_sdp": previous["math"],
-            "enable_cudnn_sdp": previous["cudnn"],
-        }
-        for name, value in restore.items():
-            setter = getattr(cuda, name, None)
-            if callable(setter) and value is not None:
-                setter(value)
+    raise RuntimeError("Gemma model does not expose Transformers eager attention configuration")
 
 
 class _ScopedPromptEncoder:
@@ -172,19 +129,27 @@ class _ScopedPromptEncoder:
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
         gemma_attention: dict[str, Any]
+        original_builder = getattr(self.inner, "_build_text_encoder", None)
+        if callable(original_builder):
+            def build_eager_text_encoder() -> Any:
+                return _configure_gemma_eager_model(original_builder())
+
+            self.inner._build_text_encoder = build_eager_text_encoder
         try:
             with _gemma_attention_context(self.torch) as gemma_attention:
                 logger.info("LTX Gemma prompt encoding started attention=%s", gemma_attention)
                 result = self.inner(*args, **kwargs)
         except Exception as exc:
-            logger.exception("LTX Gemma prompt encoding failed attention=sdpa_math")
+            logger.exception("LTX Gemma prompt encoding failed attention=transformers_eager")
             raise LtxRuntimeError(
                 "gemma_prompt_encoding_failed",
                 f"Gemma prompt encoding failed with its isolated attention policy: {type(exc).__name__}: {exc}",
                 stage="encode_prompt",
-                details={"attentionPolicy": "sdpa_math_isolated"},
+                details={"attentionPolicy": "transformers_eager_isolated"},
             ) from exc
         finally:
+            if callable(original_builder):
+                self.inner._build_text_encoder = original_builder
             video_attention = _configure_fast_attention(self.torch, enforce=self.enforce_fast_attention)
             logger.info("LTX video attention policy restored after Gemma encoding: %s", video_attention)
         _emit(self.progress, "encode_prompt", 0.5, "Gemma prompt encoded", {"attention": gemma_attention})

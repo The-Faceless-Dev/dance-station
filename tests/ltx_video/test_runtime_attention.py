@@ -93,16 +93,43 @@ def test_gemma_math_policy_is_scoped_and_exits_cleanly() -> None:
     torch, state = _fake_torch()
 
     with _gemma_attention_context(torch) as policy:
-        assert policy["backend"] == "sdpa_math"
+        assert policy["backend"] == "transformers_eager"
         assert policy["isolated"] is True
-        assert policy["mathSdp"] is True
-        assert state["active"] is not None
-        assert torch.cuda.math is True
-        assert torch.cuda.flash is False
+        assert policy["api"] == "set_attn_implementation"
 
     assert state["active"] is None
     assert torch.cuda.math is False
     assert torch.cuda.flash is False
+
+
+def test_prompt_encoder_uses_eager_attention_for_transient_gemma() -> None:
+    torch, _state = _fake_torch()
+
+    class _Gemma:
+        def __init__(self) -> None:
+            self.attention = None
+
+        def set_attn_implementation(self, value: str) -> None:
+            self.attention = value
+
+    class _Encoder:
+        def __init__(self) -> None:
+            self.gemma = _Gemma()
+
+        def _build_text_encoder(self):  # type: ignore[no-untyped-def]
+            return SimpleNamespace(model=self.gemma)
+
+        def __call__(self, _prompts):  # type: ignore[no-untyped-def]
+            built = self._build_text_encoder()
+            assert built.model.attention == "eager"
+            return ("encoded",)
+
+    inner = _Encoder()
+    original_builder = inner._build_text_encoder
+    encoder = _ScopedPromptEncoder(inner, torch, enforce_fast_attention=True, progress=lambda *_args: None)
+
+    assert encoder(["test"]) == ("encoded",)
+    assert inner._build_text_encoder == original_builder
 
 
 def test_prompt_encoder_restores_video_policy_after_encoding() -> None:
@@ -112,7 +139,6 @@ def test_prompt_encoder_restores_video_policy_after_encoding() -> None:
     class _Encoder:
         def __call__(self, prompts):  # type: ignore[no-untyped-def]
             assert prompts == ["test"]
-            assert state["active"] is not None
             return ("encoded",)
 
     encoder = _ScopedPromptEncoder(_Encoder(), torch, enforce_fast_attention=True, progress=lambda *_args: None)
