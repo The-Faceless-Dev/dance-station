@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish a small Wan Animate overlay without rebuilding the model layers."""
+"""Publish a small runtime overlay without rebuilding model layers."""
 
 from __future__ import annotations
 
@@ -114,7 +114,15 @@ def add_file_entries(
     runtime: str = "wan",
 ) -> None:
     entries: list[tuple[str, Path]] = []
-    package_name = "generative_dance" if runtime == "wan" else "flux_image"
+    package_names = {
+        "wan": "generative_dance",
+        "flux": "flux_image",
+        "ltx": "ltx_video",
+    }
+    try:
+        package_name = package_names[runtime]
+    except KeyError as exc:
+        raise ValueError(f"unsupported overlay runtime: {runtime}") from exc
     runtime_root = repo_root / "src" / "autotransition" / package_name
     for path in runtime_root.rglob("*"):
         if "__pycache__" in path.parts or not path.is_file():
@@ -122,7 +130,7 @@ def add_file_entries(
         relative = path.relative_to(runtime_root).as_posix()
         entries.append((f"app/src/autotransition/{package_name}/{relative}", path))
 
-    if runtime != "wan":
+    if runtime in {"flux", "ltx"}:
         directories = {"app", "app/src", "app/src/autotransition", f"app/src/autotransition/{package_name}"}
         for archive_name in sorted(directories):
             info = tarfile.TarInfo(archive_name)
@@ -812,7 +820,7 @@ def publish(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo-root", default=".")
-    parser.add_argument("--runtime", choices=("wan", "flux"), default="wan")
+    parser.add_argument("--runtime", choices=("wan", "flux", "ltx"), default="wan")
     parser.add_argument("--repo", default="the-faceless-dev/faceless-wan-animate-worker")
     parser.add_argument("--base-tag", required=True)
     parser.add_argument("--tag", required=True)
