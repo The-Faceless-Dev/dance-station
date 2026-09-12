@@ -39,9 +39,14 @@ hf download Comfy-Org/Qwen-Image_ComfyUI `
 ```powershell
 docker buildx build `
   --build-context qwenmodel=D:\models\qwen-image-2512 `
+  --target runtime-local `
   -f containers/qwen-image-worker/Dockerfile `
   -t qwen-image-worker:local .
 ```
+
+The published `runtime` target downloads the same pinned files during the CI
+build, verifies their SHA-256 values, and does not download anything at job
+runtime.
 
 The worker refuses to become ready if the transformer is not identified as
 Q8_0 or the text encoder filename does not identify the required abliterated

@@ -76,10 +76,45 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
 
 # Build with a named model context so every model component gets an independent
 # registry layer and no paid provider download is needed at job time.
-FROM runtime-base AS runtime
+FROM runtime-base AS runtime-local
 COPY --chown=qwen:qwen --from=qwenmodel /qwen-image-2512-Q8_0.gguf /models/qwen-image-2512/qwen-image-2512-Q8_0.gguf
 COPY --chown=qwen:qwen --from=qwenmodel /Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf /models/qwen-image-2512/Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf
 COPY --chown=qwen:qwen --from=qwenmodel /split_files/vae/qwen_image_vae.safetensors /models/qwen-image-2512/qwen_image_vae.safetensors
+
+USER qwen
+ENTRYPOINT ["/usr/local/bin/qwen-image-worker-entrypoint"]
+
+# The published target downloads and verifies each model in its own layer. This
+# avoids retaining a second full model context on CI runners while preserving
+# independent registry layers and build-cache reuse.
+FROM runtime-base AS runtime
+ARG QWEN_IMAGE_DIFFUSION_URL=https://huggingface.co/unsloth/Qwen-Image-2512-GGUF/resolve/main/qwen-image-2512-Q8_0.gguf?download=true
+ARG QWEN_IMAGE_TEXT_ENCODER_URL=https://huggingface.co/mradermacher/Qwen2.5-VL-7B-Instruct-abliterated-GGUF/resolve/main/Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf?download=true
+ARG QWEN_IMAGE_VAE_URL=https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/vae/qwen_image_vae.safetensors?download=true
+ARG QWEN_IMAGE_DIFFUSION_SHA256=E285A0692582ACF09BB4086D9B120EB0E357C4386565D169A033CB968C6FA9A5
+ARG QWEN_IMAGE_TEXT_ENCODER_SHA256=669A5604C47C90C20110C6DB5FE10AD7E8EC99B553A785D7D20492F7D5B3E7D0
+ARG QWEN_IMAGE_VAE_SHA256=A70580F0213E67967EE9C95F05BB400E8FB08307E017A924BF3441223E023D1F
+
+RUN curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
+      --connect-timeout 30 --max-time 7200 \
+      --output /models/qwen-image-2512/qwen-image-2512-Q8_0.gguf \
+      "${QWEN_IMAGE_DIFFUSION_URL}" \
+    && echo "${QWEN_IMAGE_DIFFUSION_SHA256}  /models/qwen-image-2512/qwen-image-2512-Q8_0.gguf" | sha256sum -c - \
+    && chown qwen:qwen /models/qwen-image-2512/qwen-image-2512-Q8_0.gguf
+
+RUN curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
+      --connect-timeout 30 --max-time 7200 \
+      --output /models/qwen-image-2512/Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf \
+      "${QWEN_IMAGE_TEXT_ENCODER_URL}" \
+    && echo "${QWEN_IMAGE_TEXT_ENCODER_SHA256}  /models/qwen-image-2512/Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf" | sha256sum -c - \
+    && chown qwen:qwen /models/qwen-image-2512/Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf
+
+RUN curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
+      --connect-timeout 30 --max-time 7200 \
+      --output /models/qwen-image-2512/qwen_image_vae.safetensors \
+      "${QWEN_IMAGE_VAE_URL}" \
+    && echo "${QWEN_IMAGE_VAE_SHA256}  /models/qwen-image-2512/qwen_image_vae.safetensors" | sha256sum -c - \
+    && chown qwen:qwen /models/qwen-image-2512/qwen_image_vae.safetensors
 
 USER qwen
 ENTRYPOINT ["/usr/local/bin/qwen-image-worker-entrypoint"]

@@ -51,36 +51,6 @@ jobs:
           sudo docker system prune --all --force
           df -h /
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Download exact Qwen Image model set
-        shell: bash
-        env:
-          HF_XET_HIGH_PERFORMANCE: "1"
-          HF_XET_NUM_CONCURRENT_RANGE_GETS: "64"
-          HF_HUB_ENABLE_HF_XET: "1"
-        run: |
-          set -euo pipefail
-          python -m pip install --disable-pip-version-check --no-cache-dir huggingface_hub
-          mkdir -p /tmp/qwen-image-2512
-          hf download unsloth/Qwen-Image-2512-GGUF \
-            qwen-image-2512-Q8_0.gguf \
-            --local-dir /tmp/qwen-image-2512
-          hf download mradermacher/Qwen2.5-VL-7B-Instruct-abliterated-GGUF \
-            Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf \
-            --local-dir /tmp/qwen-image-2512
-          hf download Comfy-Org/Qwen-Image_ComfyUI \
-            split_files/vae/qwen_image_vae.safetensors \
-            --local-dir /tmp/qwen-image-2512
-          test -f /tmp/qwen-image-2512/qwen-image-2512-Q8_0.gguf
-          test -f /tmp/qwen-image-2512/Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf
-          test -f /tmp/qwen-image-2512/split_files/vae/qwen_image_vae.safetensors
-          du -sh /tmp/qwen-image-2512
-          df -h /
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -96,7 +66,7 @@ jobs:
         with:
           context: .
           file: containers/qwen-image-worker/Dockerfile
-          build-contexts: qwenmodel=/tmp/qwen-image-2512
+          target: runtime
           push: true
           provenance: false
           sbom: false
