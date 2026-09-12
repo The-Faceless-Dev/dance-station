@@ -2,6 +2,15 @@ name: Publish LTX test tag to public registry
 
 on:
   workflow_dispatch:
+    inputs:
+      source_tag:
+        description: Private source tag containing the completed LTX image
+        required: true
+        default: ltx-2.5-nvfp4-5090-r1
+      tag:
+        description: Public target tag
+        required: true
+        default: ltx-2.5-nvfp4-5090-r2
   push:
     branches:
       - wan-animate-int8-convrot-experiment
@@ -15,7 +24,8 @@ permissions:
 env:
   SOURCE_IMAGE: ghcr.io/the-faceless-dev/faceless-ltx-video-worker
   TARGET_IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
-  TAG: ltx-2.5-nvfp4-5090-r1
+  SOURCE_TAG: ${{ inputs.source_tag || 'ltx-2.5-nvfp4-5090-r1' }}
+  TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r2' }}
 
 jobs:
   publish:
@@ -34,7 +44,7 @@ jobs:
           set -euo pipefail
           docker buildx imagetools create \
             --tag "$TARGET_IMAGE:$TAG" \
-            "$SOURCE_IMAGE:$TAG"
+            "$SOURCE_IMAGE:$SOURCE_TAG"
 
       - name: Verify anonymous pullability
         shell: bash
