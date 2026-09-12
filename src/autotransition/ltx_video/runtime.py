@@ -5,6 +5,7 @@ import json
 import logging
 import shutil
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -68,6 +69,70 @@ def _configure_fast_attention(torch: Any, *, enforce: bool) -> dict[str, Any]:
     if hasattr(torch.backends.cuda, "cudnn_sdp_enabled"):
         result["cudnnSdp"] = bool(torch.backends.cuda.cudnn_sdp_enabled())
     return result
+
+
+@contextmanager
+def _gemma_attention_context(torch: Any):
+    """Use a Gemma-compatible SDP backend without changing video attention.
+
+    Gemma 4 is invoked through Transformers and can reject the exact Flash SDP
+    shape that the LTX video transformer requires. The prompt pass is short,
+    so use PyTorch's universal math SDP backend only for that pass. The caller
+    must restore the strict video policy after this context exits.
+    """
+    if not torch.cuda.is_available():
+        yield {"backend": "default", "isolated": False, "device": "cpu"}
+        return
+
+    attention = getattr(getattr(torch, "nn", None), "attention", None)
+    modern_kernel = getattr(attention, "sdpa_kernel", None)
+    sdp_backend = getattr(attention, "SDPBackend", None)
+    if callable(modern_kernel) and sdp_backend is not None and hasattr(sdp_backend, "MATH"):
+        with modern_kernel([sdp_backend.MATH]):
+            yield {"backend": "sdpa_math", "isolated": True, "api": "torch.nn.attention.sdpa_kernel"}
+        return
+
+    legacy_kernel = getattr(getattr(torch, "backends", None), "cuda", None)
+    legacy_kernel = getattr(legacy_kernel, "sdp_kernel", None)
+    if callable(legacy_kernel):
+        with legacy_kernel(enable_flash=False, enable_math=True, enable_mem_efficient=False, enable_cudnn=False):
+            yield {"backend": "sdpa_math", "isolated": True, "api": "torch.backends.cuda.sdp_kernel"}
+        return
+
+    raise RuntimeError("PyTorch does not expose an isolated SDP context for Gemma prompt encoding")
+
+
+class _ScopedPromptEncoder:
+    """Run the shared Gemma encoder under its own attention policy."""
+
+    def __init__(self, inner: Any, torch: Any, *, enforce_fast_attention: bool, progress: ProgressCallback):
+        self.inner = inner
+        self.torch = torch
+        self.enforce_fast_attention = enforce_fast_attention
+        self.progress = progress
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        gemma_attention: dict[str, Any]
+        try:
+            with _gemma_attention_context(self.torch) as gemma_attention:
+                logger.info("LTX Gemma prompt encoding started attention=%s", gemma_attention)
+                result = self.inner(*args, **kwargs)
+        except Exception as exc:
+            logger.exception("LTX Gemma prompt encoding failed attention=sdpa_math")
+            raise LtxRuntimeError(
+                "gemma_prompt_encoding_failed",
+                f"Gemma prompt encoding failed with its isolated attention policy: {type(exc).__name__}: {exc}",
+                stage="encode_prompt",
+                details={"attentionPolicy": "sdpa_math_isolated"},
+            ) from exc
+        finally:
+            video_attention = _configure_fast_attention(self.torch, enforce=self.enforce_fast_attention)
+            logger.info("LTX video attention policy restored after Gemma encoding: %s", video_attention)
+        _emit(self.progress, "encode_prompt", 0.5, "Gemma prompt encoded", {"attention": gemma_attention})
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
 
 
 class _StepProgressDenoiser:
@@ -154,7 +219,7 @@ def _parse_ltx_imports() -> dict[str, Any]:
     return locals()
 
 
-def _video_only_pipeline_factory(imports: dict[str, Any]) -> type:
+def _video_only_pipeline_factory(imports: dict[str, Any], *, enforce_fast_attention: bool) -> type:
     """Create a video-only variant of the official distilled two-stage pipeline.
 
     The upstream distilled pipeline is intentionally audio-video. This small adapter keeps its
@@ -198,12 +263,18 @@ def _video_only_pipeline_factory(imports: dict[str, Any]) -> type:
             self.device = device
             self.dtype = torch.bfloat16
             self.progress = progress
-            self.prompt_encoder = PromptEncoder(
-                model_paths,
-                self.dtype,
-                device,
-                offload_mode=offload_mode,
-                alloc_trim_strategy=AllocatorTrimStrategy.TRIM,
+            self.enforce_fast_attention = enforce_fast_attention
+            self.prompt_encoder = _ScopedPromptEncoder(
+                PromptEncoder(
+                    model_paths,
+                    self.dtype,
+                    device,
+                    offload_mode=offload_mode,
+                    alloc_trim_strategy=AllocatorTrimStrategy.TRIM,
+                ),
+                torch,
+                enforce_fast_attention=enforce_fast_attention,
+                progress=progress,
             )
             self.image_conditioner = ImageConditioner(
                 model_paths.video_vae(), self.dtype, device, alloc_trim_strategy=AllocatorTrimStrategy.TRIM
@@ -365,10 +436,19 @@ class LtxVideoRuntime:
                 torch,
                 enforce=self.config.enforce_fast_attention,
             )
+            report["attentionPolicy"] = {
+                "video": "flash_sdp_strict" if self.config.enforce_fast_attention else "torch_sdp_dispatch",
+                "textEncoder": "sdpa_math_isolated",
+            }
             cuda_report = report.get("cuda") if isinstance(report.get("cuda"), dict) else {}
             if self.config.enforce_fast_attention and cuda_report.get("available"):
                 attention = report["attention"]
-                if not attention.get("flashSdp") or attention.get("memoryEfficientSdp") or attention.get("mathSdp"):
+                if (
+                    not attention.get("flashSdp")
+                    or attention.get("memoryEfficientSdp")
+                    or attention.get("mathSdp")
+                    or attention.get("cudnnSdp")
+                ):
                     report["ready"] = False
                     report["reason"] = report.get("reason") or "Flash SDP is not the only enabled CUDA attention backend"
         except Exception as exc:
@@ -503,9 +583,18 @@ class LtxVideoRuntime:
                     offload_mode=offload_mode,
                     compilation_config=compilation,
                 )
+                pipeline.prompt_encoder = _ScopedPromptEncoder(
+                    pipeline.prompt_encoder,
+                    torch,
+                    enforce_fast_attention=self.config.enforce_fast_attention,
+                    progress=progress,
+                )
                 pipeline.stage = _ProgressDiffusionStage(pipeline.stage, progress)
             else:
-                pipeline_cls = _video_only_pipeline_factory(imports)
+                pipeline_cls = _video_only_pipeline_factory(
+                    imports,
+                    enforce_fast_attention=self.config.enforce_fast_attention,
+                )
                 pipeline = pipeline_cls(
                     model_paths=model_paths,
                     spatial_upsampler_path=str(self.config.spatial_upsampler_path),
@@ -598,6 +687,7 @@ class LtxVideoRuntime:
                 "quantization": self.config.quantization,
                 "offloadMode": self.config.offload_mode,
                 "attention": attention,
+                "textEncoderAttention": "sdpa_math_isolated",
                 "memoryPlan": memory_plan,
                 "memoryBeforeInference": memory_before_inference,
                 "memoryAfter": gpu_memory_snapshot(self.config.device).to_dict(),
