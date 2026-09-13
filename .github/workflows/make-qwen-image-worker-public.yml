@@ -37,6 +37,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GHCR_PUSH_TOKEN || github.token }}
 
+      - name: Report CI credential source without exposing secrets
+        shell: bash
+        run: |
+          if [ -n "${{ secrets.GHCR_PUSH_TOKEN }}" ]; then
+            echo "::notice title=GHCR credential source::Using repository GHCR_PUSH_TOKEN secret"
+          else
+            echo "::warning title=GHCR credential source::GHCR_PUSH_TOKEN is not configured; using the workflow GITHUB_TOKEN"
+          fi
+
       - name: Link package to this workflow repository
         shell: bash
         env:
@@ -74,6 +83,8 @@ jobs:
             'https://api.github.com/user')
           echo "GitHub credential identity response: HTTP ${identity_status}"
           jq '{login,id,type}' "${identity_file}"
+          identity_summary=$(jq -c '{login,id,type,message,status}' "${identity_file}" 2>/dev/null || true)
+          echo "::notice title=GitHub credential identity::HTTP ${identity_status} ${identity_summary}"
           if [ "${identity_status}" != 200 ]; then
             identity_error=$(jq -c '{message,documentation_url,status}' "${identity_file}" 2>/dev/null || true)
             echo "::error title=GitHub CI credential rejected::HTTP ${identity_status} ${identity_error}"
@@ -98,15 +109,21 @@ jobs:
           status=$(patch_visibility "https://api.github.com/user/packages/container/${PACKAGE}")
           echo "Authenticated-user visibility response: HTTP ${status}"
           jq '{name,visibility,message,documentation_url}' "${response_file}" || true
+          response_summary=$(jq -c '{name,visibility,message,documentation_url,status}' "${response_file}" 2>/dev/null || true)
+          echo "::notice title=Authenticated-user package visibility::HTTP ${status} ${response_summary}"
           if [ "${status}" = 404 ]; then
             status=$(patch_visibility "https://api.github.com/users/${PACKAGE_OWNER}/packages/container/${PACKAGE}")
             echo "Explicit-owner visibility response: HTTP ${status}"
             jq '{name,visibility,message,documentation_url}' "${response_file}" || true
+            response_summary=$(jq -c '{name,visibility,message,documentation_url,status}' "${response_file}" 2>/dev/null || true)
+            echo "::notice title=Explicit-owner package visibility::HTTP ${status} ${response_summary}"
           fi
           if [ "${status}" = 404 ]; then
             status=$(patch_visibility "https://api.github.com/orgs/${PACKAGE_OWNER}/packages/container/${PACKAGE}")
             echo "Explicit-organization visibility response: HTTP ${status}"
             jq '{name,visibility,message,documentation_url}' "${response_file}" || true
+            response_summary=$(jq -c '{name,visibility,message,documentation_url,status}' "${response_file}" 2>/dev/null || true)
+            echo "::notice title=Explicit-organization package visibility::HTTP ${status} ${response_summary}"
           fi
           api_error=$(jq -c '{name,visibility,message,documentation_url,status}' "${response_file}" 2>/dev/null || true)
           if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
