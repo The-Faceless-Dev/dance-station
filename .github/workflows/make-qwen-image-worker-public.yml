@@ -40,7 +40,7 @@ jobs:
       - name: Link package to this workflow repository
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || github.token }}
           SEED_TAG: qwen-image-visibility-seed-${{ github.sha }}
         run: |
           set -euo pipefail
@@ -62,7 +62,7 @@ jobs:
       - name: Set package visibility to public
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || github.token }}
         run: |
           set -euo pipefail
           identity_file=$(mktemp)
