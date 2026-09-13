@@ -1,6 +1,12 @@
 name: Publish Qwen FP8 Text Encoder Test
 
 on:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
+    paths:
+      - ".github/workflows/publish-qwen-fp8-text-encoder-test.yml"
+      - "containers/qwen-image-worker/Dockerfile.fp8-encoder-test"
   workflow_dispatch:
     inputs:
       tag:
