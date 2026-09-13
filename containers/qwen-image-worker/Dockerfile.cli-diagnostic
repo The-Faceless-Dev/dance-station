@@ -33,5 +33,4 @@ RUN git -C /opt/stable-diffusion.cpp apply /tmp/sd-cpp-qwen-tensor-diagnostics.p
 FROM ${BASE_IMAGE} AS diagnostic
 USER root
 COPY --from=cli-builder /opt/stable-diffusion.cpp/build/bin/sd-cli /usr/local/bin/sd-cli
-RUN chmod 0755 /usr/local/bin/sd-cli
 USER qwen
