@@ -75,6 +75,8 @@ jobs:
           echo "GitHub credential identity response: HTTP ${identity_status}"
           jq '{login,id,type}' "${identity_file}"
           if [ "${identity_status}" != 200 ]; then
+            identity_error=$(jq -c '{message,documentation_url,status}' "${identity_file}" 2>/dev/null || true)
+            echo "::error title=GitHub CI credential rejected::HTTP ${identity_status} ${identity_error}"
             echo "The repository CI credential could not authenticate to GitHub." >&2
             exit 1
           fi
@@ -105,6 +107,10 @@ jobs:
             status=$(patch_visibility "https://api.github.com/orgs/${PACKAGE_OWNER}/packages/container/${PACKAGE}")
             echo "Explicit-organization visibility response: HTTP ${status}"
             jq '{name,visibility,message,documentation_url}' "${response_file}" || true
+          fi
+          api_error=$(jq -c '{name,visibility,message,documentation_url,status}' "${response_file}" 2>/dev/null || true)
+          if [ "${status}" -lt 200 ] || [ "${status}" -ge 300 ]; then
+            echo "::error title=GHCR package visibility API rejected request::HTTP ${status} ${api_error}"
           fi
           test "${status}" -ge 200
           test "${status}" -lt 300
