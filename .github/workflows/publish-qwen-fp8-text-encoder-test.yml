@@ -1,0 +1,72 @@
+name: Publish Qwen FP8 Text Encoder Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Derived Qwen test image tag
+        required: true
+        default: qwen-image-2512-q8-fp8-encoder-test-20260913-r1
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-qwen-image-worker
+  TAG: ${{ inputs.tag || 'qwen-image-2512-q8-fp8-encoder-test-20260913-r1' }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Reclaim runner storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/powershell /usr/local/lib/node_modules /opt/hostedtoolcache
+          sudo docker system prune --all --force
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish derived test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/qwen-image-worker/Dockerfile.fp8-encoder-test
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+
+      - name: Verify published manifest and public pullability
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE}:${TAG}"
+          repository="${IMAGE#ghcr.io/}"
+          manifest_url="https://ghcr.io/v2/${repository}/manifests/${TAG}"
+          registry_token=$(curl --silent --show-error --fail --get \
+            --data-urlencode 'service=ghcr.io' \
+            --data-urlencode "scope=repository:${repository}:pull" \
+            'https://ghcr.io/token' | jq -r '.token')
+          test -n "${registry_token}" -a "${registry_token}" != null
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${registry_token}" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+            "${manifest_url}")
+          test "${status}" = 200

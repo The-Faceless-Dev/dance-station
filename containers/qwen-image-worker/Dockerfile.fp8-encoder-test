@@ -1,0 +1,22 @@
+# Reuse the already-public model-bearing image. This test adds only the
+# alternate text encoder so the large Q8 transformer and VAE remain cached.
+ARG QWEN_BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-qwen-image-worker@sha256:ec93ffb28cccd4c11bc404a3d49e60fd3f369fe1af626abf5533828b34d83744
+FROM ${QWEN_BASE_IMAGE}
+
+USER root
+
+ARG QWEN_IMAGE_FP8_ENCODER_URL=https://huggingface.co/Comfy-Org/Qwen-Image_ComfyUI/resolve/main/split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors?download=true
+ARG QWEN_IMAGE_FP8_ENCODER_SIZE=9384670680
+
+RUN curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
+      --connect-timeout 30 --max-time 7200 \
+      --output /models/qwen-image-2512/qwen_2.5_vl_7b_fp8_scaled.safetensors \
+      "${QWEN_IMAGE_FP8_ENCODER_URL}" \
+    && test "$(stat -c '%s' /models/qwen-image-2512/qwen_2.5_vl_7b_fp8_scaled.safetensors)" = "${QWEN_IMAGE_FP8_ENCODER_SIZE}" \
+    && chown qwen:qwen /models/qwen-image-2512/qwen_2.5_vl_7b_fp8_scaled.safetensors
+
+ENV QWEN_IMAGE_TEXT_ENCODER=/models/qwen-image-2512/qwen_2.5_vl_7b_fp8_scaled.safetensors \
+    QWEN_IMAGE_REQUIRE_ABLITERATED_ENCODER=false \
+    QWEN_IMAGE_MODEL_NAME=Qwen-Image-2512-Q8_0-FP8-text-encoder
+
+USER qwen
