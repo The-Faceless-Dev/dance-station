@@ -55,6 +55,10 @@ class QwenImageRuntime:
             command.append("--diffusion-fa")
         if self.config.mmap:
             command.append("--mmap")
+        if self.config.eager_load:
+            command.append("--eager-load")
+        if self.config.disable_segmented_compute:
+            command.append("--disable-segmented-compute")
         return command
 
     def ensure_server(self) -> None:
@@ -77,6 +81,8 @@ class QwenImageRuntime:
                 flashAttention=self.config.flash_attention,
                 cpuOffload=self.config.cpu_offload,
                 mmap=self.config.mmap,
+                eagerLoad=self.config.eager_load,
+                disableSegmentedCompute=self.config.disable_segmented_compute,
             )
             self._process = subprocess.Popen(
                 command,

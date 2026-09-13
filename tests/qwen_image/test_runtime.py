@@ -20,7 +20,23 @@ def test_runtime_builds_cuda_q8_command(tmp_path: Path) -> None:
     assert "--diffusion-fa" in command
     assert "--offload-to-cpu" in command
     assert "--mmap" in command
+    assert "--eager-load" in command
+    assert "--disable-segmented-compute" in command
     assert "--lora-apply-mode" in command
+
+
+def test_runtime_can_disable_eager_qwen_controls(tmp_path: Path) -> None:
+    config = QwenImageConfig(
+        runtime_binary=tmp_path / "sd-server",
+        diffusion_model=tmp_path / "qwen-image-2512-Q8_0.gguf",
+        text_encoder=tmp_path / "Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf",
+        vae=tmp_path / "qwen_image_vae.safetensors",
+        eager_load=False,
+        disable_segmented_compute=False,
+    )
+    command = QwenImageRuntime(config).command()
+    assert "--eager-load" not in command
+    assert "--disable-segmented-compute" not in command
 
 
 def test_runtime_writes_native_base64_png(tmp_path: Path, monkeypatch) -> None:

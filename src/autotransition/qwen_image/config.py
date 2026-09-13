@@ -52,6 +52,8 @@ class QwenImageConfig:
     cpu_offload: bool = True
     flash_attention: bool = True
     mmap: bool = True
+    eager_load: bool = True
+    disable_segmented_compute: bool = True
     lora_apply_mode: str = "at_runtime"
     job_timeout_seconds: float = 3600.0
     startup_timeout_seconds: float = 300.0
@@ -100,6 +102,8 @@ class QwenImageConfig:
             cpu_offload=_bool("QWEN_IMAGE_CPU_OFFLOAD", True),
             flash_attention=_bool("QWEN_IMAGE_FLASH_ATTENTION", True),
             mmap=_bool("QWEN_IMAGE_MMAP", True),
+            eager_load=_bool("QWEN_IMAGE_EAGER_LOAD", True),
+            disable_segmented_compute=_bool("QWEN_IMAGE_DISABLE_SEGMENTED_COMPUTE", True),
             lora_apply_mode=os.getenv("QWEN_IMAGE_LORA_APPLY_MODE", "at_runtime"),
             job_timeout_seconds=float(os.getenv("QWEN_IMAGE_JOB_TIMEOUT_SECONDS", "3600")),
             startup_timeout_seconds=float(os.getenv("QWEN_IMAGE_STARTUP_TIMEOUT_SECONDS", "300")),
@@ -170,6 +174,8 @@ class QwenImageConfig:
             "flashAttention": self.flash_attention,
             "cpuOffload": self.cpu_offload,
             "mmap": self.mmap,
+            "eagerLoad": self.eager_load,
+            "disableSegmentedCompute": self.disable_segmented_compute,
             "loraApplyMode": self.lora_apply_mode,
         }
 

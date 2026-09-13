@@ -57,10 +57,12 @@ encoder or a generic LLM with this pipeline.
 
 The Python adapter starts `sd-server` lazily on the first accepted job. Native
 server stdout is retained in `runtime-server.log` and mirrored into the job
-event log. The native command uses CUDA, Flash Attention, mmap, and CPU
-offload by default; these are explicit environment settings, not silent CPU
-fallbacks. If CUDA or any required model component is missing, preflight
-reports the exact path and diagnostic.
+event log. The native command uses CUDA, Flash Attention, mmap, eager parameter
+loading, and CPU offload by default. Segmented compute is disabled for this Q8
+run so the native model manager prepares the complete Qwen transformer
+parameter set instead of lazily selecting graph segments. These are explicit
+environment settings, not silent CPU fallbacks. If CUDA or any required model
+component is missing, preflight reports the exact path and diagnostic.
 
 The native job is polled through `/sdcpp/v1/jobs/{id}`. Every job retains the
 request, effective settings, preflight report, output PNG, metadata, events,
@@ -83,6 +85,8 @@ QWEN_IMAGE_VAE=/models/qwen-image-2512/qwen_image_vae.safetensors
 QWEN_IMAGE_CPU_OFFLOAD=true
 QWEN_IMAGE_FLASH_ATTENTION=true
 QWEN_IMAGE_MMAP=true
+QWEN_IMAGE_EAGER_LOAD=true
+QWEN_IMAGE_DISABLE_SEGMENTED_COMPUTE=true
 QWEN_IMAGE_LORA_APPLY_MODE=at_runtime
 QWEN_IMAGE_ALLOW_LOCAL_LORAS=false
 SALAD_QUEUE_WORKER_ENABLED=true
