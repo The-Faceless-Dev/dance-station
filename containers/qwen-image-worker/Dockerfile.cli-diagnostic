@@ -1,0 +1,37 @@
+# Disposable CLI/server comparison image. It reuses the verified model-bearing
+# Qwen image and adds only a matching sd-cli binary built from the same source
+# commit as the installed sd-server.
+ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-qwen-image-worker:qwen-image-2512-q8-fp8-encoder-test-20260913-r1
+ARG CUDA_VERSION=12.8.1
+ARG SDCPP_COMMIT=7f410a3793c5bba8eb198e962ce7a3d6095f9d89
+
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 AS cli-builder
+ARG SDCPP_COMMIT
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git cmake build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --filter=blob:none https://github.com/leejet/stable-diffusion.cpp.git /opt/stable-diffusion.cpp \
+    && git -C /opt/stable-diffusion.cpp fetch --depth 1 origin "${SDCPP_COMMIT}" \
+    && git -C /opt/stable-diffusion.cpp checkout --detach "${SDCPP_COMMIT}" \
+    && git -C /opt/stable-diffusion.cpp submodule update --init --depth 1
+
+COPY containers/qwen-image-worker/sd-cpp-qwen-tensor-diagnostics.patch /tmp/sd-cpp-qwen-tensor-diagnostics.patch
+
+RUN git -C /opt/stable-diffusion.cpp apply /tmp/sd-cpp-qwen-tensor-diagnostics.patch \
+    && rm -f /tmp/sd-cpp-qwen-tensor-diagnostics.patch \
+    && cmake -S /opt/stable-diffusion.cpp -B /opt/stable-diffusion.cpp/build \
+       -DGGML_CUDA=ON \
+       -DSD_BUILD_EXAMPLES=ON \
+       -DSD_SERVER_BUILD_FRONTEND=OFF \
+       -DCMAKE_BUILD_TYPE=Release \
+    && cmake --build /opt/stable-diffusion.cpp/build --config Release --target sd-cli -j"$(nproc)" \
+    && test -x /opt/stable-diffusion.cpp/build/bin/sd-cli
+
+FROM ${BASE_IMAGE} AS diagnostic
+USER root
+COPY --from=cli-builder /opt/stable-diffusion.cpp/build/bin/sd-cli /usr/local/bin/sd-cli
+RUN chmod 0755 /usr/local/bin/sd-cli
+USER qwen
