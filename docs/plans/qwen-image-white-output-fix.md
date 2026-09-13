@@ -28,6 +28,12 @@ RunPod target instead of completing with uniform-white PNGs.
   anonymous pull check returned HTTP 401 because its pending publicization
   step had been removed. The image is therefore built but not yet usable by a
   public RunPod caller.
+- The first restored publicization attempt failed before the anonymous check
+  with GitHub API exit 22. The old workflow had previously shown an
+  unauthenticated identity response and a 404 package lookup, so the next
+  attempt must link the package with a labeled seed image, verify CI identity,
+  and try authenticated-user, explicit-user, and explicit-organization
+  package endpoints before declaring the tag unavailable.
 
 ## Approach
 
