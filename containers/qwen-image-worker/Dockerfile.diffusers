@@ -46,8 +46,9 @@ RUN apt-get update \
        --index-url https://download.pytorch.org/whl/cu128 \
        "torch>=2.7,<3" \
     && /opt/qwen-venv/bin/pip install --no-cache-dir \
-       "diffusers @ git+https://github.com/huggingface/diffusers.git" \
-       "transformers>=4.51.3,<5" \
+       "diffusers==0.40.0" \
+       "transformers==5.17.0" \
+       "huggingface-hub>=1.31.0,<2" \
        "accelerate>=1.1.0" \
        "bitsandbytes>=0.46.0" \
        "gguf>=0.10.0" \
