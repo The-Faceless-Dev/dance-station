@@ -13,12 +13,18 @@ from .artifacts import QwenImageArtifactStore
 from .config import QwenImageConfig
 from .contracts import request_from_payload
 from .runtime import QwenImageRuntime
+from .diffusers_runtime import QwenImageDiffusersRuntime
 from .worker import QwenImageWorker, _public_job_payload
 
 
 def create_qwen_image_worker_app(config: QwenImageConfig | None = None, runtime: QwenImageRuntime | None = None):
     config = config or QwenImageConfig.from_env()
-    runtime = runtime or QwenImageRuntime(config)
+    if runtime is None:
+        runtime = (
+            QwenImageDiffusersRuntime(config)
+            if config.runtime_backend == "diffusers"
+            else QwenImageRuntime(config)
+        )
     store = QwenImageArtifactStore(config.artifact_root)
     interrupted = store.reconcile_interrupted_jobs()
     import json

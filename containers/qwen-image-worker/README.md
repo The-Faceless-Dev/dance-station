@@ -1,5 +1,24 @@
 # Qwen-Image-2512 Worker
 
+## Diffusers CUDA runtime
+
+`Dockerfile.diffusers` selects the official `QwenImagePipeline` through
+`QWEN_IMAGE_RUNTIME=diffusers`. It loads the existing verified
+`qwen-image-2512-Q8_0.gguf` transformer with Diffusers' GGUF loader, then uses
+the official Qwen-Image-2512 text encoder and VAE. Accelerate model CPU
+offload keeps those components from being resident on CUDA simultaneously.
+
+This target requires CUDA and fails preflight instead of silently switching to
+CPU. The existing native `Dockerfile` remains available for rollback.
+
+For a local image build using the existing model file:
+
+```powershell
+docker buildx build --load --target runtime-local `
+  --build-context qwenmodel=D:\models\qwen-image-2512 `
+  -f containers\qwen-image-worker\Dockerfile.diffusers .
+```
+
 This container runs Qwen-Image-2512 through a project-owned Python worker and
 the CUDA-enabled native `stable-diffusion.cpp` server. It does not use
 ComfyUI, does not download model weights during a paid job, and exposes the

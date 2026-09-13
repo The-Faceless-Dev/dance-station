@@ -84,7 +84,7 @@ class QwenImageWorker:
                 self._set_state(job_id, status="running", stage=stage, progress=value, message=message)
                 logger.emit("progress", stage=stage, progress=value, message=message)
 
-            progress("model_preflight", 0.0, "Checking Qwen-Image-2512 Q8_0 and abliterated encoder")
+            progress("model_preflight", 0.0, "Checking the configured Qwen-Image-2512 runtime and CUDA device")
             preflight = self.runtime.preflight()
             self.store.finalize_json(job_id, "preflight.json", preflight)
             logger.emit("model_preflight_finished", report=preflight)
@@ -93,7 +93,7 @@ class QwenImageWorker:
 
             prepared_loras = prepare_loras(request.loras, lora_directory, self.config, logger.emit)
             effective_request = replace(request, loras=prepared_loras)
-            progress("load_model", 0.0, "Starting the persistent CUDA Qwen runtime")
+            progress("load_model", 0.0, f"Starting the persistent CUDA {preflight.get('runtime', 'Qwen')} runtime")
             attempt_dir = self.store.attempt_dir(job_id, 1)
             output_path = attempt_dir / "image.png"
             result = self.runtime.generate(effective_request, prepared_loras, output_path, progress)
@@ -105,7 +105,7 @@ class QwenImageWorker:
             metadata = {
                 "schemaVersion": 1,
                 "runtime": "qwen-image",
-                "modelRevision": self.config.model_name,
+                "modelRevision": preflight.get("modelRevision", self.config.model_name),
                 "request": request.to_dict(),
                 "effective": result,
                 "preflight": preflight,

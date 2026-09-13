@@ -19,7 +19,7 @@ def _path(name: str, default: Path) -> Path:
 
 @dataclass(frozen=True)
 class QwenImageConfig:
-    """Configuration for the Q8 Qwen-Image worker and its native server."""
+    """Configuration shared by the native and Diffusers Qwen runtimes."""
 
     artifact_root: Path = Path("data/qwen-image-jobs")
     model_root: Path = Path("models/qwen-image-2512")
@@ -64,6 +64,17 @@ class QwenImageConfig:
     require_abliterated_encoder: bool = True
     keep_failed_artifacts: bool = True
     lora_root: Path = Path("/var/lib/autotransition/qwen-image-loras")
+    runtime_backend: str = "native"
+    diffusers_model_id: str = "Qwen/Qwen-Image-2512"
+    diffusers_revision: str = "main"
+    diffusers_cache: Path = Path("/var/lib/autotransition/huggingface")
+    diffusers_transformer_file: Path = Path("models/qwen-image-2512/qwen-image-2512-Q8_0.gguf")
+    diffusers_dtype: str = "bfloat16"
+    diffusers_quantization: str = "none"
+    diffusers_compute_dtype: str = "bfloat16"
+    diffusers_cpu_offload: bool = True
+    diffusers_attention_backend: str = "sdpa"
+    diffusers_compile: bool = False
 
     @classmethod
     def from_env(cls) -> "QwenImageConfig":
@@ -115,9 +126,25 @@ class QwenImageConfig:
             require_abliterated_encoder=_bool("QWEN_IMAGE_REQUIRE_ABLITERATED_ENCODER", True),
             keep_failed_artifacts=_bool("QWEN_IMAGE_KEEP_FAILED_ARTIFACTS", True),
             lora_root=_path("QWEN_IMAGE_LORA_ROOT", Path("/var/lib/autotransition/qwen-image-loras")),
+            runtime_backend=os.getenv("QWEN_IMAGE_RUNTIME", "native").lower(),
+            diffusers_model_id=os.getenv("QWEN_IMAGE_DIFFUSERS_MODEL_ID", "Qwen/Qwen-Image-2512"),
+            diffusers_revision=os.getenv("QWEN_IMAGE_DIFFUSERS_REVISION", "main"),
+            diffusers_cache=_path("QWEN_IMAGE_DIFFUSERS_CACHE", Path("/var/lib/autotransition/huggingface")),
+            diffusers_transformer_file=_path(
+                "QWEN_IMAGE_DIFFUSERS_TRANSFORMER_FILE",
+                root / "qwen-image-2512-Q8_0.gguf",
+            ),
+            diffusers_dtype=os.getenv("QWEN_IMAGE_DIFFUSERS_DTYPE", "bfloat16").lower(),
+            diffusers_quantization=os.getenv("QWEN_IMAGE_DIFFUSERS_QUANTIZATION", "none").lower(),
+            diffusers_compute_dtype=os.getenv("QWEN_IMAGE_DIFFUSERS_COMPUTE_DTYPE", "bfloat16").lower(),
+            diffusers_cpu_offload=_bool("QWEN_IMAGE_DIFFUSERS_CPU_OFFLOAD", True),
+            diffusers_attention_backend=os.getenv("QWEN_IMAGE_DIFFUSERS_ATTENTION_BACKEND", "sdpa").lower(),
+            diffusers_compile=_bool("QWEN_IMAGE_DIFFUSERS_COMPILE", False),
         )
 
     def validate(self) -> None:
+        if self.runtime_backend not in {"native", "diffusers"}:
+            raise ValueError("Qwen image runtime must be native or diffusers")
         if self.device_backend != "cuda" and self.gpu_required:
             raise ValueError("Qwen image worker requires the CUDA backend")
         if self.runtime_port < 1 or self.runtime_port > 65535:
@@ -138,9 +165,55 @@ class QwenImageConfig:
             raise ValueError("Qwen image LoRA limits are invalid")
         if self.lora_apply_mode not in {"at_runtime", "immediately"}:
             raise ValueError("Qwen image LoRA apply mode must be at_runtime or immediately")
+        if self.runtime_backend == "diffusers":
+            if not self.diffusers_model_id.strip():
+                raise ValueError("Diffusers model id is required")
+            if self.diffusers_dtype not in {"bfloat16", "float16", "float32"}:
+                raise ValueError("Diffusers dtype must be bfloat16, float16, or float32")
+            if self.diffusers_compute_dtype not in {"bfloat16", "float16", "float32"}:
+                raise ValueError("Diffusers compute dtype must be bfloat16, float16, or float32")
+            if self.diffusers_quantization not in {"none", "bitsandbytes_4bit", "bitsandbytes_8bit"}:
+                raise ValueError("Diffusers quantization must be none, bitsandbytes_4bit, or bitsandbytes_8bit")
+            if self.diffusers_attention_backend not in {"sdpa", "flash", "flash_2", "flash_3"}:
+                raise ValueError("Diffusers attention backend is invalid")
 
     def preflight(self) -> dict[str, Any]:
         self.validate()
+        if self.runtime_backend == "diffusers":
+            gpu = self._gpu_preflight()
+            diagnostics: list[str] = []
+            if self.gpu_required and not gpu["ready"]:
+                diagnostics.append(gpu["error"])
+            local_model = Path(self.diffusers_model_id).expanduser()
+            source_is_local = local_model.is_dir()
+            transformer_missing = not self.diffusers_transformer_file.is_file()
+            if transformer_missing:
+                diagnostics.append(
+                    f"Diffusers GGUF transformer was not found: {self.diffusers_transformer_file}"
+                )
+            if source_is_local and not (local_model / "model_index.json").is_file():
+                diagnostics.append("local Diffusers model is missing model_index.json")
+            if not source_is_local and ("/" not in self.diffusers_model_id or self.diffusers_model_id.startswith("/")):
+                diagnostics.append("Diffusers model id must be a Hugging Face repository id or local directory")
+            return {
+                "ready": not diagnostics,
+                "runtime": "diffusers",
+                "modelRevision": self.diffusers_model_id,
+                "modelSource": "local" if source_is_local else "huggingface",
+                "required": {"model": self.diffusers_model_id},
+                "missing": ["diffusersTransformer"] if transformer_missing else [],
+                "diagnostics": diagnostics,
+                "gpu": gpu,
+                "backend": self.device_backend,
+                "transformerFile": str(self.diffusers_transformer_file),
+                "transformerFormat": "GGUF",
+                "dtype": self.diffusers_dtype,
+                "computeDtype": self.diffusers_compute_dtype,
+                "quantization": self.diffusers_quantization,
+                "cpuOffload": self.diffusers_cpu_offload,
+                "attentionBackend": self.diffusers_attention_backend,
+                "compile": self.diffusers_compile,
+            }
         files = {
             "runtimeBinary": self.runtime_binary,
             "diffusionModel": self.diffusion_model,

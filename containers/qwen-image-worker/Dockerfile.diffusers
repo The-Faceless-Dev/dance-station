@@ -1,0 +1,97 @@
+ARG CUDA_VERSION=12.8.1
+
+FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu24.04 AS runtime-base
+ARG SALAD_WORKER_VERSION=v0.7.0
+ARG SALAD_WORKER_SHA256=074a329cf6462e77fc7b72100f59d8a690831456d9420186a834a8f30634c9e4
+
+LABEL org.opencontainers.image.source="https://github.com/The-Faceless-Dev/dance-station"
+LABEL org.opencontainers.image.description="Qwen-Image-2512 CUDA Diffusers worker"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONPATH=/app/src \
+    HF_HOME=/var/lib/autotransition/huggingface \
+    HF_XET_HIGH_PERFORMANCE=1 \
+    QWEN_IMAGE_RUNTIME=diffusers \
+    QWEN_IMAGE_MODEL_ROOT=/models/qwen-image-2512 \
+    QWEN_IMAGE_MODEL_NAME=Qwen-Image-2512-Diffusers-GGUF-Q8 \
+    QWEN_IMAGE_DIFFUSERS_MODEL_ID=Qwen/Qwen-Image-2512 \
+    QWEN_IMAGE_DIFFUSERS_REVISION=main \
+    QWEN_IMAGE_DIFFUSERS_TRANSFORMER_FILE=/models/qwen-image-2512/qwen-image-2512-Q8_0.gguf \
+    QWEN_IMAGE_DIFFUSERS_QUANTIZATION=none \
+    QWEN_IMAGE_DIFFUSERS_DTYPE=bfloat16 \
+    QWEN_IMAGE_DIFFUSERS_COMPUTE_DTYPE=bfloat16 \
+    QWEN_IMAGE_DIFFUSERS_CPU_OFFLOAD=true \
+    QWEN_IMAGE_DIFFUSERS_ATTENTION_BACKEND=sdpa \
+    QWEN_IMAGE_DIFFUSERS_COMPILE=false \
+    QWEN_IMAGE_GPU_REQUIRED=true \
+    QWEN_IMAGE_ARTIFACT_ROOT=/var/lib/autotransition/qwen-image-jobs \
+    QWEN_IMAGE_LORA_ROOT=/var/lib/autotransition/qwen-image-loras \
+    SALAD_QUEUE_WORKER_ENABLED=true \
+    WORKER_HOST=0.0.0.0 \
+    WORKER_PORT=8080
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-venv libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL "https://github.com/SaladTechnologies/salad-cloud-job-queue-worker/releases/download/${SALAD_WORKER_VERSION}/salad-http-job-queue-worker_x86_64.tar.gz" -o /tmp/salad-worker.tar.gz \
+    && echo "${SALAD_WORKER_SHA256}  /tmp/salad-worker.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/salad-worker.tar.gz -C /usr/local/bin \
+    && test -x /usr/local/bin/salad-http-job-queue-worker \
+    && rm -f /tmp/salad-worker.tar.gz \
+    && python3 -m venv /opt/qwen-venv \
+    && /opt/qwen-venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/qwen-venv/bin/pip install --no-cache-dir \
+       --index-url https://download.pytorch.org/whl/cu128 \
+       "torch>=2.7,<3" \
+    && /opt/qwen-venv/bin/pip install --no-cache-dir \
+       "diffusers @ git+https://github.com/huggingface/diffusers.git" \
+       "transformers>=4.51.3,<5" \
+       "accelerate>=1.1.0" \
+       "bitsandbytes>=0.46.0" \
+       "gguf>=0.10.0" \
+       "fastapi>=0.115.0" \
+       "python-multipart>=0.0.20" \
+       "safetensors>=0.5.0" \
+       "sentencepiece>=0.2.0" \
+       "peft>=0.14.0" \
+       "uvicorn>=0.32.0"
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY containers/qwen-image-worker/entrypoint.sh /usr/local/bin/qwen-image-worker-entrypoint
+
+RUN chmod 0755 /usr/local/bin/qwen-image-worker-entrypoint \
+    && useradd --create-home --uid 10004 qwen \
+    && mkdir -p /models/qwen-image-2512 /var/lib/autotransition/qwen-image-jobs /var/lib/autotransition/qwen-image-loras /var/lib/autotransition/huggingface \
+    && chown -R qwen:qwen /app /var/lib/autotransition /opt/qwen-venv
+
+WORKDIR /app
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+  CMD /opt/qwen-venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
+
+# The local target accepts the existing verified Q8 GGUF as a named build
+# context: --build-context qwenmodel=D:/models/qwen-image-2512 .
+FROM runtime-base AS runtime-local
+COPY --chown=qwen:qwen --from=qwenmodel /qwen-image-2512-Q8_0.gguf /models/qwen-image-2512/qwen-image-2512-Q8_0.gguf
+USER qwen
+ENTRYPOINT ["/usr/local/bin/qwen-image-worker-entrypoint"]
+
+# Keep the model-bearing published target reproducible and independent from a
+# local machine. The official Diffusers components are downloaded lazily into
+# HF_HOME; only the 21.8 GB verified Q8 transformer is in the image layer.
+FROM runtime-base AS runtime
+ARG QWEN_IMAGE_DIFFUSERS_TRANSFORMER_URL=https://huggingface.co/unsloth/Qwen-Image-2512-GGUF/resolve/main/qwen-image-2512-Q8_0.gguf?download=true
+ARG QWEN_IMAGE_DIFFUSERS_TRANSFORMER_SHA256=E285A0692582ACF09BB4086D9B120EB0E357C4386565D169A033CB968C6FA9A5
+
+RUN curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
+      --connect-timeout 30 --max-time 7200 \
+      --output /models/qwen-image-2512/qwen-image-2512-Q8_0.gguf \
+      "${QWEN_IMAGE_DIFFUSERS_TRANSFORMER_URL}" \
+    && echo "${QWEN_IMAGE_DIFFUSERS_TRANSFORMER_SHA256}  /models/qwen-image-2512/qwen-image-2512-Q8_0.gguf" | sha256sum -c - \
+    && chown qwen:qwen /models/qwen-image-2512/qwen-image-2512-Q8_0.gguf
+
+USER qwen
+ENTRYPOINT ["/usr/local/bin/qwen-image-worker-entrypoint"]
