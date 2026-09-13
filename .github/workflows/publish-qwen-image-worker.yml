@@ -22,6 +22,10 @@ permissions:
   contents: read
   packages: write
 
+concurrency:
+  group: qwen-image-worker-publish
+  cancel-in-progress: true
+
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-qwen-image-worker
   TAG: ${{ github.event_name == 'push' && 'qwen-image-2512-q8-fp8-encoder-test-20260913-r1' || inputs.tag || 'qwen-image-2512-q8-20260913-diagnostic-r1' }}
