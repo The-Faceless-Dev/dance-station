@@ -24,6 +24,10 @@ RunPod target instead of completing with uniform-white PNGs.
 - The native VAE path clamps decoder output to `[0, 1]` before PNG conversion.
   That can hide NaN/Inf or saturation as a valid white image, so the final PNG
   does not identify which stage is broken.
+- The diagnostic image build completed successfully, but the workflow's
+  anonymous pull check returned HTTP 401 because its pending publicization
+  step had been removed. The image is therefore built but not yet usable by a
+  public RunPod caller.
 
 ## Approach
 
@@ -36,9 +40,9 @@ RunPod target instead of completing with uniform-white PNGs.
    controlled investigation run.
 3. Extend focused runtime/config tests and documentation.
 4. Run all local Qwen tests and static checks available on this machine.
-5. Publish the instrumented model-bearing image through the existing Qwen
-   GitHub Actions workflow, verify its manifest, and test it on the current
-   single RTX 6000 Ada pod.
+5. Make the already-published diagnostic tag public through the repository CI
+   credential, verify its manifest, and test it on the current single RTX
+   6000 Ada pod without rebuilding the model layers.
 6. Use the measured failing boundary to implement and validate the actual
    correction before declaring the worker fixed.
 
