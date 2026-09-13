@@ -15,7 +15,7 @@ on:
       tag:
         description: Published Qwen Image worker tag
         required: true
-        default: qwen-image-2512-q8-20260912-r1
+        default: qwen-image-2512-q8-20260913-diagnostic-r1
 
 permissions:
   contents: read
@@ -23,7 +23,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-qwen-image-worker
-  TAG: ${{ inputs.tag || 'qwen-image-2512-q8-20260912-r1' }}
+  TAG: ${{ inputs.tag || 'qwen-image-2512-q8-20260913-diagnostic-r1' }}
 
 jobs:
   publish:
@@ -80,17 +80,20 @@ jobs:
           docker buildx imagetools inspect "${IMAGE}:${TAG}" --raw \
             | jq -e '.config.digest and (.layers | length > 0)' >/dev/null
 
-      - name: Make container package public
+      - name: Verify package is publicly pullable
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          curl --fail-with-body --silent --show-error --location \
-            --request PATCH \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer ${GH_TOKEN}" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            --header "Content-Type: application/json" \
-            --data '{"visibility":"public"}' \
-            "https://api.github.com/user/packages/container/faceless-qwen-image-worker"
+          manifest_url="https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${TAG}"
+          for attempt in 1 2 3 4 5; do
+            status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+              --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+              "${manifest_url}")
+            echo "Anonymous GHCR manifest check ${attempt}/5: HTTP ${status}"
+            if [ "${status}" = 200 ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "The published tag is not publicly pullable; refusing to mark the image ready." >&2
+          exit 1

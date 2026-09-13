@@ -87,6 +87,7 @@ QWEN_IMAGE_FLASH_ATTENTION=true
 QWEN_IMAGE_MMAP=true
 QWEN_IMAGE_EAGER_LOAD=true
 QWEN_IMAGE_DISABLE_SEGMENTED_COMPUTE=true
+QWEN_IMAGE_NATIVE_TENSOR_DIAGNOSTICS=false
 QWEN_IMAGE_LORA_APPLY_MODE=at_runtime
 QWEN_IMAGE_ALLOW_LOCAL_LORAS=false
 SALAD_QUEUE_WORKER_ENABLED=true
@@ -96,6 +97,11 @@ Resolution, steps, CFG, seed, prompt, and ordered LoRAs are request-level
 values. Defaults are 1328x1328, 20 steps, and CFG 2.5. Explicit dimensions
 must be aligned to 16 pixels and remain within the worker's configured area
 limit. The default area limit allows the site's portrait and landscape sizes.
+
+Set `QWEN_IMAGE_NATIVE_TENSOR_DIAGNOSTICS=true` only for a controlled
+investigation. The pinned native runtime then logs statistics for the sampled
+diffusion latent, Qwen's denormalized VAE latent, raw decoder output before
+clamping, and scaled decoder output. It is disabled in production by default.
 
 ## Endpoints
 

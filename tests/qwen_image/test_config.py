@@ -20,6 +20,7 @@ def test_preflight_identifies_required_components(tmp_path: Path) -> None:
     assert report["ready"] is True
     assert report["transformerQuantization"] == "Q8_0"
     assert report["textEncoderProfile"].startswith("Qwen2.5-VL")
+    assert report["nativeTensorDiagnostics"] is False
 
 
 def test_preflight_rejects_qwen3_encoder(tmp_path: Path) -> None:

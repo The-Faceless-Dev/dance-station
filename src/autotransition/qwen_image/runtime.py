@@ -83,6 +83,7 @@ class QwenImageRuntime:
                 mmap=self.config.mmap,
                 eagerLoad=self.config.eager_load,
                 disableSegmentedCompute=self.config.disable_segmented_compute,
+                nativeTensorDiagnostics=self.config.native_tensor_diagnostics,
             )
             self._process = subprocess.Popen(
                 command,
@@ -282,4 +283,5 @@ class QwenImageRuntime:
         environment = os.environ.copy()
         environment.setdefault("GGML_CUDA_NO_VMM", "0")
         environment.setdefault("GGML_CUDA_FORCE_MMQ", "0")
+        environment["SD_QWEN_TENSOR_DIAGNOSTICS"] = "1" if self.config.native_tensor_diagnostics else "0"
         return environment

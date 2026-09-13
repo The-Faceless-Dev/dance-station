@@ -15,17 +15,32 @@ RunPod target instead of completing with uniform-white PNGs.
   root cause.
 - The worker wrapper starts the newer stable-diffusion.cpp lazy parameter path
   without an explicit eager-load or segmented-scheduling policy.
+- Controlled 1024x1024 generations with 4, 20, and 40 steps all returned
+  exact uniform-white PNGs. Disabling FlashAttention, eager loading, and
+  segmented compute did not change that result.
+- The pinned stable-diffusion.cpp source already applies Qwen's 16-channel
+  latent mean/std conversion in `WanVAERunner::diffusion_to_vae_latents`.
+  The missing-normalization hypothesis is therefore not established.
+- The native VAE path clamps decoder output to `[0, 1]` before PNG conversion.
+  That can hide NaN/Inf or saturation as a valid white image, so the final PNG
+  does not identify which stage is broken.
 
 ## Approach
 
-1. Add explicit Qwen runtime settings for eager parameter loading and disabling
-   segmented compute, enabled by default for the Qwen model-bearing worker.
-2. Pass the settings to stable-diffusion.cpp without changing model files,
-   CUDA image, request schema, LoRA support, or CPU-offload behavior.
+1. Keep the existing runtime settings and add a gated native tensor diagnostic
+   patch to the existing model-bearing build. It must log sampled latent,
+   denormalized VAE latent, raw decoder output before clamping, and scaled
+   decoder output with shape/min/max/mean/std and NaN/Inf counts.
+2. Preserve the existing model files, CUDA image, request schema, LoRA
+   support, and production defaults. Enable the diagnostic only for the
+   controlled investigation run.
 3. Extend focused runtime/config tests and documentation.
 4. Run all local Qwen tests and static checks available on this machine.
-5. Publish a new model-bearing image through the existing Qwen GitHub Actions
-   workflow, verify its manifest, and test it on a single RTX 6000 Ada pod.
+5. Publish the instrumented model-bearing image through the existing Qwen
+   GitHub Actions workflow, verify its manifest, and test it on the current
+   single RTX 6000 Ada pod.
+6. Use the measured failing boundary to implement and validate the actual
+   correction before declaring the worker fixed.
 
 ## Risks
 
@@ -33,6 +48,9 @@ RunPod target instead of completing with uniform-white PNGs.
   headroom and parameters remain CPU-resident when CPU offload is enabled.
 - Disabling segmentation may reduce memory flexibility on smaller GPUs; the
   settings remain environment-configurable for future targets.
+- Native diagnostics add a linear pass over host tensors but are disabled for
+  normal production runs; the diagnostic run is intentionally slower only by
+  a negligible amount relative to inference.
 - The local machine cannot run the full Q8 inference, so the paid validation
   remains necessary for the final GPU-specific check.
 

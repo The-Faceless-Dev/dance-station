@@ -12,7 +12,12 @@ RUN apt-get update \
 RUN git clone --filter=blob:none https://github.com/leejet/stable-diffusion.cpp.git /opt/stable-diffusion.cpp \
     && git -C /opt/stable-diffusion.cpp fetch --depth 1 origin "${SDCPP_COMMIT}" \
     && git -C /opt/stable-diffusion.cpp checkout --detach "${SDCPP_COMMIT}" \
-    && git -C /opt/stable-diffusion.cpp submodule update --init --depth 1 \
+    && git -C /opt/stable-diffusion.cpp submodule update --init --depth 1
+
+COPY containers/qwen-image-worker/sd-cpp-qwen-tensor-diagnostics.patch /tmp/sd-cpp-qwen-tensor-diagnostics.patch
+
+RUN git -C /opt/stable-diffusion.cpp apply /tmp/sd-cpp-qwen-tensor-diagnostics.patch \
+    && rm -f /tmp/sd-cpp-qwen-tensor-diagnostics.patch \
     && cmake -S /opt/stable-diffusion.cpp -B /opt/stable-diffusion.cpp/build \
        -DGGML_CUDA=ON \
        -DSD_SERVER_BUILD_FRONTEND=OFF \
@@ -42,6 +47,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     QWEN_IMAGE_MMAP=true \
     QWEN_IMAGE_EAGER_LOAD=true \
     QWEN_IMAGE_DISABLE_SEGMENTED_COMPUTE=true \
+    QWEN_IMAGE_NATIVE_TENSOR_DIAGNOSTICS=false \
     QWEN_IMAGE_LORA_APPLY_MODE=at_runtime \
     QWEN_IMAGE_ARTIFACT_ROOT=/var/lib/autotransition/qwen-image-jobs \
     QWEN_IMAGE_LORA_ROOT=/var/lib/autotransition/qwen-image-loras \

@@ -1,0 +1,121 @@
+diff --git a/src/model/vae/qwen_tensor_diagnostics.hpp b/src/model/vae/qwen_tensor_diagnostics.hpp
+new file mode 100644
+--- /dev/null
++++ b/src/model/vae/qwen_tensor_diagnostics.hpp
+@@ -0,0 +1,78 @@
++#ifndef __SD_MODEL_VAE_QWEN_TENSOR_DIAGNOSTICS_HPP__
++#define __SD_MODEL_VAE_QWEN_TENSOR_DIAGNOSTICS_HPP__
++
++#include <algorithm>
++#include <cmath>
++#include <cstdlib>
++#include <limits>
++#include <string>
++
++#include "core/tensor.hpp"
++#include "core/util.h"
++
++namespace qwen_tensor_diagnostics {
++
++inline bool enabled() {
++    const char* value = std::getenv("SD_QWEN_TENSOR_DIAGNOSTICS");
++    if (value == nullptr) {
++        return false;
++    }
++    return value[0] == '1' || value[0] == 'y' || value[0] == 'Y' || value[0] == 't' || value[0] == 'T';
++}
++
++inline void log(const char* stage, const sd::Tensor<float>& tensor) {
++    if (!enabled()) {
++        return;
++    }
++
++    const int64_t total = tensor.numel();
++    int64_t finite_count = 0;
++    int64_t nan_count = 0;
++    int64_t inf_count = 0;
++    long double sum = 0.0L;
++    long double sum_squares = 0.0L;
++    float minimum = std::numeric_limits<float>::infinity();
++    float maximum = -std::numeric_limits<float>::infinity();
++
++    for (int64_t index = 0; index < total; ++index) {
++        const float value = tensor[index];
++        if (std::isnan(value)) {
++            ++nan_count;
++        } else if (std::isinf(value)) {
++            ++inf_count;
++        } else {
++            ++finite_count;
++            minimum = std::min(minimum, value);
++            maximum = std::max(maximum, value);
++            sum += static_cast<long double>(value);
++            sum_squares += static_cast<long double>(value) * static_cast<long double>(value);
++        }
++    }
++
++    const double mean = finite_count == 0 ? 0.0 : static_cast<double>(sum / finite_count);
++    const double mean_square = finite_count == 0 ? 0.0 : static_cast<double>(sum_squares / finite_count);
++    const double variance = std::max(0.0, mean_square - mean * mean);
++    const double standard_deviation = std::sqrt(variance);
++    if (finite_count == 0) {
++        minimum = 0.0f;
++        maximum = 0.0f;
++    }
++
++    const std::string shape = sd::tensor_shape_to_string(tensor.shape());
++    LOG_INFO(
++        "[qwen-tensor] stage=%s shape=%s numel=%lld finite=%lld nan=%lld inf=%lld min=%.9g max=%.9g mean=%.9g std=%.9g",
++        stage,
++        shape.c_str(),
++        static_cast<long long>(total),
++        static_cast<long long>(finite_count),
++        static_cast<long long>(nan_count),
++        static_cast<long long>(inf_count),
++        static_cast<double>(minimum),
++        static_cast<double>(maximum),
++        mean,
++        standard_deviation);
++}
++
++}  // namespace qwen_tensor_diagnostics
++
++#endif  // __SD_MODEL_VAE_QWEN_TENSOR_DIAGNOSTICS_HPP__
+diff --git a/src/model/vae/vae.hpp b/src/model/vae/vae.hpp
+--- a/src/model/vae/vae.hpp
++++ b/src/model/vae/vae.hpp
+@@ -4,7 +4,8 @@
+ #include "core/tensor_ggml.hpp"
+ #include "model/common/block.hpp"
+ #include "model/vae/vae_tiling.hpp"
+ #include "model_manager.h"
+ #include "runtime/tiling.h"
++#include "model/vae/qwen_tensor_diagnostics.hpp"
+ 
+ struct VAE : public GGMLRunner {
+@@ -311,11 +312,13 @@
+         if (output.empty()) {
+             LOG_ERROR("vae decode compute failed");
+             return {};
+         }
++        qwen_tensor_diagnostics::log("vae_decode_raw", output);
+         if (scale_input) {
+             scale_tensor_to_0_1(&output);
+         }
++        qwen_tensor_diagnostics::log("vae_decode_scaled", output);
+         int64_t t1 = ggml_time_ms();
+         LOG_VERBOSE("computing vae decode graph completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
+         return std::move(output);
+     }
+diff --git a/src/pipeline/diffusion_engine.cpp b/src/pipeline/diffusion_engine.cpp
+--- a/src/pipeline/diffusion_engine.cpp
++++ b/src/pipeline/diffusion_engine.cpp
+@@ -2641,6 +2641,8 @@
+ sd::Tensor<float> StableDiffusionGGML::decode_first_stage(const sd::Tensor<float>& x, bool decode_video) {
+     if (sd_version_is_pid(version) || sd_version_is_minit2i(version)) {
+         return sd::ops::clamp((x + 1.f) * 0.5f, 0.0f, 1.0f);
+     }
++    qwen_tensor_diagnostics::log("sampled_latent", x);
+     auto latents                      = first_stage_model->diffusion_to_vae_latents(x);
++    qwen_tensor_diagnostics::log("vae_latent_denormalized", latents);
+     auto decoded                      = first_stage_model->decode(n_threads, latents, vae_tiling_params, decode_video, circular_x, circular_y);

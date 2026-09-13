@@ -39,6 +39,17 @@ def test_runtime_can_disable_eager_qwen_controls(tmp_path: Path) -> None:
     assert "--disable-segmented-compute" not in command
 
 
+def test_runtime_exports_native_tensor_diagnostics_switch(tmp_path: Path) -> None:
+    config = QwenImageConfig(
+        runtime_binary=tmp_path / "sd-server",
+        diffusion_model=tmp_path / "qwen-image-2512-Q8_0.gguf",
+        text_encoder=tmp_path / "Qwen2.5-VL-7B-Instruct-abliterated.Q8_0.gguf",
+        vae=tmp_path / "qwen_image_vae.safetensors",
+        native_tensor_diagnostics=True,
+    )
+    assert QwenImageRuntime(config)._environment()["SD_QWEN_TENSOR_DIAGNOSTICS"] == "1"
+
+
 def test_runtime_writes_native_base64_png(tmp_path: Path, monkeypatch) -> None:
     image_path = tmp_path / "source.png"
     Image.new("RGB", (16, 16), (20, 40, 60)).save(image_path, format="PNG")
