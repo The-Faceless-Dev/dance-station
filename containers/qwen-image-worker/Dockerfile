@@ -24,6 +24,8 @@ FROM nvidia/cuda:${CUDA_VERSION}-runtime-ubuntu24.04 AS runtime-base
 ARG SALAD_WORKER_VERSION=v0.7.0
 ARG SALAD_WORKER_SHA256=074a329cf6462e77fc7b72100f59d8a690831456d9420186a834a8f30634c9e4
 
+LABEL org.opencontainers.image.source="https://github.com/The-Faceless-Dev/dance-station"
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
