@@ -5,6 +5,19 @@ output_dir=/tmp/qwen-cli-diagnostic
 mkdir -p "${output_dir}"
 export SD_QWEN_TENSOR_DIAGNOSTICS=1
 
+# Keep the RunPod port observable while the probes run. The previous harness
+# exposed it only after CPU inference, which made a healthy pod look absent.
+file_server_pid=""
+python3 -m http.server 8080 --bind 0.0.0.0 --directory /tmp >"${output_dir}/file-server.log" 2>&1 &
+file_server_pid=$!
+cleanup() {
+  if [[ -n "${file_server_pid}" ]] && kill -0 "${file_server_pid}" 2>/dev/null; then
+    kill -TERM "${file_server_pid}" 2>/dev/null || true
+    wait "${file_server_pid}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
 run_direct_cli() {
   local log_path="$1"
   local output_path="$2"
@@ -176,4 +189,4 @@ cpu_status=$?
 echo "cpu_cli_exit_status=${cpu_status}" >>"${output_dir}/diagnostic-summary.txt"
 
 echo "CLI/server/CPU diagnostic complete; serving /tmp on port 8080" >&2
-exec python3 -m http.server 8080 --bind 0.0.0.0 --directory /tmp
+wait "${file_server_pid}"
