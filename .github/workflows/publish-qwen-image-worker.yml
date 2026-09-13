@@ -7,6 +7,7 @@ on:
     paths:
       - ".github/workflows/publish-qwen-image-worker.yml"
       - "containers/qwen-image-worker/**"
+      - "containers/qwen-image-worker/Dockerfile.fp8-encoder-test"
       - "src/autotransition/qwen_image/**"
       - "src/autotransition/cli.py"
       - "pyproject.toml"
@@ -23,7 +24,7 @@ permissions:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-qwen-image-worker
-  TAG: ${{ inputs.tag || 'qwen-image-2512-q8-20260913-diagnostic-r1' }}
+  TAG: ${{ github.event_name == 'push' && 'qwen-image-2512-q8-fp8-encoder-test-20260913-r1' || inputs.tag || 'qwen-image-2512-q8-20260913-diagnostic-r1' }}
 
 jobs:
   publish:
@@ -65,7 +66,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: containers/qwen-image-worker/Dockerfile
+          file: ${{ contains(github.event.head_commit.message, 'Qwen FP8') && 'containers/qwen-image-worker/Dockerfile.fp8-encoder-test' || 'containers/qwen-image-worker/Dockerfile' }}
           target: runtime
           push: true
           provenance: false
@@ -84,9 +85,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          repository="${IMAGE#ghcr.io/}"
           manifest_url="https://ghcr.io/v2/${IMAGE#ghcr.io/}/manifests/${TAG}"
+          registry_token=$(curl --silent --show-error --fail --get \
+            --data-urlencode 'service=ghcr.io' \
+            --data-urlencode "scope=repository:${repository}:pull" \
+            'https://ghcr.io/token' | jq -r '.token')
+          test -n "${registry_token}" -a "${registry_token}" != null
           for attempt in 1 2 3 4 5; do
             status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+              --header "Authorization: Bearer ${registry_token}" \
               --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
               "${manifest_url}")
             echo "Anonymous GHCR manifest check ${attempt}/5: HTTP ${status}"

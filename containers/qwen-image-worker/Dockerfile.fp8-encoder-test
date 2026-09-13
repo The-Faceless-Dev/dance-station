@@ -1,7 +1,7 @@
 # Reuse the already-public model-bearing image. This test adds only the
 # alternate text encoder so the large Q8 transformer and VAE remain cached.
 ARG QWEN_BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-qwen-image-worker@sha256:ec93ffb28cccd4c11bc404a3d49e60fd3f369fe1af626abf5533828b34d83744
-FROM ${QWEN_BASE_IMAGE}
+FROM ${QWEN_BASE_IMAGE} AS runtime
 
 USER root
 
