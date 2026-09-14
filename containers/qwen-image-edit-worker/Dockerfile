@@ -63,11 +63,11 @@ RUN apt-get update \
        "pillow>=10.0.0" \
        "uvicorn>=0.32.0"
 
+WORKDIR /app
+
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY containers/qwen-image-edit-worker/entrypoint.sh /usr/local/bin/qwen-image-edit-worker-entrypoint
-
-WORKDIR /app
 
 RUN chmod 0755 /usr/local/bin/qwen-image-edit-worker-entrypoint \
     && useradd --create-home --uid 10004 qwen \
