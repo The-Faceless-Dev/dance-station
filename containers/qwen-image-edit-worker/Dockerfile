@@ -66,9 +66,9 @@ COPY src ./src
 COPY containers/qwen-image-edit-worker/entrypoint.sh /usr/local/bin/qwen-image-edit-worker-entrypoint
 
 RUN chmod 0755 /usr/local/bin/qwen-image-edit-worker-entrypoint \
-    && useradd --create-home --uid 10005 qwenedit \
+    && useradd --create-home --uid 10004 qwen \
     && mkdir -p /models/qwen-image-edit-2511 /var/lib/autotransition/qwen-image-edit-jobs /var/lib/autotransition/qwen-image-edit-loras /var/lib/autotransition/huggingface \
-    && chown -R qwenedit:qwenedit /app /var/lib/autotransition /opt/qwen-image-edit-venv
+    && chown -R qwen:qwen /app /var/lib/autotransition /opt/qwen-image-edit-venv
 
 WORKDIR /app
 EXPOSE 8080
@@ -77,8 +77,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
 
 # The local target accepts an existing transformer through a named build context.
 FROM runtime-base AS runtime-local
-COPY --chown=qwenedit:qwenedit --from=qweneditmodel /qwen-image-edit-2511-Q8_0.gguf /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf
-USER qwenedit
+COPY --chown=qwen:qwen --from=qweneditmodel /qwen-image-edit-2511-Q8_0.gguf /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf
+USER qwen
 ENTRYPOINT ["/usr/local/bin/qwen-image-edit-worker-entrypoint"]
 
 # The model-bearing production target includes the verified 21.8 GB Q8
@@ -93,7 +93,7 @@ RUN curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
       --output /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf \
       "${QWEN_IMAGE_EDIT_TRANSFORMER_URL}" \
     && echo "${QWEN_IMAGE_EDIT_TRANSFORMER_SHA256}  /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf" | sha256sum -c - \
-    && chown qwenedit:qwenedit /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf
+    && chown qwen:qwen /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf
 
-USER qwenedit
+USER qwen
 ENTRYPOINT ["/usr/local/bin/qwen-image-edit-worker-entrypoint"]
