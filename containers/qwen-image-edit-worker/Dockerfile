@@ -68,7 +68,7 @@ COPY containers/qwen-image-edit-worker/entrypoint.sh /usr/local/bin/qwen-image-e
 RUN chmod 0755 /usr/local/bin/qwen-image-edit-worker-entrypoint \
     && useradd --create-home --uid 10004 qwen \
     && mkdir -p /models/qwen-image-edit-2511 /var/lib/autotransition/qwen-image-edit-jobs /var/lib/autotransition/qwen-image-edit-loras /var/lib/autotransition/huggingface \
-    && chown -R qwen:qwen /app /var/lib/autotransition /opt/qwen-image-edit-venv
+    && chown -R qwen:qwen /var/lib/autotransition
 
 WORKDIR /app
 EXPOSE 8080
@@ -92,8 +92,7 @@ RUN curl --fail --location --retry 5 --retry-all-errors --retry-delay 5 \
       --connect-timeout 30 --max-time 7200 \
       --output /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf \
       "${QWEN_IMAGE_EDIT_TRANSFORMER_URL}" \
-    && echo "${QWEN_IMAGE_EDIT_TRANSFORMER_SHA256}  /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf" | sha256sum -c - \
-    && chown qwen:qwen /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf
+    && echo "${QWEN_IMAGE_EDIT_TRANSFORMER_SHA256}  /models/qwen-image-edit-2511/qwen-image-edit-2511-Q8_0.gguf" | sha256sum -c -
 
 USER qwen
 ENTRYPOINT ["/usr/local/bin/qwen-image-edit-worker-entrypoint"]
