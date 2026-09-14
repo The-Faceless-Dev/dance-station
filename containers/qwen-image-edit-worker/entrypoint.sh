@@ -167,7 +167,7 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
 fi
 
 event "python_import_probe_started" "executable=${PYTHON_BIN}"
-if "${PYTHON_BIN}" - <<'PY' >>"${STARTUP_REPORT}" 2>&1
+if "${PYTHON_BIN}" - <<'PY' 2>&1 | tee -a "${STARTUP_REPORT}"
 import autotransition.qwen_image_edit.server
 print("worker_module_import=ok")
 PY

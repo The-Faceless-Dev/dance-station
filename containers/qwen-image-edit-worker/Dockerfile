@@ -67,12 +67,13 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 COPY containers/qwen-image-edit-worker/entrypoint.sh /usr/local/bin/qwen-image-edit-worker-entrypoint
 
+WORKDIR /app
+
 RUN chmod 0755 /usr/local/bin/qwen-image-edit-worker-entrypoint \
     && useradd --create-home --uid 10004 qwen \
     && mkdir -p /models/qwen-image-edit-2511 /var/lib/autotransition/qwen-image-edit-jobs /var/lib/autotransition/qwen-image-edit-loras /var/lib/autotransition/qwen-image-edit-startup /var/lib/autotransition/huggingface \
     && chown -R qwen:qwen /var/lib/autotransition
 
-WORKDIR /app
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
   CMD /opt/qwen-image-edit-venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
