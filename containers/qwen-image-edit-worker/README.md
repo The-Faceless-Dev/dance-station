@@ -42,6 +42,25 @@ The Q8 transformer is in the image. The official 2511 pipeline components are
 cached under `HF_HOME` when Diffusers initializes, matching the existing Qwen
 Image Diffusers worker. CUDA is required; there is no silent CPU fallback.
 
+## Startup diagnostics
+
+The entrypoint writes `startup.log`, `startup-report.txt`, and `worker.log` to
+`QWEN_IMAGE_EDIT_STARTUP_LOG_ROOT` (default:
+`/var/lib/autotransition/qwen-image-edit-startup`) while also forwarding the
+same events to container stdout/stderr. The report records the exact entrypoint
+phase, safe configuration values, UID and path permissions, disk and memory
+capacity, process and cgroup state, CUDA visibility, Python/package import
+results, health-probe responses, child exit status, and the last child log
+lines. Secrets and callback tokens are intentionally excluded.
+
+`QWEN_IMAGE_EDIT_STARTUP_PROBE_SECONDS` bounds the local `/health` probe after
+the HTTP process is spawned; it does not load the generation pipeline. If the
+container reaches the entrypoint, a failed import, child exit, or health
+timeout now produces an explicit `STARTUP_EVENT` and durable report path. If
+RunPod fails before invoking the image entrypoint, only RunPod's provider-side
+events can explain that failure; the absence of `entrypoint_invoked` in the
+provider log is itself the diagnostic signal.
+
 ## Local image build
 
 ```powershell

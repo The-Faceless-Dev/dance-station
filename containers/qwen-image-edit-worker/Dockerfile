@@ -27,6 +27,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     QWEN_IMAGE_EDIT_GPU_REQUIRED=true \
     QWEN_IMAGE_EDIT_ARTIFACT_ROOT=/var/lib/autotransition/qwen-image-edit-jobs \
     QWEN_IMAGE_EDIT_LORA_ROOT=/var/lib/autotransition/qwen-image-edit-loras \
+    QWEN_IMAGE_EDIT_STARTUP_LOG_ROOT=/var/lib/autotransition/qwen-image-edit-startup \
+    QWEN_IMAGE_EDIT_STARTUP_PROBE_SECONDS=300 \
     QWEN_IMAGE_EDIT_ALLOW_LOCAL_REFERENCES=false \
     QWEN_IMAGE_EDIT_ALLOW_LOCAL_LORAS=false \
     SALAD_QUEUE_WORKER_ENABLED=true \
@@ -67,7 +69,7 @@ COPY containers/qwen-image-edit-worker/entrypoint.sh /usr/local/bin/qwen-image-e
 
 RUN chmod 0755 /usr/local/bin/qwen-image-edit-worker-entrypoint \
     && useradd --create-home --uid 10004 qwen \
-    && mkdir -p /models/qwen-image-edit-2511 /var/lib/autotransition/qwen-image-edit-jobs /var/lib/autotransition/qwen-image-edit-loras /var/lib/autotransition/huggingface \
+    && mkdir -p /models/qwen-image-edit-2511 /var/lib/autotransition/qwen-image-edit-jobs /var/lib/autotransition/qwen-image-edit-loras /var/lib/autotransition/qwen-image-edit-startup /var/lib/autotransition/huggingface \
     && chown -R qwen:qwen /var/lib/autotransition
 
 WORKDIR /app
