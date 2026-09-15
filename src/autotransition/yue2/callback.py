@@ -86,23 +86,26 @@ def request_from_payload(payload: dict[str, Any]) -> Yue2Request:
 
 
 def _artifact_role(name: str) -> str:
-    return "primary" if Path(name).name == "audio.wav" else "metadata"
+    return "audio" if Path(name).name == "audio.wav" else "metadata"
 
 
 def _upload_artifact(url: str, token: str, path: Path, artifact: dict[str, Any]) -> str:
     name = Path(str(artifact.get("name") or path.name)).name
     body = path.read_bytes()
+    role = _artifact_role(name)
+    headers = {
+        "Content-Type": mimetypes.guess_type(name)[0] or "application/octet-stream",
+        "Content-Length": str(len(body)),
+        "X-Job-Callback-Token": token,
+        "X-Artifact-Role": role,
+        "X-Artifact-File-Name": name,
+    }
+    if role == "audio":
+        headers["X-Artifact-Variant"] = "merged"
     request = UrlRequest(
         url,
         data=body,
-        headers={
-            "Content-Type": mimetypes.guess_type(name)[0] or "application/octet-stream",
-            "Content-Length": str(len(body)),
-            "X-Job-Callback-Token": token,
-            "X-Artifact-Role": _artifact_role(name),
-            "X-Artifact-Variant": "yue2-music",
-            "X-Artifact-File-Name": name,
-        },
+        headers=headers,
         method="POST",
     )
     try:
