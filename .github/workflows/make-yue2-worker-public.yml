@@ -7,6 +7,11 @@ on:
         description: Existing YuE2 image tag to make publicly pullable
         required: true
         default: yue2-3b-q8-f16-20260914-r1
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
+    paths:
+      - .github/workflows/make-yue2-worker-public.yml
 
 permissions:
   contents: read
