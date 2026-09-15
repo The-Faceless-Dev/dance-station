@@ -2,11 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 import wave
 from pathlib import Path
 
 import numpy as np
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+import autotransition.moss_music.callback as callback_module
 from autotransition.moss_music.callback import _artifact_role, run_queue_job
 from autotransition.moss_music.config import MossMusicConfig
 from autotransition.moss_music.runtime import MossRuntimeResult
@@ -25,6 +29,42 @@ def _write_wav(path: Path) -> None:
 def test_analysis_artifacts_use_the_launcher_metadata_role() -> None:
     assert _artifact_role("analysis.json") == "metadata"
     assert _artifact_role("events.jsonl") == "metadata"
+
+
+def test_process_acknowledges_before_analysis_finishes(monkeypatch) -> None:
+    app = FastAPI()
+    config = MossMusicConfig(backend="mock", device="cpu", gpu_required=False)
+    install = callback_module.install_callback_routes
+
+    started = asyncio.Event()
+
+    async def fake_run_queue_job(payload, worker, config):
+        started.set()
+        await asyncio.sleep(0.05)
+        return {"status": "succeeded", "job_id": payload["job_id"]}
+
+    monkeypatch.setattr(callback_module, "run_queue_job", fake_run_queue_job)
+    install(app, object(), config)
+    payload = {
+        "runtime": "moss-music",
+        "job_id": "ack-job-1",
+        "callback": {
+            "url": "https://launcher.test/artifacts",
+            "complete_url": "https://launcher.test/jobs/ack-job-1/complete",
+            "progress_url": "https://launcher.test/jobs/ack-job-1/progress",
+            "token": "callback-token",
+        },
+    }
+
+    with TestClient(app) as client:
+        began = time.monotonic()
+        response = client.post("/process", json=payload)
+        elapsed = time.monotonic() - began
+        assert response.status_code == 200
+        assert response.json()["status"] == "accepted"
+        assert response.json()["job_id"] == "ack-job-1"
+        assert elapsed < 0.05
+        assert started.is_set()
 
 
 class FakeRuntime:
