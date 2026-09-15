@@ -2,6 +2,12 @@ from pathlib import Path
 
 from autotransition.qwen_image_edit.config import QwenImageEditConfig
 from autotransition.qwen_image_edit.contracts import request_from_payload
+from autotransition.qwen_image_edit.server import _artifact_role
+
+
+def test_callback_uses_metadata_for_non_image_artifacts() -> None:
+    assert _artifact_role("image.png") == "preview"
+    assert _artifact_role("reference-metadata.json") == "metadata"
 
 
 def test_request_accepts_multiple_reference_shapes_and_ordered_loras() -> None:

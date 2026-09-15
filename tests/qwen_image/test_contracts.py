@@ -4,6 +4,12 @@ import pytest
 
 from autotransition.qwen_image.config import QwenImageConfig
 from autotransition.qwen_image.contracts import QwenImageRequest, QwenLoRARequest, request_from_payload
+from autotransition.qwen_image.adapter import _artifact_role
+
+
+def test_callback_uses_metadata_for_non_image_artifacts() -> None:
+    assert _artifact_role("image.png") == "preview"
+    assert _artifact_role("image-metadata.json") == "metadata"
 
 
 def test_qwen_defaults_and_portrait_request() -> None:

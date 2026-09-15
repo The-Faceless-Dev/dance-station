@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from autotransition.moss_music.callback import run_queue_job
+from autotransition.moss_music.callback import _artifact_role, run_queue_job
 from autotransition.moss_music.config import MossMusicConfig
 from autotransition.moss_music.runtime import MossRuntimeResult
 from autotransition.moss_music.worker import MossMusicWorker
@@ -20,6 +20,11 @@ def _write_wav(path: Path) -> None:
         handle.setsampwidth(2)
         handle.setframerate(16000)
         handle.writeframes(values.tobytes())
+
+
+def test_analysis_artifacts_use_the_launcher_metadata_role() -> None:
+    assert _artifact_role("analysis.json") == "metadata"
+    assert _artifact_role("events.jsonl") == "metadata"
 
 
 class FakeRuntime:

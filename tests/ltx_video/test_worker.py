@@ -53,6 +53,10 @@ def test_worker_persists_success_artifacts(tmp_path: Path) -> None:
         assert result["status"] == "succeeded"
         names = {item["name"] for item in result["artifacts"]}  # type: ignore[index]
         assert {"output.mp4", "generation-metadata.json", "request.json", "memory-plan.json", "events.jsonl"} <= names
+        roles = {item["name"]: item["role"] for item in result["artifacts"]}  # type: ignore[index]
+        assert roles["output.mp4"] == "preview"
+        assert roles["memory-plan.json"] == "metadata"
+        assert roles["events.jsonl"] == "metadata"
         assert (tmp_path / "jobs" / "job-1" / "final" / "output.mp4").read_bytes() == b"fake-video"
         events = [
             json.loads(line)

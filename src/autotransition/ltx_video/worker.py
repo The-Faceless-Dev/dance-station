@@ -189,13 +189,13 @@ class LtxVideoWorker:
             events_path = self.store.job_dir(job_id) / "events.jsonl"
             self.store.finalize_file(job_id, events_path, "events.jsonl")
             artifact_names: list[tuple[str, str, str]] = [
-                (runtime_result.video_path.name, "video/mp4" if runtime_result.video_path.suffix == ".mp4" else "video/webm", "primary"),
+                (runtime_result.video_path.name, "video/mp4" if runtime_result.video_path.suffix == ".mp4" else "video/webm", "preview"),
                 ("generation-metadata.json", "application/json", "metadata"),
                 ("request.json", "application/json", "metadata"),
-                ("memory-plan.json", "application/json", "diagnostic"),
-                ("events.jsonl", "application/jsonl", "diagnostic"),
+                ("memory-plan.json", "application/json", "metadata"),
+                ("events.jsonl", "application/jsonl", "metadata"),
             ]
-            artifact_names.extend((path.name, "video/mp4", "intermediate") for path in runtime_result.intermediate_paths if self.store.final_path(job_id, path.name).is_file())
+            artifact_names.extend((path.name, "video/mp4", "preview") for path in runtime_result.intermediate_paths if self.store.final_path(job_id, path.name).is_file())
             if self.store.final_path(job_id, "conditioning-manifest.json").is_file():
                 artifact_names.append(("conditioning-manifest.json", "application/json", "metadata"))
             if request.audio_mode == "generated" and (self.store.final_path(job_id, "audio.wav")).is_file():
@@ -257,7 +257,7 @@ class LtxVideoWorker:
             if events_path.is_file():
                 self.store.finalize_file(job_id, events_path, "events.jsonl")
             artifacts: list[dict[str, Any]] = []
-            for name, media_type, role in (("failure-summary.json", "application/json", "diagnostic"), ("events.jsonl", "application/jsonl", "diagnostic")):
+            for name, media_type, role in (("failure-summary.json", "application/json", "metadata"), ("events.jsonl", "application/jsonl", "metadata")):
                 if self.store.final_path(job_id, name).is_file():
                     artifacts.append(self.store.artifact(job_id, name, media_type, role).__dict__)
             self._set_state(

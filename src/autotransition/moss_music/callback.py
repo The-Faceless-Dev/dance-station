@@ -95,7 +95,9 @@ def request_from_payload(payload: dict[str, Any]) -> MossMusicRequest:
 
 
 def _artifact_role(name: str) -> str:
-    return "primary" if Path(name).name == "analysis.json" else "metadata"
+    # MOSS produces analysis documents, not generated media. Keep every
+    # returned file in the launch-server metadata class.
+    return "metadata"
 
 
 def _uploaded_artifact(artifact: dict[str, Any], artifact_id: str) -> dict[str, Any]:
@@ -108,6 +110,7 @@ def _uploaded_artifact(artifact: dict[str, Any], artifact_id: str) -> dict[str, 
         "mediaType": str(artifact.get("media_type") or artifact.get("mediaType") or "application/octet-stream"),
         "sizeBytes": int(artifact.get("size_bytes") or artifact.get("sizeBytes") or 0),
         "sha256": str(artifact.get("sha256") or ""),
+        "role": _artifact_role(str(artifact.get("name") or "artifact")),
     }
 
 
@@ -122,7 +125,6 @@ def _upload_artifact(url: str, token: str, path: Path, artifact: dict[str, Any])
             "Content-Length": str(len(body)),
             "X-Job-Callback-Token": token,
             "X-Artifact-Role": _artifact_role(name),
-            "X-Artifact-Variant": "moss-music-analysis",
             "X-Artifact-File-Name": name,
         },
         method="POST",

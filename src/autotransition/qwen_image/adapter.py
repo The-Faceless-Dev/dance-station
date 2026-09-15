@@ -59,7 +59,7 @@ def _post_json(url: str, token: str, payload: Any, *, timeout: float = 120) -> A
 
 def _artifact_role(name: str) -> str:
     suffix = Path(name).suffix.lower()
-    return "preview" if suffix in {".png", ".jpg", ".jpeg", ".webp"} else "diagnostic"
+    return "preview" if suffix in {".png", ".jpg", ".jpeg", ".webp"} else "metadata"
 
 
 def _upload_artifact(url: str, token: str, path: Path, artifact: dict[str, Any]) -> str:
@@ -73,7 +73,6 @@ def _upload_artifact(url: str, token: str, path: Path, artifact: dict[str, Any])
             "Content-Length": str(len(body)),
             "X-Job-Callback-Token": token,
             "X-Artifact-Role": _artifact_role(name),
-            "X-Artifact-Variant": "qwen-image-output",
             "X-Artifact-File-Name": name,
         },
         method="POST",

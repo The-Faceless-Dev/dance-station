@@ -1,5 +1,12 @@
-from autotransition.ltx_video.callback import request_from_payload
+from autotransition.ltx_video.callback import _artifact_role, _uploaded_artifact, request_from_payload
 from autotransition.ltx_video.config import LtxVideoConfig
+
+
+def test_ltx_callback_normalizes_worker_artifact_roles() -> None:
+    assert _artifact_role("output.mp4") == "preview"
+    assert _artifact_role("audio.wav") == "audio"
+    assert _artifact_role("events.jsonl") == "metadata"
+    assert _uploaded_artifact({"name": "output.mp4", "role": "primary"}, "artifact-1")["role"] == "preview"
 
 
 def test_launcher_payload_preserves_aspect_conditioning_and_audio_mode() -> None:

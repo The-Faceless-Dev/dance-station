@@ -18,6 +18,8 @@ from .worker import LtxVideoWorker
 
 
 TERMINAL = {"succeeded", "failed"}
+VIDEO_SUFFIXES = {".mp4", ".webm", ".mov"}
+AUDIO_SUFFIXES = {".wav", ".flac", ".mp3", ".ogg", ".m4a"}
 
 
 def _job_id(payload: dict[str, Any]) -> str:
@@ -120,15 +122,25 @@ def request_from_payload(payload: dict[str, Any]) -> LtxVideoRequest:
 
 
 def _uploaded_artifact(artifact: dict[str, Any], artifact_id: str) -> dict[str, Any]:
+    name = Path(str(artifact.get("name") or "artifact")).name
     return {
         "id": artifact_id,
         "artifactId": artifact_id,
-        "name": Path(str(artifact.get("name") or "artifact")).name,
+        "name": name,
         "mediaType": str(artifact.get("media_type") or artifact.get("mediaType") or "application/octet-stream"),
         "sizeBytes": int(artifact.get("size_bytes") or artifact.get("sizeBytes") or 0),
         "sha256": str(artifact.get("sha256") or ""),
-        "role": str(artifact.get("role") or "output"),
+        "role": _artifact_role(name),
     }
+
+
+def _artifact_role(name: str) -> str:
+    suffix = Path(name).suffix.lower()
+    if suffix in VIDEO_SUFFIXES:
+        return "preview"
+    if suffix in AUDIO_SUFFIXES:
+        return "audio"
+    return "metadata"
 
 
 def _upload_artifact(url: str, token: str, artifact: dict[str, Any]) -> str:
@@ -141,8 +153,7 @@ def _upload_artifact(url: str, token: str, artifact: dict[str, Any]) -> str:
         "Content-Type": str(artifact.get("media_type") or mimetypes.guess_type(name)[0] or "application/octet-stream"),
         "Content-Length": str(len(body)),
         "X-Job-Callback-Token": token,
-        "X-Artifact-Role": str(artifact.get("role") or "output"),
-        "X-Artifact-Variant": "ltx-2.5-video",
+        "X-Artifact-Role": _artifact_role(name),
         "X-Artifact-File-Name": name,
     }, method="POST")
     try:

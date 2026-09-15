@@ -17,7 +17,7 @@ on:
       tag:
         description: Public code-overlay tag
         required: true
-        default: ltx-2.5-nvfp4-5090-r6
+        default: ltx-2.5-nvfp4-5090-r7
 
 permissions:
   contents: read
@@ -28,9 +28,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
+  IMAGE: ghcr.io/the-faceless-dev/faceless-ltx-video-worker
   BASE_TAG: ${{ inputs.base_tag || 'ltx-2.5-nvfp4-5090-r1' }}
-  TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r6' }}
+  TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r7' }}
 
 jobs:
   publish:
