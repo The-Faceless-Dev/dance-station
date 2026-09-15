@@ -57,17 +57,20 @@ jobs:
             --env-override FLUX_IMAGE_AVATAR_HEIGHT=1664 \
             --env-override FLUX_IMAGE_AVATAR_SUBJECT_SCALE=0.70
 
-      - name: Ensure Flux container package is public
+      - name: Verify anonymous Flux manifest pullability
         shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          curl --fail-with-body --silent --show-error --location \
-            --request PATCH \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer ${GH_TOKEN}" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            --header "Content-Type: application/json" \
-            --data '{"visibility":"public"}' \
-            "https://api.github.com/user/packages/container/faceless-flux-image-worker"
+          repository="${IMAGE#ghcr.io/}"
+          manifest_url="https://ghcr.io/v2/${repository}/manifests/${TAG}"
+          registry_token=$(curl --silent --show-error --fail --get \
+            --data-urlencode 'service=ghcr.io' \
+            --data-urlencode "scope=repository:${repository}:pull" \
+            'https://ghcr.io/token' | jq -r '.token')
+          test -n "${registry_token}" -a "${registry_token}" != null
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${registry_token}" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+            "${manifest_url}")
+          test "${status}" = 200
+          echo "Anonymous GHCR manifest check passed: HTTP ${status}"
