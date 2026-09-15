@@ -17,7 +17,7 @@ on:
       tag:
         description: Public code-overlay tag
         required: true
-        default: ltx-2.5-nvfp4-5090-r7
+        default: ltx-2.5-nvfp4-5090-r1
 
 permissions:
   contents: read
@@ -28,11 +28,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # LTX's established public model-bearing lineage is stored in the shared
-  # worker package; keep the overlay on that known-pullable package.
-  IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
+  IMAGE: ghcr.io/the-faceless-dev/faceless-ltx-video-worker
   BASE_TAG: ${{ inputs.base_tag || 'ltx-2.5-nvfp4-5090-r1' }}
-  TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r7' }}
+  TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r1' }}
 
 jobs:
   publish:
