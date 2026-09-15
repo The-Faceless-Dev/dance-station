@@ -1,0 +1,136 @@
+name: Publish YuE2-3B Worker
+
+on:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
+    paths:
+      - ".github/workflows/publish-yue2-worker.yml"
+      - "containers/yue2-worker/**"
+      - "src/autotransition/yue2/**"
+      - "tools/yue2/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Public YuE2 worker tag
+        required: true
+        default: yue2-3b-q8-f16-20260914-r1
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: yue2-worker-publish
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-yue2-worker
+  TAG: ${{ inputs.tag || 'yue2-3b-q8-f16-20260914-r1' }}
+  MODEL_ID: audio-cpp/Yue2-3B-GGUF
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Reclaim runner storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/share/powershell \
+            /usr/local/share/chromium \
+            /opt/hostedtoolcache
+          sudo apt-get clean
+          docker system prune --all --force --volumes || true
+          df -h /
+
+      - name: Set up Python and high-speed Hugging Face transfer
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download YuE2 Q8/F16 model package
+        shell: bash
+        env:
+          HF_XET_HIGH_PERFORMANCE: "1"
+          HF_XET_NUM_CONCURRENT_RANGE_GETS: "64"
+          HF_HUB_ENABLE_HF_XET: "1"
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir huggingface_hub
+          hf download "${MODEL_ID}" \
+            yue2-3b-q8_0.gguf \
+            yue2-vae-f16.gguf \
+            sidecars/yue2-model-config.json \
+            sidecars/yue2-generation-config.json \
+            sidecars/yue2-qwen.tiktoken \
+            sidecars/yue2-vae-config.json \
+            --local-dir /tmp/yue2-3b-gguf
+          du -sh /tmp/yue2-3b-gguf
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR with repository credential
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish model-bearing image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/yue2-worker/Dockerfile
+          build-contexts: yue2model=/tmp/yue2-3b-gguf
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+
+      - name: Verify published image manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE}:${TAG}"
+          docker buildx imagetools inspect "${IMAGE}:${TAG}" --raw \
+            | jq -e '.config.digest and (.layers | length > 0)' >/dev/null
+
+      - name: Verify anonymous GHCR pullability
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="${IMAGE#ghcr.io/}"
+          manifest_url="https://ghcr.io/v2/${repository}/manifests/${TAG}"
+          registry_token=$(curl --silent --show-error --fail --get \
+            --data-urlencode 'service=ghcr.io' \
+            --data-urlencode "scope=repository:${repository}:pull" \
+            'https://ghcr.io/token' | jq -r '.token')
+          test -n "${registry_token}" -a "${registry_token}" != null
+          for attempt in 1 2 3 4 5; do
+            status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+              --header "Authorization: Bearer ${registry_token}" \
+              --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' \
+              "${manifest_url}")
+            echo "Anonymous GHCR manifest check ${attempt}/5: HTTP ${status}"
+            if [ "${status}" = 200 ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "The published YuE2 tag is not publicly pullable." >&2
+          exit 1
