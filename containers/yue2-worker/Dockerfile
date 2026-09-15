@@ -1,4 +1,6 @@
-FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04 AS runtime-base
+# Ubuntu 22.04 provides Python 3.10, but the project package requires >=3.11.
+# Keep the CUDA toolchain unchanged and use the 24.04 base for Python 3.12.
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04 AS runtime-base
 
 ARG AUDIOCPP_REPO=https://github.com/0xShug0/audio.cpp.git
 ARG AUDIOCPP_REF=6fbbee4efd1c2251d3774edd89a002a0039da5f7
