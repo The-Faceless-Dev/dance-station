@@ -48,6 +48,7 @@ RUN apt-get update \
     && /opt/qwen-image-edit-venv/bin/pip install --no-cache-dir \
        --index-url https://download.pytorch.org/whl/cu128 \
        "torch>=2.7,<3" \
+       "torchvision" \
     && /opt/qwen-image-edit-venv/bin/pip install --no-cache-dir \
        "diffusers==0.40.0" \
        "transformers==5.17.0" \
