@@ -28,7 +28,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/the-faceless-dev/faceless-ltx-video-worker
+  # LTX's established public model-bearing lineage is stored in the shared
+  # worker package; keep the overlay on that known-pullable package.
+  IMAGE: ghcr.io/the-faceless-dev/faceless-wan-animate-worker
   BASE_TAG: ${{ inputs.base_tag || 'ltx-2.5-nvfp4-5090-r1' }}
   TAG: ${{ inputs.tag || 'ltx-2.5-nvfp4-5090-r7' }}
 
