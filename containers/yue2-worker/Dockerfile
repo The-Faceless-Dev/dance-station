@@ -58,9 +58,12 @@ COPY src ./src
 COPY tools ./tools
 COPY containers/yue2-worker/entrypoint.sh /usr/local/bin/yue2-worker-entrypoint
 
-RUN python3 -m pip install --no-cache-dir --upgrade pip \
-    && python3 -m pip install --no-cache-dir --no-deps . \
-    && python3 -m pip install --no-cache-dir "fastapi>=0.115.0" "httpx>=0.27.0" "numpy>=1.26" "uvicorn>=0.32.0" \
+# Ubuntu 24.04 marks its system interpreter as externally managed. This image
+# intentionally owns the runtime environment, so make that installation
+# explicit rather than depending on an implicit virtualenv.
+RUN python3 -m pip install --break-system-packages --no-cache-dir --upgrade pip \
+    && python3 -m pip install --break-system-packages --no-cache-dir --no-deps . \
+    && python3 -m pip install --break-system-packages --no-cache-dir "fastapi>=0.115.0" "httpx>=0.27.0" "numpy>=1.26" "uvicorn>=0.32.0" \
     && ln -sf /opt/audio.cpp/bin/audiocpp_cli /usr/local/bin/audiocpp_cli \
     && chmod 0755 /usr/local/bin/yue2-worker-entrypoint
 
