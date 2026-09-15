@@ -289,12 +289,13 @@ def install_callback_routes(app: FastAPI, worker: MossMusicWorker, config: MossM
         try:
             task.result()
         except asyncio.CancelledError:
-            print(json.dumps({"event": "moss_queue_job_cancelled"}), flush=True)
+            print(json.dumps({"event": "moss_queue_job_cancelled", "jobId": task.get_name().removeprefix("moss-job-")}), flush=True)
         except Exception as exc:
             print(
                 json.dumps(
                     {
                         "event": "moss_queue_job_failed",
+                        "jobId": task.get_name().removeprefix("moss-job-"),
                         "errorType": type(exc).__name__,
                         "error": str(exc),
                     }

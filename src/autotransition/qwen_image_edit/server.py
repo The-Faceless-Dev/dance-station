@@ -216,6 +216,17 @@ def create_qwen_image_edit_worker_app(
         worker.shutdown()
 
     app = FastAPI(title="Qwen Image Edit 2511 Worker", lifespan=lifespan)
+    background_tasks: set[asyncio.Task[Any]] = set()
+    app.state.qwen_image_edit_background_tasks = background_tasks
+
+    def _background_task_done(task: asyncio.Task[Any]) -> None:
+        background_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            print(json.dumps({"event": "qwen_image_edit_queue_job_cancelled", "jobId": task.get_name().removeprefix("qwen-edit-job-")}), flush=True)
+        except Exception as exc:
+            print(json.dumps({"event": "qwen_image_edit_queue_job_failed", "jobId": task.get_name().removeprefix("qwen-edit-job-"), "errorType": type(exc).__name__, "error": str(exc)}), flush=True)
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -266,13 +277,20 @@ def create_qwen_image_edit_worker_app(
         try:
             if payload.get("runtime") not in {None, "qwen-image-edit-2511", "qwen-image-edit", "qwen_image_edit"}:
                 raise ValueError(f"unsupported runtime: {payload.get('runtime')}")
-            return await _run_queue_job(payload, worker, config)
+            job_id = _job_id(payload)
+            _callback(payload)
         except HTTPException:
             raise
         except Exception as exc:
             job_id = str(payload.get("job_id") or "unknown")
             print(json.dumps({"event": "qwen_image_edit_queue_job_failed", "jobId": job_id, "errorType": type(exc).__name__, "error": str(exc)}), flush=True)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        task = asyncio.create_task(_run_queue_job(payload, worker, config), name=f"qwen-edit-job-{job_id}")
+        background_tasks.add(task)
+        task.add_done_callback(_background_task_done)
+        print(json.dumps({"event": "qwen_image_edit_queue_job_accepted", "jobId": job_id}), flush=True)
+        return {"schema_version": 1, "runtime": "qwen-image-edit-2511", "status": "accepted", "id": job_id, "job_id": job_id}
 
     app.state.qwen_image_edit_worker = worker
     return app

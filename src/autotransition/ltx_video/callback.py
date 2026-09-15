@@ -251,15 +251,34 @@ async def run_queue_job(payload: dict[str, Any], worker: LtxVideoWorker, config:
 
 
 def install_callback_routes(app: FastAPI, worker: LtxVideoWorker, config: LtxVideoConfig) -> None:
+    background_tasks: set[asyncio.Task[Any]] = set()
+    app.state.ltx_background_tasks = background_tasks
+
+    def _background_task_done(task: asyncio.Task[Any]) -> None:
+        background_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            print(json.dumps({"event": "ltx_queue_job_cancelled", "jobId": task.get_name().removeprefix("ltx-job-")}), flush=True)
+        except Exception as exc:
+            print(json.dumps({"event": "ltx_queue_job_failed", "jobId": task.get_name().removeprefix("ltx-job-"), "errorType": type(exc).__name__, "error": str(exc)}), flush=True)
+
     @app.post("/process")
     async def process(request: Request) -> dict[str, Any]:
         payload = await request.json()
         try:
             if payload.get("runtime") not in {None, "ltx-video", "ltx-video-worker", "ltx_2_5"}:
                 raise ValueError(f"unsupported runtime: {payload.get('runtime')}")
-            return await run_queue_job(payload, worker, config)
+            job_id = _job_id(payload)
+            _callback(payload)
         except HTTPException:
             raise
         except Exception as exc:
             print(json.dumps({"event": "ltx_queue_job_failed", "jobId": payload.get("job_id"), "errorType": type(exc).__name__, "error": str(exc)}), flush=True)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        task = asyncio.create_task(run_queue_job(payload, worker, config), name=f"ltx-job-{job_id}")
+        background_tasks.add(task)
+        task.add_done_callback(_background_task_done)
+        print(json.dumps({"event": "ltx_queue_job_accepted", "jobId": job_id}), flush=True)
+        return {"schema_version": 1, "runtime": "ltx-video", "status": "accepted", "id": job_id, "job_id": job_id}

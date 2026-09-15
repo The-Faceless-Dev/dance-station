@@ -169,18 +169,37 @@ async def _run_queue_job(payload: dict[str, Any], worker: QwenImageWorker, confi
 
 
 def install_process_routes(app: FastAPI, worker: QwenImageWorker, config: QwenImageConfig) -> FastAPI:
+    background_tasks: set[asyncio.Task[Any]] = set()
+    app.state.qwen_background_tasks = background_tasks
+
+    def _background_task_done(task: asyncio.Task[Any]) -> None:
+        background_tasks.discard(task)
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            print(json.dumps({"event": "qwen_image_queue_job_cancelled", "jobId": task.get_name().removeprefix("qwen-image-job-")}), flush=True)
+        except Exception as exc:
+            print(json.dumps({"event": "qwen_image_queue_job_failed", "jobId": task.get_name().removeprefix("qwen-image-job-"), "errorType": type(exc).__name__, "error": str(exc)}), flush=True)
+
     @app.post("/process")
     async def process(request: Request) -> dict[str, Any]:
         payload = await request.json()
         try:
             if payload.get("runtime") not in {None, "qwen-image", "qwen-image-worker", "qwen_image"}:
                 raise ValueError(f"unsupported runtime: {payload.get('runtime')}")
-            return await _run_queue_job(payload, worker, config)
+            job_id = _job_id(payload)
+            _callback(payload)
         except HTTPException:
             raise
         except Exception as exc:
             job_id = str(payload.get("job_id") or "unknown")
             print(json.dumps({"event": "qwen_image_queue_job_failed", "jobId": job_id, "errorType": type(exc).__name__, "error": str(exc)}), flush=True)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        task = asyncio.create_task(_run_queue_job(payload, worker, config), name=f"qwen-image-job-{job_id}")
+        background_tasks.add(task)
+        task.add_done_callback(_background_task_done)
+        print(json.dumps({"event": "qwen_image_queue_job_accepted", "jobId": job_id}), flush=True)
+        return {"schema_version": 1, "runtime": "qwen-image", "status": "accepted", "id": job_id, "job_id": job_id}
 
     return app
