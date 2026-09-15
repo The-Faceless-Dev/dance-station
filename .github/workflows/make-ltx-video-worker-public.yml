@@ -7,6 +7,8 @@ on:
       - wan-animate-int8-convrot-experiment
     paths:
       - .github/workflows/make-ltx-video-worker-public.yml
+      - .github/workflows/publish-ltx-video-worker-code-overlay.yml
+      - src/autotransition/ltx_video/**
 
 permissions:
   contents: read
