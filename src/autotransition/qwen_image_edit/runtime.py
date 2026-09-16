@@ -31,7 +31,7 @@ class QwenImageEditDiffusersRuntime:
             import torch
             import torchvision
             from diffusers import QwenImageEditPlusPipeline
-            from transformers import Qwen2VLVideoProcessor
+            from transformers import Qwen2VLProcessor
 
             report["runtimeVersions"] = {
                 "python": os.sys.version.split()[0],
@@ -50,7 +50,7 @@ class QwenImageEditDiffusersRuntime:
             }
             report["pipelineImports"] = {
                 "qwenImageEditPlusPipeline": QwenImageEditPlusPipeline.__name__,
-                "qwen2vlVideoProcessor": Qwen2VLVideoProcessor.__name__,
+                "qwen2vlProcessor": Qwen2VLProcessor.__name__,
             }
             if self.config.gpu_required and not report["cuda"]["available"]:
                 report["ready"] = False

@@ -9,5 +9,5 @@ def test_preflight_checks_edit_plus_dependencies() -> None:
 
     assert "import torchvision" in source
     assert "from diffusers import QwenImageEditPlusPipeline" in source
-    assert "from transformers import Qwen2VLVideoProcessor" in source
+    assert "from transformers import Qwen2VLProcessor" in source
     assert '"torchvision": torchvision.__version__' in source
