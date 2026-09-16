@@ -16,7 +16,7 @@ on:
       tag:
         description: Published Qwen Image worker tag
         required: true
-        default: qwen-image-2512-q8-20260913-diagnostic-r1
+        default: qwen-image-2512-q8-diffusers-20260916-r1
 
 permissions:
   contents: read
@@ -28,7 +28,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-qwen-image-worker
-  TAG: ${{ inputs.tag || 'qwen-image-2512-q8-20260913-diagnostic-r1' }}
+  TAG: ${{ inputs.tag || 'qwen-image-2512-q8-diffusers-20260916-r1' }}
 
 jobs:
   publish:
@@ -70,7 +70,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ contains(github.event.head_commit.message, 'Qwen FP8') && 'containers/qwen-image-worker/Dockerfile.fp8-encoder-test' || 'containers/qwen-image-worker/Dockerfile' }}
+          file: ${{ contains(github.event.head_commit.message, 'Qwen FP8') && 'containers/qwen-image-worker/Dockerfile.fp8-encoder-test' || 'containers/qwen-image-worker/Dockerfile.diffusers' }}
           target: runtime
           push: true
           provenance: false
