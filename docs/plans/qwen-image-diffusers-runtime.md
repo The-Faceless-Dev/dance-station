@@ -75,3 +75,10 @@ runtime installation and worker startup must be self-contained. The Docker
 build also avoids recursively changing ownership of the virtualenv, since the
 base image's venv contains interpreter symlinks that made the previous CI
 build fail in its final setup command.
+
+The first persistent image also exposed a Dockerfile path-order issue: source
+was copied before `WORKDIR /app` was set, while `PYTHONPATH` pointed at
+`/app/src`. The worker therefore restarted with
+`ModuleNotFoundError: autotransition` on RunPod. The image now sets
+`WORKDIR /app` before copying source, and the provider container log is part
+of the acceptance check for the next image.

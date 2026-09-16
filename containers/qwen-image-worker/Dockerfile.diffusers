@@ -59,6 +59,7 @@ RUN apt-get update \
        "peft>=0.14.0" \
        "uvicorn>=0.32.0"
 
+WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY containers/qwen-image-worker/entrypoint.sh /usr/local/bin/qwen-image-worker-entrypoint
@@ -68,7 +69,6 @@ RUN chmod 0755 /usr/local/bin/qwen-image-worker-entrypoint \
     && mkdir -p /models/qwen-image-2512 /var/lib/autotransition/qwen-image-jobs /var/lib/autotransition/qwen-image-loras /var/lib/autotransition/huggingface \
     && chown -R qwen:qwen /var/lib/autotransition
 
-WORKDIR /app
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
   CMD /opt/qwen-venv/bin/python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"
