@@ -58,3 +58,20 @@ worker HTTP contract and the native image worker as a rollback path.
   PNG validation.
 - Production-shaped request through `/process`, including artifact upload
   contract, before considering the replacement usable.
+
+## Persistent Image Correction (2026-09-16)
+
+The successful 2026-09-13 RunPod proof used a temporary startup bootstrap on a
+RunPod PyTorch image. It proved the Diffusers inference path, but it was not a
+published worker image. The persistent Qwen-Image-2512 target must therefore
+install the complete Python runtime in its Docker build and start the project
+worker directly; it must not depend on a `dockerStartCmd` bootstrap or on a
+commit-message-selected native Dockerfile.
+
+The model-bearing target continues to bake the verified Q8 transformer into
+the image. Official Diffusers pipeline files may be populated in the image's
+configured Hugging Face cache as part of image assembly or mounted cache, but
+runtime installation and worker startup must be self-contained. The Docker
+build also avoids recursively changing ownership of the virtualenv, since the
+base image's venv contains interpreter symlinks that made the previous CI
+build fail in its final setup command.

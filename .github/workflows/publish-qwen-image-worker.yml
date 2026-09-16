@@ -70,7 +70,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ${{ contains(github.event.head_commit.message, 'Qwen FP8') && 'containers/qwen-image-worker/Dockerfile.fp8-encoder-test' || 'containers/qwen-image-worker/Dockerfile.diffusers' }}
+          file: containers/qwen-image-worker/Dockerfile.diffusers
           target: runtime
           push: true
           provenance: false

@@ -66,7 +66,7 @@ COPY containers/qwen-image-worker/entrypoint.sh /usr/local/bin/qwen-image-worker
 RUN chmod 0755 /usr/local/bin/qwen-image-worker-entrypoint \
     && useradd --create-home --uid 10004 qwen \
     && mkdir -p /models/qwen-image-2512 /var/lib/autotransition/qwen-image-jobs /var/lib/autotransition/qwen-image-loras /var/lib/autotransition/huggingface \
-    && chown -R qwen:qwen /app /var/lib/autotransition /opt/qwen-venv
+    && chown -R qwen:qwen /app /var/lib/autotransition /models/qwen-image-2512
 
 WORKDIR /app
 EXPOSE 8080
