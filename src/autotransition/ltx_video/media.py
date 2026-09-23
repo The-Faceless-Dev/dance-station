@@ -99,7 +99,8 @@ def normalize_video_prefix(
     video_filter = (
         f"select=between(n\\,{start_frame}\\,{end_frame}),"
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,"
+        f"setpts=N/({frame_rate:.8f}*TB)"
     )
     command = [
         _ffmpeg(), "-y", "-loglevel", "error", "-i", str(source),
@@ -107,7 +108,6 @@ def normalize_video_prefix(
         "-fps_mode", "passthrough",
         "-frames:v", str(frame_count),
         "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "0",
-        "-r", f"{frame_rate:.8f}",
         str(destination),
     ]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
