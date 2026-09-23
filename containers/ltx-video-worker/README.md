@@ -119,6 +119,14 @@ Example request:
         "mode": "guide"
       }
     ],
+    "temporal_prefix": {
+      "source_url": "https://cdn.example/parent-output.mp4",
+      "start_frame": 24,
+      "frame_count": 25,
+      "source_frame_rate": 24,
+      "strength": 1.0,
+      "output_includes_prefix": true
+    },
     "output_format": "mp4"
   }
 }
@@ -128,6 +136,14 @@ Aspect presets are `16:9` (`1024x576`), `9:16` (`576x1024`), and `1:1`
 (`768x768`). Custom width and height are accepted when both are divisible by
 64, which is required by the two-stage pipeline. Frame counts are snapped to
 the LTX causal grid `8*K+1`.
+
+`temporal_prefix` is optional. When present, the worker extracts the exact
+source frame range, encodes it as a video latent prefix, and returns a child
+video containing those prefix frames followed by newly generated frames. The
+default prefix length is 25 frames and can be changed with
+`LTX_VIDEO_TEMPORAL_PREFIX_FRAMES` or per request. The client-side video-chain
+assembler uses the recorded prefix length to remove only those frames from the
+child before concatenation; the raw child remains a separate artifact.
 
 `negative_prompt` is rejected for the distilled profile because it runs with
 CFG 1; this is explicit rather than silently pretending to apply negative

@@ -42,3 +42,27 @@ def test_launcher_payload_preserves_aspect_conditioning_and_audio_mode() -> None
     assert request.resolve_frames(LtxVideoConfig()) == 73
     assert [(item.frame_index, item.mode) for item in request.conditioning_images] == [(0, "replace"), (48, "guide")]
     assert request.output_format == "webm"
+
+
+def test_launcher_payload_parses_temporal_prefix() -> None:
+    request = request_from_payload(
+        {
+            "job_id": "vast-job-prefix",
+            "parameters": {
+                "prompt": "continue the camera movement",
+                "num_frames": 73,
+                "temporal_prefix": {
+                    "source_url": "https://cdn.example/parent.mp4",
+                    "start_frame": 40,
+                    "frame_count": 25,
+                    "source_frame_rate": 24,
+                    "strength": 0.95,
+                    "output_includes_prefix": True,
+                },
+            },
+        }
+    )
+
+    assert request.temporal_prefix is not None
+    assert request.temporal_prefix.start_frame == 40
+    assert request.temporal_prefix.resolved_frame_count(LtxVideoConfig()) == 25

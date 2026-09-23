@@ -60,6 +60,60 @@ class LtxConditioningImage:
 
 
 @dataclass(frozen=True)
+class LtxTemporalPrefix:
+    """A VAE-aligned video prefix used for forward temporal extension."""
+
+    source_url: str = ""
+    filename: str = "temporal-prefix.mp4"
+    path: Path | None = None
+    start_frame: int = 0
+    frame_count: int | None = None
+    source_frame_rate: float | None = None
+    strength: float = 1.0
+
+    def validate(self, config: Any, output_frames: int) -> None:
+        if self.path is None:
+            parsed = urlsplit(self.source_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError("temporal prefix requires an HTTP(S) source_url or an allowed local path")
+        else:
+            if not config.allow_local_inputs:
+                raise ValueError("local temporal prefix inputs are disabled for this worker")
+            if not self.path.is_file():
+                raise ValueError(f"temporal prefix video was not found: {self.path}")
+        if self.start_frame < 0:
+            raise ValueError("temporal prefix start_frame cannot be negative")
+        if self.frame_count is None:
+            frame_count = config.temporal_prefix_frames
+        else:
+            frame_count = self.frame_count
+        if frame_count < 9 or (frame_count - 1) % 8 != 0:
+            raise ValueError("temporal prefix frame_count must be 8n+1 and at least 9")
+        if frame_count >= output_frames:
+            raise ValueError("temporal prefix must be shorter than the requested output")
+        if self.source_frame_rate is not None and (not math.isfinite(self.source_frame_rate) or self.source_frame_rate <= 0):
+            raise ValueError("temporal prefix source_frame_rate must be positive and finite")
+        if not math.isfinite(self.strength) or self.strength <= 0 or self.strength > 1:
+            raise ValueError("temporal prefix strength must be in the range (0, 1]")
+
+    def resolved_frame_count(self, config: Any) -> int:
+        return self.frame_count if self.frame_count is not None else config.temporal_prefix_frames
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sourceUrl": _safe_url(self.source_url),
+            "filename": Path(self.filename).name,
+            "path": str(self.path) if self.path else None,
+            "startFrame": self.start_frame,
+            "frameCount": self.frame_count,
+            "sourceFrameRate": self.source_frame_rate,
+            "strength": self.strength,
+            "mode": "prefix",
+            "outputIncludesPrefix": True,
+        }
+
+
+@dataclass(frozen=True)
 class LtxVideoRequest:
     prompt: str
     negative_prompt: str | None = None
@@ -73,6 +127,7 @@ class LtxVideoRequest:
     stage_2_steps: int | None = None
     seed: int | None = None
     conditioning_images: tuple[LtxConditioningImage, ...] = ()
+    temporal_prefix: LtxTemporalPrefix | None = None
     audio_mode: Literal["off", "generated", "source"] = "off"
     source_audio_url: str = ""
     source_audio_path: Path | None = None
@@ -156,6 +211,8 @@ class LtxVideoRequest:
             raise ValueError(f"at most {config.max_conditioning_images} conditioning images are supported")
         for item in self.conditioning_images:
             item.validate(config)
+        if self.temporal_prefix is not None:
+            self.temporal_prefix.validate(config, self.resolve_frames(config))
         if self.output_format not in {"mp4", "webm"}:
             raise ValueError("output_format must be mp4 or webm")
         if self.seed is not None and not 0 <= self.seed < 2**32:
@@ -166,6 +223,7 @@ class LtxVideoRequest:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["conditioning_images"] = [item.to_dict() for item in self.conditioning_images]
+        payload["temporal_prefix"] = self.temporal_prefix.to_dict() if self.temporal_prefix else None
         for key in ("source_audio_path",):
             if payload.get(key) is not None:
                 payload[key] = str(payload[key])

@@ -1,7 +1,7 @@
 # Code-only overlay for the already public, model-bearing LTX image.
 # Runtime fixes must not rebuild or redownload the 40+ GiB model bundle.
 
-ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-wan-animate-worker:ltx-2.5-nvfp4-5090-r1
+ARG BASE_IMAGE=ghcr.io/the-faceless-dev/faceless-ltx-video-worker:ltx-2.5-nvfp4-5090-r1
 FROM ${BASE_IMAGE}
 
 USER root

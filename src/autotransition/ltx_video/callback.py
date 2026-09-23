@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 
 from .config import LtxVideoConfig
-from .contracts import LtxConditioningImage, LtxVideoRequest
+from .contracts import LtxConditioningImage, LtxTemporalPrefix, LtxVideoRequest
 from .worker import LtxVideoWorker
 
 
@@ -86,6 +86,21 @@ def request_from_payload(payload: dict[str, Any]) -> LtxVideoRequest:
             mode=str(item.get("mode", "guide")),
             crf=int(item["crf"]) if item.get("crf") is not None else None,
         ))
+    raw_prefix = parameters.get("temporal_prefix") or parameters.get("temporalPrefix") or parameters.get("prefix_video") or parameters.get("prefixVideo")
+    temporal_prefix = None
+    if raw_prefix is not None:
+        if not isinstance(raw_prefix, dict):
+            raise ValueError("temporal_prefix must be an object")
+        source_url, path, filename = _source(raw_prefix, default_filename="temporal-prefix.mp4")
+        temporal_prefix = LtxTemporalPrefix(
+            source_url=source_url,
+            path=path,
+            filename=filename,
+            start_frame=int(raw_prefix.get("startFrame", raw_prefix.get("start_frame", 0))),
+            frame_count=int(raw_prefix["frameCount"]) if raw_prefix.get("frameCount") is not None else (int(raw_prefix["frame_count"]) if raw_prefix.get("frame_count") is not None else None),
+            source_frame_rate=float(raw_prefix["sourceFrameRate"]) if raw_prefix.get("sourceFrameRate") is not None else (float(raw_prefix["source_frame_rate"]) if raw_prefix.get("source_frame_rate") is not None else None),
+            strength=float(raw_prefix.get("strength", 1.0)),
+        )
     audio_value = parameters.get("audio")
     audio_mode = str(parameters.get("audio_mode") or parameters.get("audioMode") or "off")
     source_audio_url, source_audio_path = "", None
@@ -110,6 +125,7 @@ def request_from_payload(payload: dict[str, Any]) -> LtxVideoRequest:
         stage_2_steps=int(parameters["stage_2_steps"]) if parameters.get("stage_2_steps") is not None else None,
         seed=int(parameters["seed"]) if parameters.get("seed") is not None else None,
         conditioning_images=tuple(conditions),
+        temporal_prefix=temporal_prefix,
         audio_mode=audio_mode,
         source_audio_url=source_audio_url,
         source_audio_path=source_audio_path,

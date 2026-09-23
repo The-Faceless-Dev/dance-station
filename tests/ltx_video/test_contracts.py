@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from autotransition.ltx_video.config import LtxVideoConfig
-from autotransition.ltx_video.contracts import LtxVideoRequest
+from autotransition.ltx_video.contracts import LtxTemporalPrefix, LtxVideoRequest
 from autotransition.ltx_video.memory import build_memory_plan
 
 
@@ -40,6 +40,35 @@ def test_generated_audio_requires_audio_vae() -> None:
     config = replace(LtxVideoConfig(), audio_vae_path=None)
     with pytest.raises(ValueError, match="generated audio requires"):
         LtxVideoRequest(prompt="test", num_frames=25, audio_mode="generated").validate(config)
+
+
+def test_temporal_prefix_defaults_to_configured_overlap_and_requires_ltx_lattice() -> None:
+    config = LtxVideoConfig()
+    request = LtxVideoRequest(
+        prompt="continue the movement",
+        num_frames=73,
+        temporal_prefix=LtxTemporalPrefix(source_url="https://cdn.example/parent.mp4"),
+    )
+    request.validate(config)
+    assert request.temporal_prefix is not None
+    assert request.temporal_prefix.resolved_frame_count(config) == 25
+
+    with pytest.raises(ValueError, match=r"8n\+1"):
+        LtxVideoRequest(
+            prompt="continue",
+            num_frames=73,
+            temporal_prefix=LtxTemporalPrefix(source_url="https://cdn.example/parent.mp4", frame_count=24),
+        ).validate(config)
+
+
+def test_temporal_prefix_cannot_consume_the_output() -> None:
+    config = LtxVideoConfig()
+    with pytest.raises(ValueError, match="shorter than the requested output"):
+        LtxVideoRequest(
+            prompt="continue",
+            num_frames=25,
+            temporal_prefix=LtxTemporalPrefix(source_url="https://cdn.example/parent.mp4", frame_count=25),
+        ).validate(config)
 
 
 def test_memory_plan_exposes_vram_budget() -> None:

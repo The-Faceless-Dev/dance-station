@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from .config import LtxVideoConfig
 from .contracts import LtxVideoRequest
-from .media import acquire_input, mux_audio, transcode_video
+from .media import acquire_input, mux_audio, normalize_video_prefix, transcode_video
 from .memory import (
     assert_blackwell_for_nvfp4,
     build_memory_plan,
@@ -215,22 +215,24 @@ def _parse_ltx_imports() -> dict[str, Any]:
         from ltx_core.components.noisers import GaussianNoiser
         from ltx_core.loader import LTXV_LORA_COMFY_RENAMING_MAP, LoraPathStrengthAndSDOps
         from ltx_core.model.transformer import LTXVideoOnlyModelConfigurator
+        from ltx_core.conditioning import VideoConditionByLatentIndex
         from ltx_core.model.transformer.compiling import CompilationConfig
         from ltx_core.model.video_vae import AUTO_TILING, DimensionSizeConfig, TileSizeConfig, get_video_chunks_number
         from ltx_core.model.video_vae.transformer import DiffVAEMode
         from ltx_pipelines.distilled import DistilledPipeline, should_use_ancestral_sampler
         from ltx_pipelines.utils.args import ImageConditioningInput
-        from ltx_pipelines.utils.blocks import DiffusionStage, ImageConditioner, PromptEncoder, VideoDecoder, VideoUpsampler
+        from ltx_pipelines.utils.blocks import AudioDecoder, DiffusionStage, ImageConditioner, PromptEncoder, VideoDecoder, VideoUpsampler
         from ltx_pipelines.utils.constants import DISTILLED_SIGMAS, STAGE_2_DISTILLED_SIGMAS
         from ltx_pipelines.utils.denoisers import SimpleDenoiser
         from ltx_pipelines.utils.helpers import (
             assert_resolution,
+            combined_image_conditionings,
             ensure_tiling_config,
             image_conditionings_by_adding_guiding_latent,
             image_conditionings_by_replacing_latent,
             tiling_scale_factors_for_vae,
         )
-        from ltx_pipelines.utils.media_io import encode_audio, encode_video
+        from ltx_pipelines.utils.media_io import decode_video_by_frame, encode_audio, encode_video, video_preprocess
         from ltx_pipelines.utils.model_paths import ModelPaths
         from ltx_pipelines.utils.samplers import euler_ancestral_denoising_loop
         from ltx_pipelines.utils.types import ModalitySpec, OffloadMode, PipelineOutput
@@ -265,6 +267,7 @@ def _video_only_pipeline_factory(
     PromptEncoder = imports["PromptEncoder"]
     VideoDecoder = imports["VideoDecoder"]
     VideoUpsampler = imports["VideoUpsampler"]
+    AudioDecoder = imports["AudioDecoder"]
     LTXVideoOnlyModelConfigurator = imports["LTXVideoOnlyModelConfigurator"]
     ModelPaths = imports["ModelPaths"]
     ModalitySpec = imports["ModalitySpec"]
@@ -284,6 +287,9 @@ def _video_only_pipeline_factory(
     ensure_tiling_config = imports["ensure_tiling_config"]
     image_conditionings_by_adding_guiding_latent = imports["image_conditionings_by_adding_guiding_latent"]
     image_conditionings_by_replacing_latent = imports["image_conditionings_by_replacing_latent"]
+    VideoConditionByLatentIndex = imports["VideoConditionByLatentIndex"]
+    decode_video_by_frame = imports["decode_video_by_frame"]
+    video_preprocess = imports["video_preprocess"]
     tiling_scale_factors_for_vae = imports["tiling_scale_factors_for_vae"]
     PipelineOutput = imports["PipelineOutput"]
     encode_video = imports["encode_video"]
@@ -347,8 +353,8 @@ def _video_only_pipeline_factory(
             }
 
         @staticmethod
-        def _conditionings(images: list[tuple[Any, str]], *, height: int, width: int, conditioner: Any, dtype: Any, device: Any) -> list[Any]:
-            if not images:
+        def _conditionings(images: list[tuple[Any, str]], prefix_videos: list[tuple[str, float, int]], *, height: int, width: int, conditioner: Any, dtype: Any, device: Any) -> list[Any]:
+            if not images and not prefix_videos:
                 return []
             def build(encoder: Any) -> list[Any]:
                 replace_images = [item for item, mode in images if mode == "replace"]
@@ -358,6 +364,11 @@ def _video_only_pipeline_factory(
                     result.extend(image_conditionings_by_replacing_latent(replace_images, height, width, encoder, dtype, device))
                 if guide_images:
                     result.extend(image_conditionings_by_adding_guiding_latent(guide_images, height, width, encoder, dtype, device))
+                for path, strength, frame_count in prefix_videos:
+                    frame_gen = decode_video_by_frame(path=path, frame_cap=frame_count, device=device)
+                    video = video_preprocess(frame_gen, height, width, dtype, device)
+                    encoded = encoder(video)
+                    result.append(VideoConditionByLatentIndex(latent=encoded, strength=strength, latent_idx=0))
                 return result
             return conditioner(build)
 
@@ -392,7 +403,7 @@ def _video_only_pipeline_factory(
                 device=self.device,
             )
 
-        def __call__(self, *, prompt: str, seed: int, height: int, width: int, frame_rate: float, images: list[tuple[Any, str]], num_frames: int, stage_1_output: Path | None = None) -> Any:
+        def __call__(self, *, prompt: str, seed: int, height: int, width: int, frame_rate: float, images: list[tuple[Any, str]], prefix_videos: list[tuple[str, float, int]], num_frames: int, stage_1_output: Path | None = None) -> Any:
             assert_resolution(height=height, width=width, is_two_stage=True)
             generator = torch.Generator(device=self.device).manual_seed(seed)
             noiser = GaussianNoiser(generator=generator)
@@ -409,7 +420,7 @@ def _video_only_pipeline_factory(
             )
             stage_1_h, stage_1_w = height // 2, width // 2
             stage_1_conditionings = self._conditionings(
-                images, height=stage_1_h, width=stage_1_w, conditioner=self.image_conditioner,
+                images, prefix_videos, height=stage_1_h, width=stage_1_w, conditioner=self.image_conditioner,
                 dtype=self.dtype, device=self.device,
             )
             video_state, _ = self.stage(
@@ -457,7 +468,7 @@ def _video_only_pipeline_factory(
                 video=ModalitySpec(
                     context=video_context,
                     conditionings=self._conditionings(
-                        images, height=height, width=width, conditioner=self.image_conditioner,
+                        images, prefix_videos, height=height, width=width, conditioner=self.image_conditioner,
                         dtype=self.dtype, device=self.device,
                     ),
                     noise_scale=STAGE_2_DISTILLED_SIGMAS[0].item(),
@@ -472,6 +483,153 @@ def _video_only_pipeline_factory(
             return PipelineOutput(decoded, None, num_frames, tiling_config, None, video_state.latent)
 
     return VideoOnlyDistilledPipeline
+
+
+def _audio_video_pipeline_factory(
+    imports: dict[str, Any],
+    *,
+    enforce_fast_attention: bool,
+    vae_temporal_tile_frames: int,
+    vae_temporal_overlap_frames: int,
+) -> type:
+    """Build the generated-audio equivalent with the same temporal prefix path."""
+    torch = imports["torch"]
+    AllocatorTrimStrategy = imports["AllocatorTrimStrategy"]
+    GaussianNoiser = imports["GaussianNoiser"]
+    AudioDecoder = imports["AudioDecoder"]
+    DiffusionStage = imports["DiffusionStage"]
+    ImageConditioner = imports["ImageConditioner"]
+    PromptEncoder = imports["PromptEncoder"]
+    VideoDecoder = imports["VideoDecoder"]
+    VideoUpsampler = imports["VideoUpsampler"]
+    ModelPaths = imports["ModelPaths"]
+    ModalitySpec = imports["ModalitySpec"]
+    SimpleDenoiser = imports["SimpleDenoiser"]
+    VideoConditionByLatentIndex = imports["VideoConditionByLatentIndex"]
+    decode_video_by_frame = imports["decode_video_by_frame"]
+    video_preprocess = imports["video_preprocess"]
+    AUTO_TILING = imports["AUTO_TILING"]
+    DimensionSizeConfig = imports["DimensionSizeConfig"]
+    TileSizeConfig = imports["TileSizeConfig"]
+    DiffVAEMode = imports["DiffVAEMode"]
+    should_use_ancestral_sampler = imports["should_use_ancestral_sampler"]
+    EulerAncestralDiffusionStep = __import__(
+        "ltx_core.components.diffusion_steps", fromlist=["EulerAncestralDiffusionStep"]
+    ).EulerAncestralDiffusionStep
+    euler_ancestral_denoising_loop = imports["euler_ancestral_denoising_loop"]
+    DISTILLED_SIGMAS = imports["DISTILLED_SIGMAS"]
+    STAGE_2_DISTILLED_SIGMAS = imports["STAGE_2_DISTILLED_SIGMAS"]
+    assert_resolution = imports["assert_resolution"]
+    ensure_tiling_config = imports["ensure_tiling_config"]
+    image_conditionings_by_adding_guiding_latent = imports["image_conditionings_by_adding_guiding_latent"]
+    image_conditionings_by_replacing_latent = imports["image_conditionings_by_replacing_latent"]
+    tiling_scale_factors_for_vae = imports["tiling_scale_factors_for_vae"]
+    PipelineOutput = imports["PipelineOutput"]
+
+    class AudioVideoDistilledPipeline:
+        def __init__(self, model_paths: Any, spatial_upsampler_path: str, loras: list[Any], device: Any, quantization: Any, offload_mode: Any, compilation_config: Any, progress: ProgressCallback):
+            self.device = device
+            self.dtype = torch.bfloat16
+            self.progress = progress
+            self.prompt_encoder = _ScopedPromptEncoder(
+                PromptEncoder(model_paths, self.dtype, device, offload_mode=offload_mode, alloc_trim_strategy=AllocatorTrimStrategy.TRIM),
+                torch,
+                enforce_fast_attention=enforce_fast_attention,
+                progress=progress,
+            )
+            self.image_conditioner = ImageConditioner(model_paths.video_vae(), self.dtype, device, alloc_trim_strategy=AllocatorTrimStrategy.TRIM)
+            self.stage = DiffusionStage.from_checkpoint(
+                model_paths.transformer(), self.dtype, device, loras=tuple(loras), quantization=quantization,
+                offload_mode=offload_mode, compilation_config=compilation_config,
+                alloc_trim_strategy=AllocatorTrimStrategy.TRIM,
+            )
+            self.upsampler = VideoUpsampler(model_paths.video_vae(), spatial_upsampler_path, self.dtype, device, alloc_trim_strategy=AllocatorTrimStrategy.TRIM)
+            self.video_decoder = VideoDecoder(model_paths.video_vae(), self.dtype, device, alloc_trim_strategy=AllocatorTrimStrategy.TRIM, diffvae_optimization=DiffVAEMode.CHUNKED_EAGER)
+            self.audio_decoder = AudioDecoder(model_paths.audio_vae(), self.dtype, device, alloc_trim_strategy=AllocatorTrimStrategy.TRIM)
+            self.use_ancestral_sampler = should_use_ancestral_sampler(model_paths.transformer())
+
+        @staticmethod
+        def _conditionings(images: list[Any], prefix_videos: list[tuple[str, float, int]], *, height: int, width: int, conditioner: Any, dtype: Any, device: Any) -> list[Any]:
+            if not images and not prefix_videos:
+                return []
+
+            def build(encoder: Any) -> list[Any]:
+                replace_images = [item for item, mode in images if mode == "replace"]
+                guide_images = [item for item, mode in images if mode == "guide"]
+                result: list[Any] = []
+                if replace_images:
+                    result.extend(image_conditionings_by_replacing_latent(replace_images, height, width, encoder, dtype, device))
+                if guide_images:
+                    result.extend(image_conditionings_by_adding_guiding_latent(guide_images, height, width, encoder, dtype, device))
+                for path, strength, frame_count in prefix_videos:
+                    frame_gen = decode_video_by_frame(path=path, frame_cap=frame_count, device=device)
+                    video = video_preprocess(frame_gen, height, width, dtype, device)
+                    result.append(VideoConditionByLatentIndex(latent=encoder(video), strength=strength, latent_idx=0))
+                return result
+
+            return conditioner(build)
+
+        def _stage_1_sampler_kwargs(self, seed: int) -> dict[str, Any]:
+            if not self.use_ancestral_sampler:
+                return {}
+            return {
+                "stepper": EulerAncestralDiffusionStep(eta=1.0, s_noise=1.0),
+                "loop": __import__("functools").partial(euler_ancestral_denoising_loop, noise_seed=seed + 10000, model_dtype=self.dtype),
+            }
+
+        def _tiling_config(self, *, scale_factors: Any, height: int, width: int, frames: int) -> Any:
+            auto_config = ensure_tiling_config(
+                AUTO_TILING, scale_factors=scale_factors, vae_checkpoint_path=self.video_decoder.checkpoint_path,
+                video_shape=__import__("ltx_core.types", fromlist=["VideoPixelShape"]).VideoPixelShape(batch=1, frames=frames, height=height, width=width, fps=24.0),
+                diffvae_optimization=self.video_decoder.diffvae_optimization, device=self.device,
+            )
+            if auto_config is None:
+                return None
+            bounded = TileSizeConfig(
+                frames=DimensionSizeConfig(tile_size=vae_temporal_tile_frames, overlap=vae_temporal_overlap_frames),
+                height=auto_config.height,
+                width=auto_config.width,
+            )
+            return ensure_tiling_config(
+                bounded, scale_factors=scale_factors, vae_checkpoint_path=self.video_decoder.checkpoint_path,
+                video_shape=__import__("ltx_core.types", fromlist=["VideoPixelShape"]).VideoPixelShape(batch=1, frames=frames, height=height, width=width, fps=24.0),
+                diffvae_optimization=self.video_decoder.diffvae_optimization, device=self.device,
+            )
+
+        def __call__(self, *, prompt: str, seed: int, height: int, width: int, frame_rate: float, images: list[Any], prefix_videos: list[tuple[str, float, int]], num_frames: int) -> Any:
+            assert_resolution(height=height, width=width, is_two_stage=True)
+            generator = torch.Generator(device=self.device).manual_seed(seed)
+            noiser = GaussianNoiser(generator=generator)
+            (ctx_p,) = self.prompt_encoder([prompt])
+            video_context = ctx_p.video_encoding
+            audio_context = ctx_p.audio_encoding
+            scale_factors = tiling_scale_factors_for_vae(self.video_decoder.checkpoint_path)
+            tiling_config = self._tiling_config(scale_factors=scale_factors, height=height, width=width, frames=num_frames)
+            stage_1_h, stage_1_w = height // 2, width // 2
+            stage_1_conditionings = self._conditionings(images, prefix_videos, height=stage_1_h, width=stage_1_w, conditioner=self.image_conditioner, dtype=self.dtype, device=self.device)
+            video_state, audio_state = self.stage(
+                denoiser=SimpleDenoiser(video_context, audio_context), sigmas=DISTILLED_SIGMAS.to(dtype=torch.float32, device=self.device),
+                noiser=noiser, width=stage_1_w, height=stage_1_h, frames=num_frames, fps=frame_rate,
+                video=ModalitySpec(context=video_context, conditionings=stage_1_conditionings),
+                audio=ModalitySpec(context=audio_context), **self._stage_1_sampler_kwargs(seed),
+            )
+            if video_state is None or audio_state is None:
+                raise RuntimeError("LTX audio-video stage 1 returned no state")
+            upscaled = self.upsampler(video_state.latent[:1])
+            stage_2_conditionings = self._conditionings(images, prefix_videos, height=height, width=width, conditioner=self.image_conditioner, dtype=self.dtype, device=self.device)
+            video_state, audio_state = self.stage(
+                denoiser=SimpleDenoiser(video_context, audio_context), sigmas=STAGE_2_DISTILLED_SIGMAS.to(dtype=torch.float32, device=self.device),
+                noiser=noiser, width=width, height=height, frames=num_frames, fps=frame_rate,
+                video=ModalitySpec(context=video_context, conditionings=stage_2_conditionings, noise_scale=STAGE_2_DISTILLED_SIGMAS[0].item(), initial_latent=upscaled),
+                audio=ModalitySpec(context=audio_context, noise_scale=STAGE_2_DISTILLED_SIGMAS[0].item(), initial_latent=audio_state.latent),
+            )
+            if video_state is None or audio_state is None:
+                raise RuntimeError("LTX audio-video stage 2 returned no state")
+            decoded = self.video_decoder(video_state.latent, tiling_config, generator, dtype=self.dtype)
+            audio = self.audio_decoder(audio_state.latent)
+            return PipelineOutput(decoded, audio, num_frames, tiling_config, None, video_state.latent)
+
+    return AudioVideoDistilledPipeline
 
 
 class LtxVideoRuntime:
@@ -631,7 +789,7 @@ class LtxVideoRuntime:
             quantization=self.config.quantization,
             reserve_vram_gb=self.config.reserve_vram_gb,
             device=self.config.device,
-            conditioning_count=len(request.conditioning_images),
+            conditioning_count=len(request.conditioning_images) + (1 if request.temporal_prefix else 0),
             vae_temporal_tile_frames=self.config.vae_temporal_tile_frames,
         )
         if not memory_plan["gpu"].get("available", False) and self.config.gpu_required:
@@ -669,6 +827,45 @@ class LtxVideoRuntime:
                 item.mode,
             ))
             report("normalize_inputs", (index + 1) / max(1, len(request.conditioning_images)), f"Normalized conditioning image {index + 1}/{len(request.conditioning_images)}")
+        normalized_prefixes: list[tuple[str, float, int]] = []
+        temporal_prefix_metadata: dict[str, Any] | None = None
+        if request.temporal_prefix is not None:
+            prefix_frame_count = request.temporal_prefix.resolved_frame_count(self.config)
+            prefix_source = acquire_input(
+                request.temporal_prefix.source_url,
+                request.temporal_prefix.path,
+                attempt_dir / "temporal-prefix-source",
+                self.config,
+            )
+            prefix_path = attempt_dir / "temporal-prefix.mp4"
+            normalize_video_prefix(
+                prefix_source,
+                prefix_path,
+                width=width,
+                height=height,
+                frame_rate=request.frame_rate,
+                start_frame=request.temporal_prefix.start_frame,
+                frame_count=prefix_frame_count,
+                source_frame_rate=request.temporal_prefix.source_frame_rate,
+            )
+            normalized_prefixes.append((str(prefix_path), request.temporal_prefix.strength, prefix_frame_count))
+            temporal_prefix_metadata = {
+                **request.temporal_prefix.to_dict(),
+                "frameCount": prefix_frame_count,
+                "normalizedPath": str(prefix_path),
+                "normalizedStartFrame": 0,
+                "outputIncludesPrefix": True,
+            }
+            report(
+                "normalize_inputs",
+                1.0,
+                f"Normalized temporal prefix ({prefix_frame_count} frames)",
+                {
+                    "startFrame": request.temporal_prefix.start_frame,
+                    "frameCount": prefix_frame_count,
+                    "strength": request.temporal_prefix.strength,
+                },
+            )
         source_audio: Path | None = None
         if request.audio_mode == "source":
             source_audio = acquire_input(request.source_audio_url, request.source_audio_path, attempt_dir / "source-audio", self.config)
@@ -694,15 +891,33 @@ class LtxVideoRuntime:
             if request.audio_mode == "generated":
                 if not self.config.audio_vae_path:
                     raise LtxRuntimeError("audio_model_missing", "generated audio requires an audio VAE path", stage="load_models")
-                pipeline = imports["DistilledPipeline"](
-                    model_paths=model_paths,
-                    spatial_upsampler_path=str(self.config.spatial_upsampler_path),
-                    loras=loras,
-                    device=device,
-                    quantization=quantization,
-                    offload_mode=offload_mode,
-                    compilation_config=compilation,
-                )
+                if normalized_prefixes:
+                    pipeline_cls = _audio_video_pipeline_factory(
+                        imports,
+                        enforce_fast_attention=self.config.enforce_fast_attention,
+                        vae_temporal_tile_frames=self.config.vae_temporal_tile_frames,
+                        vae_temporal_overlap_frames=self.config.vae_temporal_overlap_frames,
+                    )
+                    pipeline = pipeline_cls(
+                        model_paths=model_paths,
+                        spatial_upsampler_path=str(self.config.spatial_upsampler_path),
+                        loras=loras,
+                        device=device,
+                        quantization=quantization,
+                        offload_mode=offload_mode,
+                        compilation_config=compilation,
+                        progress=report,
+                    )
+                else:
+                    pipeline = imports["DistilledPipeline"](
+                        model_paths=model_paths,
+                        spatial_upsampler_path=str(self.config.spatial_upsampler_path),
+                        loras=loras,
+                        device=device,
+                        quantization=quantization,
+                        offload_mode=offload_mode,
+                        compilation_config=compilation,
+                    )
                 pipeline.prompt_encoder = _ScopedPromptEncoder(
                     pipeline.prompt_encoder,
                     torch,
@@ -732,10 +947,25 @@ class LtxVideoRuntime:
             # The upstream call includes prompt encoding; this event brackets that work.
             stage_1_output = output_dir / "stage-1.mp4" if retain_intermediates and request.audio_mode != "generated" else None
             pipeline_images = (
-                [image for image, _mode in normalized_images]
+                normalized_images
+                if request.audio_mode == "generated" and normalized_prefixes
+                else [image for image, _mode in normalized_images]
                 if request.audio_mode == "generated"
                 else normalized_images
             )
+            pipeline_kwargs: dict[str, Any] = {
+                "prompt": request.prompt,
+                "seed": seed,
+                "height": height,
+                "width": width,
+                "frame_rate": request.frame_rate,
+                "images": pipeline_images,
+                "num_frames": frames,
+            }
+            if normalized_prefixes:
+                pipeline_kwargs["prefix_videos"] = normalized_prefixes
+            if stage_1_output is not None:
+                pipeline_kwargs["stage_1_output"] = stage_1_output
             # The upstream LTX VAE uses a custom convolution path that can
             # attempt to save an input tensor for backward even during its
             # inference-only decode. ``inference_mode`` creates immutable
@@ -747,14 +977,7 @@ class LtxVideoRuntime:
             # feature map and caused the 46.6 GB allocator spike.
             with torch.no_grad():
                 result = pipeline(
-                    prompt=request.prompt,
-                    seed=seed,
-                    height=height,
-                    width=width,
-                    frame_rate=request.frame_rate,
-                    images=pipeline_images,
-                    num_frames=frames,
-                    **({"stage_1_output": stage_1_output} if stage_1_output is not None else {}),
+                    **pipeline_kwargs,
                 )
                 report("encode_prompt", 1.0, "Prompt encoded")
                 report("stage_1_denoise", 1.0, "Stage 1 denoising complete")
@@ -802,6 +1025,7 @@ class LtxVideoRuntime:
                     {**item.to_dict(), "normalizedPath": str(output_dir / "inputs" / f"conditioning-{index:02d}.png")}
                     for index, item in enumerate(request.conditioning_images)
                 ],
+                "temporalPrefix": temporal_prefix_metadata,
             }
             (output_dir / "conditioning-manifest.json").write_text(json.dumps(conditioning_manifest, indent=2, default=str) + "\n", encoding="utf-8")
             metadata = {
@@ -821,6 +1045,9 @@ class LtxVideoRuntime:
                 "conditioning": [item.to_dict() for item in request.conditioning_images],
                 "conditioningCount": len(request.conditioning_images),
                 "conditioningManifest": "conditioning-manifest.json",
+                "temporalPrefix": temporal_prefix_metadata,
+                "outputIncludesTemporalPrefix": bool(temporal_prefix_metadata),
+                "temporalPrefixFrames": temporal_prefix_metadata.get("frameCount", 0) if temporal_prefix_metadata else 0,
                 "loras": list(request.loras),
                 "quantization": self.config.quantization,
                 "offloadMode": self.config.offload_mode,

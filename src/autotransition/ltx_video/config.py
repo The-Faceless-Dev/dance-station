@@ -47,6 +47,7 @@ class LtxVideoConfig:
     max_frames: int = 0
     max_duration_seconds: float = 0.0
     max_conditioning_images: int = 9
+    temporal_prefix_frames: int = 25
     max_download_bytes: int = 2 * 1024 * 1024 * 1024
     request_timeout_seconds: float = 3600.0
     job_timeout_seconds: float = 3900.0
@@ -107,6 +108,7 @@ class LtxVideoConfig:
             max_frames=int(os.getenv("LTX_VIDEO_MAX_FRAMES", str(cls.max_frames))),
             max_duration_seconds=float(os.getenv("LTX_VIDEO_MAX_DURATION_SECONDS", str(cls.max_duration_seconds))),
             max_conditioning_images=int(os.getenv("LTX_VIDEO_MAX_CONDITIONING_IMAGES", str(cls.max_conditioning_images))),
+            temporal_prefix_frames=int(os.getenv("LTX_VIDEO_TEMPORAL_PREFIX_FRAMES", str(cls.temporal_prefix_frames))),
             max_download_bytes=int(os.getenv("LTX_VIDEO_MAX_DOWNLOAD_BYTES", str(cls.max_download_bytes))),
             request_timeout_seconds=float(os.getenv("LTX_VIDEO_REQUEST_TIMEOUT_SECONDS", str(cls.request_timeout_seconds))),
             job_timeout_seconds=float(os.getenv("LTX_VIDEO_JOB_TIMEOUT_SECONDS", str(cls.job_timeout_seconds))),
@@ -150,6 +152,8 @@ class LtxVideoConfig:
             raise ValueError("LTX video limits cannot be negative")
         if self.max_conditioning_images < 0 or self.max_download_bytes <= 0:
             raise ValueError("LTX video input limits are invalid")
+        if self.temporal_prefix_frames < 9 or (self.temporal_prefix_frames - 1) % 8 != 0:
+            raise ValueError("LTX_VIDEO_TEMPORAL_PREFIX_FRAMES must be 8n+1 and at least 9")
         if self.request_timeout_seconds <= 0 or self.job_timeout_seconds <= 0:
             raise ValueError("LTX video timeouts must be positive")
         for name, path in {

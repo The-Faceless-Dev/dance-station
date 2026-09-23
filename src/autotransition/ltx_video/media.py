@@ -81,6 +81,43 @@ def normalize_image(source: Path, destination: Path, *, width: int, height: int)
     return destination
 
 
+def normalize_video_prefix(
+    source: Path,
+    destination: Path,
+    *,
+    width: int,
+    height: int,
+    frame_rate: float,
+    start_frame: int,
+    frame_count: int,
+    source_frame_rate: float | None = None,
+) -> Path:
+    """Extract an exact, normalized prefix without inventing or dropping frames."""
+    if start_frame < 0 or frame_count < 1:
+        raise LtxMediaError("temporal prefix frame range is invalid")
+    end_frame = start_frame + frame_count - 1
+    video_filter = (
+        f"select=between(n\\,{start_frame}\\,{end_frame}),"
+        f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+    )
+    command = [
+        _ffmpeg(), "-y", "-loglevel", "error", "-i", str(source),
+        "-vf", video_filter,
+        "-fps_mode", "passthrough",
+        "-frames:v", str(frame_count),
+        "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "0",
+        "-r", f"{frame_rate:.8f}",
+        str(destination),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    if result.returncode:
+        raise LtxMediaError(f"temporal prefix normalization failed: {result.stderr[-2000:]}")
+    if not destination.is_file() or destination.stat().st_size <= 0:
+        raise LtxMediaError("temporal prefix normalization produced no video")
+    return destination
+
+
 def probe(path: Path) -> dict[str, object]:
     command = [_ffprobe(), "-v", "error", "-print_format", "json", "-show_streams", "-show_format", str(path)]
     result = subprocess.run(command, capture_output=True, text=True, check=False)
