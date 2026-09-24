@@ -4,6 +4,8 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$MirrorRepository = "comfyicu/LTX-2.5",
     [Parameter(Mandatory = $false)]
+    [string]$TextEncoderRepository = "FusionCow/Gemma-3-12b-Abliterated-LTX2",
+    [Parameter(Mandatory = $false)]
     [int]$PollSeconds = 30
 )
 
@@ -16,7 +18,7 @@ $aria = (Get-Command aria2c -ErrorAction Stop).Source
 
 $files = @(
     @{ Relative = "diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors"; Bytes = 18721732720 },
-    @{ Relative = "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"; Bytes = 26263860594 },
+    @{ Relative = "text_encoders/gemma_ablit_fixed_bf16.safetensors"; Remote = "gemma_ablit_fixed_bf16.safetensors"; Repository = $TextEncoderRepository; Bytes = 23536831338 },
     @{ Relative = "vae/ltx-2.5-video-vae-conv-bf16.safetensors"; Bytes = 1452269922 },
     @{ Relative = "vae/ltx-2.5-audio-vae-bf16.safetensors"; Bytes = 364866540 },
     @{ Relative = "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"; Bytes = 995778752 }
@@ -49,7 +51,9 @@ function Wait-ForFile([hashtable]$Spec) {
         return
     }
 
-    $url = "https://huggingface.co/$MirrorRepository/resolve/main/$relative`?download=true"
+    $repository = if ($Spec.Repository) { $Spec.Repository } else { $MirrorRepository }
+    $remote = if ($Spec.Remote) { $Spec.Remote } else { $relative }
+    $url = "https://huggingface.co/$repository/resolve/main/$remote`?download=true"
     $arguments = @(
         "--dir", (Split-Path -Parent $target),
         "--out", $outputName,

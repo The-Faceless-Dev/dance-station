@@ -21,6 +21,8 @@ env:
   # displayed with capital letters.
   IMAGE: ghcr.io/the-faceless-dev/faceless-ltx-video-worker
   MODEL_REPOSITORY: comfyicu/LTX-2.5
+  TEXT_ENCODER_REPOSITORY: FusionCow/Gemma-3-12b-Abliterated-LTX2
+  TEXT_ENCODER_FILE: gemma_ablit_fixed_bf16.safetensors
 
 jobs:
   publish:
@@ -83,6 +85,8 @@ jobs:
             --file containers/ltx-video-worker/Dockerfile.registry \
             --build-arg BASE_IMAGE="$IMAGE:$BASE_TAG" \
             --build-arg MODEL_REPOSITORY="$MODEL_REPOSITORY" \
+            --build-arg TEXT_ENCODER_REPOSITORY="$TEXT_ENCODER_REPOSITORY" \
+            --build-arg TEXT_ENCODER_FILE="$TEXT_ENCODER_FILE" \
             --platform linux/amd64 \
             --tag "$IMAGE:$TAG" \
             --provenance=false \

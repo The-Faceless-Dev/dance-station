@@ -21,7 +21,7 @@ class LtxVideoConfig:
     artifact_root: Path = Path("data/ltx-video-jobs")
     model_root: Path = Path("models/ltx-2.5")
     transformer_path: Path = Path("models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors")
-    text_encoder_path: Path = Path("models/ltx-2.5/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors")
+    text_encoder_path: Path = Path("models/ltx-2.5/text_encoders/gemma_ablit_fixed_bf16.safetensors")
     video_vae_path: Path = Path("models/ltx-2.5/vae/ltx-2.5-video-vae-conv-bf16.safetensors")
     spatial_upsampler_path: Path = Path("models/ltx-2.5/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors")
     # Included in the image for generated-audio requests, but never loaded by the
@@ -76,7 +76,7 @@ class LtxVideoConfig:
             ),
             text_encoder_path=_path(
                 "LTX_VIDEO_TEXT_ENCODER_PATH",
-                str(root / "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"),
+                str(root / "text_encoders/gemma_ablit_fixed_bf16.safetensors"),
             ),
             video_vae_path=_path(
                 "LTX_VIDEO_VAE_PATH",

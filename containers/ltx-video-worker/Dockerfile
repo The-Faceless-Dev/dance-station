@@ -13,7 +13,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src:/opt/ltx2/packages/ltx-core/src:/opt/ltx2/packages/ltx-pipelines/src \
     LTX_VIDEO_MODEL_ROOT=/models/ltx-2.5 \
     LTX_VIDEO_TRANSFORMER_PATH=/models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors \
-    LTX_VIDEO_TEXT_ENCODER_PATH=/models/ltx-2.5/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors \
+    LTX_VIDEO_TEXT_ENCODER_PATH=/models/ltx-2.5/text_encoders/gemma_ablit_fixed_bf16.safetensors \
     LTX_VIDEO_VAE_PATH=/models/ltx-2.5/vae/ltx-2.5-video-vae-conv-bf16.safetensors \
     LTX_VIDEO_AUDIO_VAE_PATH=/models/ltx-2.5/vae/ltx-2.5-audio-vae-bf16.safetensors \
     LTX_VIDEO_SPATIAL_UPSAMPLER_PATH=/models/ltx-2.5/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors \
@@ -85,8 +85,8 @@ COPY --from=ltxmodels / /models/ltx-2.5/
 
 RUN test -s /models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors \
     && test "$(stat -c '%s' /models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors)" = "18721732720" \
-    && test -s /models/ltx-2.5/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors \
-    && test "$(stat -c '%s' /models/ltx-2.5/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors)" = "26263860594" \
+    && test -s /models/ltx-2.5/text_encoders/gemma_ablit_fixed_bf16.safetensors \
+    && test "$(stat -c '%s' /models/ltx-2.5/text_encoders/gemma_ablit_fixed_bf16.safetensors)" = "23536831338" \
     && test -s /models/ltx-2.5/vae/ltx-2.5-video-vae-conv-bf16.safetensors \
     && test "$(stat -c '%s' /models/ltx-2.5/vae/ltx-2.5-video-vae-conv-bf16.safetensors)" = "1452269922" \
     && test -s /models/ltx-2.5/vae/ltx-2.5-audio-vae-bf16.safetensors \

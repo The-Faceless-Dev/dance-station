@@ -7,6 +7,8 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG MODEL_REPOSITORY=comfyicu/LTX-2.5
+ARG TEXT_ENCODER_REPOSITORY=FusionCow/Gemma-3-12b-Abliterated-LTX2
+ARG TEXT_ENCODER_FILE=gemma_ablit_fixed_bf16.safetensors
 
 USER root
 ENV HF_HOME=/tmp/huggingface \
@@ -26,10 +28,10 @@ RUN hf download "${MODEL_REPOSITORY}" \
       --local-dir /models/ltx-2.5 \
     && test "$(stat -c '%s' /models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors)" = "18721732720"
 
-RUN hf download "${MODEL_REPOSITORY}" \
-      text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors \
-      --local-dir /models/ltx-2.5 \
-    && test "$(stat -c '%s' /models/ltx-2.5/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors)" = "26263860594"
+RUN hf download "${TEXT_ENCODER_REPOSITORY}" \
+      "${TEXT_ENCODER_FILE}" \
+      --local-dir /models/ltx-2.5/text_encoders \
+    && test "$(stat -c '%s' /models/ltx-2.5/text_encoders/${TEXT_ENCODER_FILE})" = "23536831338"
 
 RUN hf download "${MODEL_REPOSITORY}" \
       vae/ltx-2.5-video-vae-conv-bf16.safetensors \

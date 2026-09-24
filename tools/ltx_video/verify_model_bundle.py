@@ -7,7 +7,7 @@ from pathlib import Path
 
 EXPECTED_FILES = {
     Path("diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors"): 18_721_732_720,
-    Path("text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"): 26_263_860_594,
+    Path("text_encoders/gemma_ablit_fixed_bf16.safetensors"): 23_536_831_338,
     Path("vae/ltx-2.5-video-vae-conv-bf16.safetensors"): 1_452_269_922,
     Path("vae/ltx-2.5-audio-vae-bf16.safetensors"): 364_866_540,
     Path("latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"): 995_778_752,

@@ -37,12 +37,14 @@ The model-bearing context must have this layout:
 ```text
 ltx-2.5/
   diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors
-  text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors
+  text_encoders/gemma_ablit_fixed_bf16.safetensors
   vae/ltx-2.5-video-vae-conv-bf16.safetensors
   vae/ltx-2.5-audio-vae-bf16.safetensors
   latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors
 ```
 
+The text encoder is the abliterated LTX-compatible Gemma checkpoint; the stock
+Gemma encoder is intentionally not included or configured as a fallback.
 These are the complete required model components for the supported profiles.
 The duration head is intentionally not bundled because this API requires an
 explicit frame count or duration and resolves that to the LTX temporal grid
