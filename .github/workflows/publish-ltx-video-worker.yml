@@ -1,6 +1,13 @@
 name: Publish LTX video worker
 
 on:
+  push:
+    branches:
+      - wan-animate-int8-convrot-experiment
+    paths:
+      - containers/ltx-video-worker/Dockerfile
+      - containers/ltx-video-worker/Dockerfile.registry
+      - .github/workflows/publish-ltx-video-worker.yml
   workflow_dispatch:
     inputs:
       tag:
