@@ -30,7 +30,9 @@ and can be packaged as a public model-bearing GHCR image for Vast or RunPod.
   declared artifact through the same callback contract used by the other workers.
 - Add a model-bearing Docker build and GitHub Actions workflow using the public
   GHCR package `faceless-mulacover-worker`, pinned source/model revisions, and an
-  anonymous manifest verification step.
+  anonymous manifest verification step. Package visibility is handled by a
+  separate repository-credential workflow because GHCR visibility is
+  package-level and must not be folded into the model publish workflow.
 
 ## Verification
 
