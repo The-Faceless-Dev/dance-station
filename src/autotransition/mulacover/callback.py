@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
+from urllib.parse import urlsplit
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request

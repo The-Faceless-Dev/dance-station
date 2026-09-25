@@ -64,6 +64,17 @@ def test_reference_audio_can_omit_lyrics_for_automatic_transcription() -> None:
     assert request.conditioning_mode == "reference_audio"
 
 
+def test_reference_audio_url_string_is_accepted_for_automatic_transcription() -> None:
+    request = request_from_payload({
+        "job_id": "job-auto-lyrics-url",
+        "tags": "genre:[techno]",
+        "ref_audio_url": "https://example.test/reference.mp3",
+    })
+    request.validate(_config(Path(".")))
+    assert request.ref_audio_url == "https://example.test/reference.mp3"
+    assert request.lyrics == ""
+
+
 def test_midi_conditioning_still_requires_explicit_lyrics() -> None:
     with pytest.raises(ValueError, match="lyrics"):
         request_from_payload({
