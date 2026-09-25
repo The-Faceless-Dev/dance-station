@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import time
 import urllib.request
 from pathlib import Path
 
@@ -12,7 +14,10 @@ REPOSITORIES = (
     ("HeartMuLa/HeartCodec-oss-20260123", "f889dab0532cfa4bf459f2a3367eb6d346b8eeda", "HeartCodec-oss"),
     ("Qwen/Qwen3-Embedding-0.6B", "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3", "Qwen3-Embedding-0.6B"),
 )
-YOURMT3_URL = "https://huggingface.co/spaces/mimbres/YourMT3/resolve/5e66c1ea173a8186e0d20432b841d3180cc015b4/amt/logs/2024/mc13_256_g4_all_v7_mt3f_sqr_rms_moe_wf4_n8k2_silu_rope_rp_b36_nops/checkpoints/last.ckpt"
+# YourMT3 is published from a Hugging Face Space rather than a model repo.  The
+# upstream MuLaCover instructions use the Space's main revision; the old commit
+# URL returned 404 even though the checkpoint is still present at this path.
+YOURMT3_URL = "https://huggingface.co/spaces/mimbres/YourMT3/resolve/main/amt/logs/2024/mc13_256_g4_all_v7_mt3f_sqr_rms_moe_wf4_n8k2_silu_rope_rp_b36_nops/checkpoints/last.ckpt"
 YOURMT3_BYTES = 561_544_628
 CHORD_COMMIT = "481f4ce703f8822b99f4037e9104ba1760e21ea3"
 CHORD_BYTES = (5_746_183, 5_746_175, 5_746_179, 5_746_175, 5_746_227)
@@ -24,10 +29,22 @@ def fetch(url: str, destination: Path, expected: int) -> None:
         return
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix + ".part")
-    urllib.request.urlretrieve(url, temporary)
-    if temporary.stat().st_size != expected:
-        raise RuntimeError(f"{destination.name} size mismatch: {temporary.stat().st_size} != {expected}")
-    temporary.replace(destination)
+    for attempt in range(1, 4):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "faceless-dancer-mulacover-worker/1"})
+            with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as stream:
+                shutil.copyfileobj(response, stream, length=1024 * 1024)
+            actual = temporary.stat().st_size
+            if actual != expected:
+                raise RuntimeError(f"size mismatch: {actual} != {expected}")
+            temporary.replace(destination)
+            return
+        except Exception as exc:
+            temporary.unlink(missing_ok=True)
+            if attempt == 3:
+                raise RuntimeError(f"failed to download {url} after {attempt} attempts: {exc}") from exc
+            print(f"retry {attempt}/3 for {destination.name}: {exc}", flush=True)
+            time.sleep(attempt * 5)
 
 
 def main() -> int:

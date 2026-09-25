@@ -51,7 +51,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Download pinned MuLaCover model bundle
+      - name: Download MuLaCover model bundle
         shell: bash
         env:
           HF_XET_HIGH_PERFORMANCE: "1"

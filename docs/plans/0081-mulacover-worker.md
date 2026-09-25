@@ -14,6 +14,9 @@ and can be packaged as a public model-bearing GHCR image for Vast or RunPod.
   artifacts, progress/callback handling, heartbeat, and HTTP server.
 - Use the pinned upstream MuLaCover Python implementation and its documented
   checkpoint layout. Reference audio and MIDI inputs remain mutually exclusive.
+  The YourMT3 Space checkpoint follows MuLaCover's documented `main` download
+  URL and is verified by its expected byte count; the old immutable Space URL
+  no longer resolves even though the checkpoint remains available.
 - Accept remote HTTP(S) inputs for reference audio, lyrics, tags, and MIDI files;
   optionally permit local paths only when explicitly enabled for local testing.
 - Expose lyrics, style tags, reference-audio BPM, melody/chord/drum MIDI,
