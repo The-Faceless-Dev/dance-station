@@ -1,0 +1,115 @@
+name: Publish MuLaCover Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Public MuLaCover worker tag
+        required: true
+        default: mulacover-20260925-r1
+  push:
+    branches: [main, master]
+    paths:
+      - ".github/workflows/publish-mulacover-worker.yml"
+      - "containers/mulacover-worker/**"
+      - "src/autotransition/mulacover/**"
+      - "tools/mulacover/**"
+      - "pyproject.toml"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: mulacover-worker-publish
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/the-faceless-dev/faceless-mulacover-worker
+  TAG: ${{ inputs.tag || 'mulacover-20260925-r1' }}
+  MULACOVER_REF: 315d653bc9a4383859525f7c9187ece669cf6fe8
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Reclaim runner storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/powershell /usr/local/share/chromium /opt/hostedtoolcache
+          sudo apt-get clean
+          docker system prune --all --force --volumes || true
+          df -h /
+
+      - name: Set up Python and model transfer
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download pinned MuLaCover model bundle
+        shell: bash
+        env:
+          HF_XET_HIGH_PERFORMANCE: "1"
+          HF_XET_NUM_CONCURRENT_RANGE_GETS: "64"
+          HF_HUB_ENABLE_HF_XET: "1"
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --no-cache-dir "huggingface_hub[hf_xet]>=0.34.0"
+          python tools/mulacover/download_bundle.py --root /tmp/mulacover-models
+          python tools/mulacover/verify_bundle.py /tmp/mulacover-models
+          du -sh /tmp/mulacover-models
+          df -h /
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR with repository credential
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PUSH_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish model-bearing image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: containers/mulacover-worker/Dockerfile
+          build-contexts: mulamodel=/tmp/mulacover-models
+          target: runtime
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          build-args: |
+            MULACOVER_REF=${{ env.MULACOVER_REF }}
+
+      - name: Verify published image manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect "${IMAGE}:${TAG}"
+          docker buildx imagetools inspect "${IMAGE}:${TAG}" --raw | jq -e '.config.digest and (.layers | length > 0)' >/dev/null
+
+      - name: Verify anonymous GHCR pullability
+        shell: bash
+        run: |
+          set -euo pipefail
+          repository="${IMAGE#ghcr.io/}"
+          manifest_url="https://ghcr.io/v2/${repository}/manifests/${TAG}"
+          registry_token=$(curl --silent --show-error --fail --get --data-urlencode 'service=ghcr.io' --data-urlencode "scope=repository:${repository}:pull" 'https://ghcr.io/token' | jq -r '.token')
+          test -n "${registry_token}" -a "${registry_token}" != null
+          for attempt in 1 2 3 4 5; do
+            status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --header "Authorization: Bearer ${registry_token}" --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json' "${manifest_url}")
+            echo "Anonymous GHCR manifest check ${attempt}/5: HTTP ${status}"
+            if [ "${status}" = 200 ]; then exit 0; fi
+            sleep 10
+          done
+          echo "The published MuLaCover tag is not publicly pullable." >&2
+          exit 1
