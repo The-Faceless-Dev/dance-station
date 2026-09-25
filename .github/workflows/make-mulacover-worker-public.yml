@@ -68,7 +68,7 @@ jobs:
           status=$(curl --silent --show-error --location \
             --output "${response_file}" --write-out '%{http_code}' \
             --request PATCH \
-            --url "https://api.github.com/user/packages/container/${PACKAGE}" \
+            --url "https://api.github.com/orgs/${PACKAGE_OWNER}/packages/container/${PACKAGE}" \
             --header 'Accept: application/vnd.github+json' \
             --header "Authorization: Bearer ${GH_TOKEN}" \
             --header 'X-GitHub-Api-Version: 2022-11-28' \
@@ -78,7 +78,7 @@ jobs:
             status=$(curl --silent --show-error --location \
               --output "${response_file}" --write-out '%{http_code}' \
               --request PATCH \
-              --url "https://api.github.com/users/${PACKAGE_OWNER}/packages/container/${PACKAGE}" \
+              --url "https://api.github.com/user/packages/container/${PACKAGE}" \
               --header 'Accept: application/vnd.github+json' \
               --header "Authorization: Bearer ${GH_TOKEN}" \
               --header 'X-GitHub-Api-Version: 2022-11-28' \
@@ -89,7 +89,7 @@ jobs:
             status=$(curl --silent --show-error --location \
               --output "${response_file}" --write-out '%{http_code}' \
               --request PATCH \
-              --url "https://api.github.com/orgs/${PACKAGE_OWNER}/packages/container/${PACKAGE}" \
+              --url "https://api.github.com/users/${PACKAGE_OWNER}/packages/container/${PACKAGE}" \
               --header 'Accept: application/vnd.github+json' \
               --header "Authorization: Bearer ${GH_TOKEN}" \
               --header 'X-GitHub-Api-Version: 2022-11-28' \
