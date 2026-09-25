@@ -9,7 +9,7 @@ from autotransition.mulacover.artifacts import MuLaCoverArtifactStore
 from autotransition.mulacover.callback import request_from_payload
 from autotransition.mulacover.config import MuLaCoverConfig
 from autotransition.mulacover.contracts import MuLaCoverRequest
-from autotransition.mulacover.runtime import MuLaCoverRuntimeResult
+from autotransition.mulacover.runtime import MuLaCoverRuntime, MuLaCoverRuntimeResult
 from autotransition.mulacover.server import create_mulacover_worker_app
 from autotransition.mulacover.worker import MuLaCoverWorker
 
@@ -82,6 +82,31 @@ def test_preflight_reports_missing_bundle_and_gpu_requirements(tmp_path: Path) -
     assert report["runtime"] == "mulacover"
     assert report["ready"] is False
     assert "MuLaCover/config.json" in report["missing"]
+
+
+def test_pipeline_kwargs_follow_installed_signature() -> None:
+    def current_forward(inputs, *, max_audio_length_ms, disable_progress=False):
+        return inputs, max_audio_length_ms, disable_progress
+
+    values = {
+        "max_audio_length_ms": 1000,
+        "disable_progress": True,
+        "cancelled": lambda: False,
+        "on_progress": lambda *_args: None,
+        "decode_seed": 42,
+    }
+    assert MuLaCoverRuntime._supported_pipeline_kwargs(current_forward, values) == {
+        "max_audio_length_ms": 1000,
+        "disable_progress": True,
+    }
+
+
+def test_pipeline_kwargs_preserve_var_keyword_hooks() -> None:
+    def compatible_forward(inputs, **kwargs):
+        return inputs, kwargs
+
+    values = {"disable_progress": True, "on_progress": lambda *_args: None}
+    assert MuLaCoverRuntime._supported_pipeline_kwargs(compatible_forward, values) == values
 
 
 class _FakeRuntime:

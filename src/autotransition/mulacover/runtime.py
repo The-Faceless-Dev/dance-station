@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import inspect
 import json
 import secrets
 import sys
@@ -62,6 +63,26 @@ class MuLaCoverRuntime:
             lazy_load=True,
         )
         return self._pipeline
+
+    @staticmethod
+    def _supported_pipeline_kwargs(callable_obj: Any, values: dict[str, Any]) -> dict[str, Any]:
+        """Keep optional adapter hooks compatible with the installed MuLaCover release.
+
+        MuLaCover's public pipeline has changed its private helper signatures
+        across releases.  The current release does not accept cancellation,
+        progress callbacks, or decode-seed arguments, while a compatible fork
+        may expose some of them.  Pass only parameters the loaded callable
+        actually declares instead of failing after model initialization.
+        """
+        try:
+            parameters = inspect.signature(callable_obj).parameters
+        except (TypeError, ValueError):
+            # Optional hooks are never required for inference.  Keep the core
+            # arguments when a compiled callable does not expose a signature.
+            return {key: value for key, value in values.items() if key not in {"cancelled", "on_progress", "decode_seed"}}
+        if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters.values()):
+            return values
+        return {key: value for key, value in values.items() if key in parameters}
 
     @staticmethod
     def _load_or_download(value: str, destination: Path, max_bytes: int, allow_local: bool) -> Path:
@@ -219,27 +240,27 @@ class MuLaCoverRuntime:
 
             with torch.random.fork_rng(devices=devices):
                 torch.manual_seed(int(seed))
-                outputs = pipe._forward(
-                    preprocess,
-                    max_audio_length_ms=round(request.duration_seconds * 1000),
-                    temperature=request.temperature,
-                    topk=request.top_k,
-                    cfg_scale=request.cfg_scale,
-                    disable_progress=True,
-                    cancelled=lambda: False,
-                    on_progress=on_progress,
-                )
+                forward_kwargs = self._supported_pipeline_kwargs(pipe._forward, {
+                    "max_audio_length_ms": round(request.duration_seconds * 1000),
+                    "temperature": request.temperature,
+                    "topk": request.top_k,
+                    "cfg_scale": request.cfg_scale,
+                    "disable_progress": True,
+                    "cancelled": lambda: False,
+                    "on_progress": on_progress,
+                })
+                outputs = pipe._forward(preprocess, **forward_kwargs)
             progress(0.82, "decode_audio", "Decoding generated audio")
             extension = request.output_format
             output_path = attempt_dir / f"cover.{extension}"
-            pipe.postprocess(
-                {"frames": outputs["frames"]},
-                save_path=output_path,
-                disable_progress=True,
-                cancelled=lambda: False,
-                on_progress=lambda stage, completed, total: progress(min(0.96, 0.82 + 0.14 * completed / max(1, total)), stage, f"MuLaCover audio decode step {completed}/{total}"),
-                decode_seed=int(decode_seed),
-            )
+            postprocess_kwargs = self._supported_pipeline_kwargs(pipe.postprocess, {
+                "save_path": output_path,
+                "disable_progress": True,
+                "cancelled": lambda: False,
+                "on_progress": lambda stage, completed, total: progress(min(0.96, 0.82 + 0.14 * completed / max(1, total)), stage, f"MuLaCover audio decode step {completed}/{total}"),
+                "decode_seed": int(decode_seed),
+            })
+            pipe.postprocess({"frames": outputs["frames"]}, **postprocess_kwargs)
             del preprocess, outputs
             gc.collect()
             if device.type == "cuda" and torch.cuda.is_available():
