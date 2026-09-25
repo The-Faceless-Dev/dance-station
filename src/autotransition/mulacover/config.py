@@ -29,6 +29,12 @@ class MuLaCoverConfig:
     max_duration_seconds: float = 300.0
     max_lyrics_characters: int = 100000
     max_tags_characters: int = 8192
+    whisper_model: str = "small"
+    whisper_device: str = "auto"
+    whisper_compute_type: str = "auto"
+    whisper_language: str = ""
+    whisper_beam_size: int = 5
+    whisper_vad_filter: bool = True
     max_top_k: int = 8192
     minimum_free_vram_gb: float = 20.0
     recommended_vram_gb: float = 24.0
@@ -53,6 +59,12 @@ class MuLaCoverConfig:
             max_duration_seconds=float(os.getenv("MULACOVER_MAX_DURATION_SECONDS", str(cls.max_duration_seconds))),
             max_lyrics_characters=int(os.getenv("MULACOVER_MAX_LYRICS_CHARACTERS", str(cls.max_lyrics_characters))),
             max_tags_characters=int(os.getenv("MULACOVER_MAX_TAGS_CHARACTERS", str(cls.max_tags_characters))),
+            whisper_model=os.getenv("MULACOVER_WHISPER_MODEL", cls.whisper_model),
+            whisper_device=os.getenv("MULACOVER_WHISPER_DEVICE", cls.whisper_device),
+            whisper_compute_type=os.getenv("MULACOVER_WHISPER_COMPUTE_TYPE", cls.whisper_compute_type),
+            whisper_language=os.getenv("MULACOVER_WHISPER_LANGUAGE", cls.whisper_language),
+            whisper_beam_size=int(os.getenv("MULACOVER_WHISPER_BEAM_SIZE", str(cls.whisper_beam_size))),
+            whisper_vad_filter=_bool("MULACOVER_WHISPER_VAD_FILTER", cls.whisper_vad_filter),
             max_top_k=int(os.getenv("MULACOVER_MAX_TOP_K", str(cls.max_top_k))),
             minimum_free_vram_gb=float(os.getenv("MULACOVER_MINIMUM_FREE_VRAM_GB", str(cls.minimum_free_vram_gb))),
             recommended_vram_gb=float(os.getenv("MULACOVER_RECOMMENDED_VRAM_GB", str(cls.recommended_vram_gb))),
@@ -71,6 +83,14 @@ class MuLaCoverConfig:
             raise ValueError("MULACOVER_DTYPE must be bfloat16, float16, or float32")
         if self.max_download_bytes <= 0 or self.max_lyrics_characters < 1 or self.max_tags_characters < 1:
             raise ValueError("MuLaCover input limits must be positive")
+        if not self.whisper_model.strip():
+            raise ValueError("MULACOVER_WHISPER_MODEL must not be empty")
+        if self.whisper_device not in {"auto", "cpu", "cuda"}:
+            raise ValueError("MULACOVER_WHISPER_DEVICE must be auto, cpu, or cuda")
+        if self.whisper_compute_type not in {"auto", "int8", "int8_float16", "float16", "float32"}:
+            raise ValueError("MULACOVER_WHISPER_COMPUTE_TYPE is not supported")
+        if self.whisper_beam_size < 1:
+            raise ValueError("MULACOVER_WHISPER_BEAM_SIZE must be positive")
         if not math.isfinite(self.min_duration_seconds) or not 0 < self.min_duration_seconds <= self.max_duration_seconds:
             raise ValueError("MuLaCover duration bounds are invalid")
         if not self.min_duration_seconds <= self.default_duration_seconds <= self.max_duration_seconds:

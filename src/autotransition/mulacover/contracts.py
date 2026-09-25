@@ -25,8 +25,8 @@ class MuLaCoverRequest:
     local paths are available only when explicitly enabled for local testing.
     """
 
-    lyrics: str
-    tags: str
+    lyrics: str = ""
+    tags: str = ""
     ref_audio_url: str = ""
     ref_audio_path: Path | None = None
     melody_midi_url: str = ""
@@ -52,7 +52,7 @@ class MuLaCoverRequest:
     payment_intent_id: str | None = None
 
     def validate(self, config: Any) -> None:
-        if not self.lyrics.strip() and not self.lyrics_url:
+        if not self.lyrics.strip() and not self.lyrics_url and self.conditioning_mode != "reference_audio":
             raise ValueError("MuLaCover requires non-empty lyrics or lyrics_url")
         if self.lyrics_url and not self._is_remote_url(self.lyrics_url):
             raise ValueError("lyrics_url must be an HTTP(S) URL")

@@ -92,7 +92,7 @@ def request_from_payload(payload: dict[str, Any], config: MuLaCoverConfig | None
     drum_url, drum_path = _source(payload, "drum_midi", "drumMidi")
     lyrics_url, _ = _source(payload, "lyrics_url", "lyricsUrl")
     tags_url, _ = _source(payload, "tags_url", "tagsUrl")
-    if lyrics is None and not lyrics_url:
+    if lyrics is None and not lyrics_url and not audio_url and not audio_path:
         raise ValueError("MuLaCover job requires lyrics or lyrics_url")
     if tags is None and not tags_url:
         raise ValueError("MuLaCover job requires tags or tags_url")

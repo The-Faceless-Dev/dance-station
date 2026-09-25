@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import sys
 import time
+import types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -48,6 +51,70 @@ def test_request_accepts_reference_audio_and_exposes_controls() -> None:
     assert request.octave_shift == 1
     assert request.output_format == "flac"
     assert request.to_dict()["ref_audio_url"] == "https://example.test/reference.mp3"
+
+
+def test_reference_audio_can_omit_lyrics_for_automatic_transcription() -> None:
+    request = request_from_payload({
+        "job_id": "job-auto-lyrics",
+        "tags": "genre:[techno]",
+        "ref_audio": {"url": "https://example.test/reference.mp3"},
+    })
+    request.validate(_config(Path(".")))
+    assert request.lyrics == ""
+    assert request.conditioning_mode == "reference_audio"
+
+
+def test_midi_conditioning_still_requires_explicit_lyrics() -> None:
+    with pytest.raises(ValueError, match="lyrics"):
+        request_from_payload({
+            "job_id": "job-midi-no-lyrics",
+            "tags": "genre:[techno]",
+            "melody_midi": {"url": "https://example.test/melody.mid"},
+            "chord_midi": {"url": "https://example.test/chord.mid"},
+        })
+
+
+def test_reference_audio_lyrics_are_extracted_and_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeWord:
+        word = " hello"
+        start = 0.1
+        end = 0.4
+        probability = 0.98
+
+    class FakeSegment:
+        start = 0.0
+        end = 0.5
+        text = " Hello"
+        avg_logprob = -0.1
+        words = [FakeWord()]
+
+    class FakeInfo:
+        language = "en"
+        language_probability = 0.99
+
+    class FakeWhisperModel:
+        def __init__(self, model, *, device, compute_type):
+            assert model == "small"
+            assert device == "cpu"
+            assert compute_type == "int8"
+
+        def transcribe(self, path, **kwargs):
+            assert Path(path).name == "reference-audio.wav"
+            assert kwargs["word_timestamps"] is True
+            return iter([FakeSegment()]), FakeInfo()
+
+    fake_module = types.SimpleNamespace(WhisperModel=FakeWhisperModel)
+    monkeypatch.setitem(sys.modules, "faster_whisper", fake_module)
+    config = _config(tmp_path, allow_local=True)
+    config = replace(config, device="cpu")
+    runtime = __import__("autotransition.mulacover.runtime", fromlist=["MuLaCoverRuntime"]).MuLaCoverRuntime(config)
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"audio")
+    request = MuLaCoverRequest(lyrics="", tags="genre:[techno]", ref_audio_path=source)
+    values, manifest = runtime.acquire_inputs(request, tmp_path / "attempt")
+    assert Path(values["lyrics"]).read_text(encoding="utf-8") == "Hello"
+    assert manifest["lyrics"]["source"] == "faster-whisper"
+    assert manifest["lyrics"]["segments"][0]["words"][0]["word"] == "hello"
 
 
 def test_request_accepts_midi_and_rejects_mixed_modes() -> None:

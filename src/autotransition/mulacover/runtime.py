@@ -125,6 +125,103 @@ class MuLaCoverRuntime:
             return path.read_text(encoding="utf-8")
         return literal
 
+    def _extract_lyrics(self, audio_path: Path) -> tuple[str, dict[str, Any]]:
+        """Transcribe reference audio when a job did not provide lyrics.
+
+        The model is intentionally loaded for this operation only. MuLaCover
+        uses substantial GPU memory, so retaining a CTranslate2 Whisper model
+        between jobs would create an avoidable VRAM conflict.
+        """
+        try:
+            from faster_whisper import WhisperModel
+        except ImportError as exc:
+            raise MuLaCoverRuntimeError(
+                "automatic lyrics require faster-whisper in the worker image"
+            ) from exc
+
+        device = self.config.whisper_device
+        if device == "auto":
+            device = "cuda" if self.config.device.startswith("cuda") else "cpu"
+        compute_type = self.config.whisper_compute_type
+        if compute_type == "auto":
+            compute_type = "float16" if device == "cuda" else "int8"
+
+        print(json.dumps({
+            "event": "mulacover_lyrics_transcription_started",
+            "audio": str(audio_path),
+            "model": self.config.whisper_model,
+            "device": device,
+            "computeType": compute_type,
+        }), flush=True)
+        transcriber = None
+        try:
+            transcriber = WhisperModel(
+                self.config.whisper_model,
+                device=device,
+                compute_type=compute_type,
+            )
+            segments, info = transcriber.transcribe(
+                str(audio_path),
+                language=self.config.whisper_language or None,
+                vad_filter=self.config.whisper_vad_filter,
+                beam_size=self.config.whisper_beam_size,
+                word_timestamps=True,
+            )
+            rows: list[dict[str, Any]] = []
+            for segment in segments:
+                words = []
+                for word in segment.words or []:
+                    words.append({
+                        "word": str(word.word).strip(),
+                        "start_seconds": float(word.start) if word.start is not None else None,
+                        "end_seconds": float(word.end) if word.end is not None else None,
+                        "probability": float(word.probability) if word.probability is not None else None,
+                    })
+                rows.append({
+                    "start_seconds": float(segment.start),
+                    "end_seconds": float(segment.end),
+                    "text": str(segment.text).strip(),
+                    "probability": float(segment.avg_logprob) if getattr(segment, "avg_logprob", None) is not None else None,
+                    "words": words,
+                })
+            text = "\n".join(row["text"] for row in rows if row["text"]).strip()
+            if not text:
+                raise MuLaCoverRuntimeError("automatic lyrics transcription returned no text")
+            metadata = {
+                "source": "faster-whisper",
+                "model": self.config.whisper_model,
+                "device": device,
+                "computeType": compute_type,
+                "language": getattr(info, "language", None),
+                "languageProbability": float(getattr(info, "language_probability", 0.0) or 0.0),
+                "beamSize": self.config.whisper_beam_size,
+                "vadFilter": self.config.whisper_vad_filter,
+                "segments": rows,
+                "text": text,
+            }
+            print(json.dumps({
+                "event": "mulacover_lyrics_transcription_completed",
+                "model": self.config.whisper_model,
+                "language": metadata["language"],
+                "segments": len(rows),
+                "characters": len(text),
+            }), flush=True)
+            return text, metadata
+        except MuLaCoverRuntimeError:
+            raise
+        except Exception as exc:
+            raise MuLaCoverRuntimeError(f"automatic lyrics transcription failed: {exc}") from exc
+        finally:
+            del transcriber
+            gc.collect()
+            if device == "cuda":
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                except ImportError:
+                    pass
+
     def acquire_inputs(self, request: MuLaCoverRequest, attempt_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
         inputs_dir = attempt_dir / "inputs"
         inputs_dir.mkdir(parents=True, exist_ok=True)
@@ -136,19 +233,18 @@ class MuLaCoverRuntime:
             manifest["files"].append({"role": name, "name": result.name, "bytes": result.stat().st_size})
             return result
 
-        lyrics = self._text_source(request.lyrics, request.lyrics_url, inputs_dir / "lyrics.txt", self.config.max_download_bytes, self.config.allow_local_inputs)
         tags = self._text_source(request.tags, request.tags_url, inputs_dir / "tags.txt", self.config.max_download_bytes, self.config.allow_local_inputs)
-        if not lyrics.strip() or not tags.strip():
-            raise ValueError("lyrics and tags must contain non-whitespace text")
-        (inputs_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
+        if not tags.strip():
+            raise ValueError("tags must contain non-whitespace text")
         (inputs_dir / "tags.txt").write_text(tags, encoding="utf-8")
-        manifest["text"] = {"lyricsCharacters": len(lyrics), "tagsCharacters": len(tags)}
-        values: dict[str, Any] = {"lyrics": str(inputs_dir / "lyrics.txt"), "tags": str(inputs_dir / "tags.txt")}
+        values: dict[str, Any] = {"tags": str(inputs_dir / "tags.txt")}
+        reference_audio_path: Path | None = None
         if request.conditioning_mode == "reference_audio":
             from urllib.parse import urlsplit
             source_name = Path(request.ref_audio_path).name if request.ref_audio_path else Path(urlsplit(request.ref_audio_url).path).name
             suffix = Path(source_name).suffix or ".audio"
-            values["ref_audio"] = str(audio_or_midi(request.ref_audio_url, request.ref_audio_path, "reference-audio" + suffix))
+            reference_audio_path = audio_or_midi(request.ref_audio_url, request.ref_audio_path, "reference-audio" + suffix)
+            values["ref_audio"] = str(reference_audio_path)
             if request.bpm is not None:
                 values["bpm"] = request.bpm
         else:
@@ -156,6 +252,21 @@ class MuLaCoverRuntime:
             values["chord_midi"] = str(audio_or_midi(request.chord_midi_url, request.chord_midi_path, "chord.mid"))
             if request.drum_midi_url or request.drum_midi_path:
                 values["drum_midi"] = str(audio_or_midi(request.drum_midi_url, request.drum_midi_path, "drums.mid"))
+        if request.lyrics_url or request.lyrics.strip():
+            lyrics = self._text_source(request.lyrics, request.lyrics_url, inputs_dir / "lyrics.txt", self.config.max_download_bytes, self.config.allow_local_inputs)
+            lyrics_metadata = {"source": "explicit" if request.lyrics.strip() else "explicit_url"}
+        elif reference_audio_path is not None:
+            lyrics, lyrics_metadata = self._extract_lyrics(reference_audio_path)
+        else:
+            raise ValueError("MuLaCover requires lyrics for MIDI conditioning")
+        if not lyrics.strip():
+            raise ValueError("lyrics must contain non-whitespace text")
+        if len(lyrics) > self.config.max_lyrics_characters:
+            raise ValueError(f"lyrics must be {self.config.max_lyrics_characters} characters or fewer")
+        (inputs_dir / "lyrics.txt").write_text(lyrics, encoding="utf-8")
+        manifest["text"] = {"lyricsCharacters": len(lyrics), "tagsCharacters": len(tags)}
+        manifest["lyrics"] = lyrics_metadata
+        values["lyrics"] = str(inputs_dir / "lyrics.txt")
         (attempt_dir / "input-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         return values, manifest
 
@@ -275,6 +386,7 @@ class MuLaCoverRuntime:
             "device": self.config.device,
             "dtype": self.config.mulacover_dtype,
             "conditioningMode": request.conditioning_mode,
+            "lyrics": manifest.get("lyrics"),
             "durationSecondsRequested": request.duration_seconds,
             "resolved": {"cfgScale": request.cfg_scale, "temperature": request.temperature, "topK": request.top_k, "seed": seed, "decodeSeed": decode_seed, "bpm": request.bpm, "semitoneShift": request.semitone_shift, "octaveShift": request.octave_shift},
             "symbolicArtifacts": [item.name for item in symbolic_files],

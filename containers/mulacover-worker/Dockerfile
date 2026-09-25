@@ -49,6 +49,7 @@ RUN python -m pip install --no-cache-dir --no-deps . \
        "accelerate==1.12.0" \
        "einops==0.8.1" \
        "fastapi>=0.115.0" \
+       "faster-whisper>=1.1.1" \
        "httpx>=0.27.0" \
        "huggingface_hub[hf_xet]>=0.34.0" \
        "librosa>=0.10.2,<0.12" \
