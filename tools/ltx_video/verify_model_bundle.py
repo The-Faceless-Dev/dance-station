@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import struct
 from pathlib import Path
 
 
 EXPECTED_FILES = {
     Path("diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors"): 18_721_732_720,
-    Path("text_encoders/gemma_ablit_fixed_bf16.safetensors"): 26_263_858_647,
+    Path("text_encoders/gemma_ablit_fixed_bf16.safetensors"): 26_263_862_351,
     Path("vae/ltx-2.5-video-vae-conv-bf16.safetensors"): 1_452_269_922,
     Path("vae/ltx-2.5-audio-vae-bf16.safetensors"): 364_866_540,
     Path("latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"): 995_778_752,
@@ -25,46 +26,51 @@ REQUIRED_TEXT_ENCODER_KEYS = {
 
 
 def inspect_text_encoder(path: Path) -> dict[str, object]:
-    """Validate the packed Gemma assets required by the LTX 2.5 loader."""
+    """Validate the packed Gemma header without mmapping the 26 GB weights."""
     try:
-        from safetensors import safe_open
-    except ImportError as exc:  # pragma: no cover - the worker image installs this dependency
-        return {"ready": False, "error": f"safetensors is unavailable: {exc}"}
+        with path.open("rb") as handle:
+            length_bytes = handle.read(8)
+            if len(length_bytes) != 8:
+                return {"ready": False, "error": "text encoder header is truncated"}
+            header_length = struct.unpack("<Q", length_bytes)[0]
+            header_bytes = handle.read(header_length)
+        if len(header_bytes) != header_length:
+            return {"ready": False, "error": "text encoder header is truncated"}
+        header = json.loads(header_bytes.decode("utf-8"))
+        if not isinstance(header, dict):
+            return {"ready": False, "error": "text encoder header is not a JSON object"}
+        metadata = header.get("__metadata__") or {}
+        raw_config = metadata.get("gemma_config") if isinstance(metadata, dict) else None
+        if raw_config is None:
+            return {"ready": False, "error": "missing metadata key gemma_config"}
+        try:
+            config = json.loads(raw_config)
+        except json.JSONDecodeError as exc:
+            return {"ready": False, "error": f"gemma_config is not valid JSON: {exc}"}
 
-    try:
-        with safe_open(str(path), framework="pt") as handle:
-            metadata = handle.metadata() or {}
-            raw_config = metadata.get("gemma_config")
-            if raw_config is None:
-                return {"ready": False, "error": "missing metadata key gemma_config"}
-            try:
-                config = json.loads(raw_config)
-            except json.JSONDecodeError as exc:
-                return {"ready": False, "error": f"gemma_config is not valid JSON: {exc}"}
-
-            keys = set(handle.keys())
-            missing_keys = sorted(REQUIRED_TEXT_ENCODER_KEYS - keys)
-            model_type = config.get("model_type")
-            if model_type != "gemma4_unified":
-                return {
-                    "ready": False,
-                    "error": f"expected gemma4_unified text encoder, got {model_type!r}",
-                    "modelType": model_type,
-                    "missingKeys": missing_keys,
-                }
-            if missing_keys:
-                return {
-                    "ready": False,
-                    "error": "packed Gemma text encoder is missing required LTX assets",
-                    "modelType": model_type,
-                    "missingKeys": missing_keys,
-                }
+        keys = set(header) - {"__metadata__"}
+        missing_keys = sorted(REQUIRED_TEXT_ENCODER_KEYS - keys)
+        model_type = config.get("model_type")
+        if model_type != "gemma4_unified":
             return {
-                "ready": True,
+                "ready": False,
+                "error": f"expected gemma4_unified text encoder, got {model_type!r}",
                 "modelType": model_type,
-                "tensorCount": len(keys),
-                "metadataKeys": sorted(metadata),
+                "missingKeys": missing_keys,
             }
+        if missing_keys:
+            return {
+                "ready": False,
+                "error": "packed Gemma text encoder is missing required LTX assets",
+                "modelType": model_type,
+                "missingKeys": missing_keys,
+            }
+        return {
+            "ready": True,
+            "modelType": model_type,
+            "tensorCount": len(keys),
+            "metadataKeys": sorted(metadata),
+        }
     except Exception as exc:
         return {"ready": False, "error": f"unable to inspect packed text encoder: {type(exc).__name__}: {exc}"}
 

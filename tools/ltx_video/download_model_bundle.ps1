@@ -105,6 +105,13 @@ foreach ($file in $files) {
 }
 
 $verifier = Join-Path $repoRoot "tools\ltx_video\verify_model_bundle.py"
+$patcher = Join-Path $repoRoot "tools\ltx_video\patch_gemma_metadata.py"
+$textEncoder = Join-Path $rootPath "text_encoders\gemma_ablit_fixed_bf16.safetensors"
+& python $patcher $textEncoder `
+    --metadata-source-url "https://huggingface.co/comfyicu/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
+if ($LASTEXITCODE -ne 0) {
+    throw "text encoder metadata patch failed; see bundle logs"
+}
 $reportPath = Join-Path $logRoot "bundle-status.json"
 & python $verifier $rootPath | Tee-Object -FilePath $reportPath
 if ($LASTEXITCODE -ne 0) {
