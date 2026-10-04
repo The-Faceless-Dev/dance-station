@@ -45,6 +45,14 @@ def _emit(progress: ProgressCallback, stage: str, fraction: float, message: str,
     progress(stage, max(0.0, min(1.0, float(fraction))), message, details)
 
 
+def _resolve_image_conditioning_crf(conditioner: Any, images: list[tuple[Any, str]]) -> list[tuple[Any, str]]:
+    """Resolve checkpoint-specific CRF before either LTX conditioning path."""
+    if not images:
+        return images
+    resolved = conditioner.resolve_crf([image for image, _mode in images])
+    return list(zip(resolved, (mode for _image, mode in images)))
+
+
 def _tiling_to_dict(tiling: Any) -> dict[str, Any] | None:
     if tiling is None:
         return None
@@ -407,8 +415,7 @@ def _video_only_pipeline_factory(
             assert_resolution(height=height, width=width, is_two_stage=True)
             generator = torch.Generator(device=self.device).manual_seed(seed)
             noiser = GaussianNoiser(generator=generator)
-            image_values = self.image_conditioner.resolve_crf([image for image, _mode in images])
-            images = list(zip(image_values, (mode for _image, mode in images)))
+            images = _resolve_image_conditioning_crf(self.image_conditioner, images)
             (ctx_p,) = self.prompt_encoder([prompt])
             video_context = ctx_p.video_encoding
             scale_factors = tiling_scale_factors_for_vae(self.video_decoder.checkpoint_path)
@@ -600,6 +607,7 @@ def _audio_video_pipeline_factory(
             assert_resolution(height=height, width=width, is_two_stage=True)
             generator = torch.Generator(device=self.device).manual_seed(seed)
             noiser = GaussianNoiser(generator=generator)
+            images = _resolve_image_conditioning_crf(self.image_conditioner, images)
             (ctx_p,) = self.prompt_encoder([prompt])
             video_context = ctx_p.video_encoding
             audio_context = ctx_p.audio_encoding

@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from autotransition.ltx_video.runtime import _ScopedPromptEncoder, _configure_fast_attention, _gemma_attention_context
+from autotransition.ltx_video.runtime import (
+    _ScopedPromptEncoder,
+    _configure_fast_attention,
+    _gemma_attention_context,
+    _resolve_image_conditioning_crf,
+)
 
 
 class _FakeCuda:
@@ -147,3 +152,16 @@ def test_prompt_encoder_restores_video_policy_after_encoding() -> None:
     assert state["active"] is None
     assert torch.cuda.flash is True
     assert torch.cuda.math is False
+
+
+def test_generated_audio_conditioning_resolves_missing_crf() -> None:
+    class _Conditioner:
+        def resolve_crf(self, images):  # type: ignore[no-untyped-def]
+            assert images == ["image-without-crf"]
+            return ["image-with-resolved-crf"]
+
+    result = _resolve_image_conditioning_crf(
+        _Conditioner(), [("image-without-crf", "guide")]
+    )
+
+    assert result == [("image-with-resolved-crf", "guide")]
