@@ -43,9 +43,12 @@ ltx-2.5/
   latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors
 ```
 
-The text encoder is the abliterated LTX-compatible Gemma checkpoint; the stock
-Gemma encoder is intentionally not included or configured as a fallback.
-These are the complete required model components for the supported profiles.
+The text encoder is the packed Gemma 4 unified LTX 2.5-compatible abliterated
+checkpoint; the stock Gemma encoder is intentionally not included or configured
+as a fallback. These are the complete required model components for the
+supported profiles. The bundle verifier checks the embedded `gemma_config`,
+tokenizer assets, and LTX projection tensors so an incompatible Gemma 3 or
+unpacked text-only checkpoint cannot reach a paid worker.
 The duration head is intentionally not bundled because this API requires an
 explicit frame count or duration and resolves that to the LTX temporal grid
 before loading models. The temporal upscaler, diffusion video VAE, and

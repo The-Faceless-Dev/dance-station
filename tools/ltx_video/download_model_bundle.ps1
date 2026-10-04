@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$MirrorRepository = "comfyicu/LTX-2.5",
     [Parameter(Mandatory = $false)]
-    [string]$TextEncoderRepository = "FusionCow/Gemma-3-12b-Abliterated-LTX2",
+    [string]$TextEncoderRepository = "DeepNeuralNerd/Gemma-4-12B-it-uncensored-heretic-DeepNeuralNerd-LTX_2.5_ComfyUI",
     [Parameter(Mandatory = $false)]
     [int]$PollSeconds = 30
 )
@@ -18,7 +18,7 @@ $aria = (Get-Command aria2c -ErrorAction Stop).Source
 
 $files = @(
     @{ Relative = "diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors"; Bytes = 18721732720 },
-    @{ Relative = "text_encoders/gemma_ablit_fixed_bf16.safetensors"; Remote = "gemma_ablit_fixed_bf16.safetensors"; Repository = $TextEncoderRepository; Bytes = 23536831338 },
+    @{ Relative = "text_encoders/gemma_ablit_fixed_bf16.safetensors"; Remote = "Gemma-4-12B-it-uncensored-heretic - DeepNeuralNerd -LTX 2.5-ComfyUI-bf16.safetensors"; Repository = $TextEncoderRepository; Bytes = 26263858647 },
     @{ Relative = "vae/ltx-2.5-video-vae-conv-bf16.safetensors"; Bytes = 1452269922 },
     @{ Relative = "vae/ltx-2.5-audio-vae-bf16.safetensors"; Bytes = 364866540 },
     @{ Relative = "latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors"; Bytes = 995778752 }

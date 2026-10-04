@@ -86,13 +86,14 @@ COPY --from=ltxmodels / /models/ltx-2.5/
 RUN test -s /models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors \
     && test "$(stat -c '%s' /models/ltx-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-nvfp4.safetensors)" = "18721732720" \
     && test -s /models/ltx-2.5/text_encoders/gemma_ablit_fixed_bf16.safetensors \
-    && test "$(stat -c '%s' /models/ltx-2.5/text_encoders/gemma_ablit_fixed_bf16.safetensors)" = "23536831338" \
+    && test "$(stat -c '%s' /models/ltx-2.5/text_encoders/gemma_ablit_fixed_bf16.safetensors)" = "26263858647" \
     && test -s /models/ltx-2.5/vae/ltx-2.5-video-vae-conv-bf16.safetensors \
     && test "$(stat -c '%s' /models/ltx-2.5/vae/ltx-2.5-video-vae-conv-bf16.safetensors)" = "1452269922" \
     && test -s /models/ltx-2.5/vae/ltx-2.5-audio-vae-bf16.safetensors \
     && test "$(stat -c '%s' /models/ltx-2.5/vae/ltx-2.5-audio-vae-bf16.safetensors)" = "364866540" \
     && test -s /models/ltx-2.5/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors \
-    && test "$(stat -c '%s' /models/ltx-2.5/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors)" = "995778752"
+    && test "$(stat -c '%s' /models/ltx-2.5/latent_upscale_models/ltx-2.5-latent-spatial-upscaler-x2-bf16-1.0.safetensors)" = "995778752" \
+    && python /app/tools/ltx_video/verify_model_bundle.py /models/ltx-2.5
 
 USER ltx
 ENTRYPOINT ["/usr/local/bin/ltx-video-worker-entrypoint"]

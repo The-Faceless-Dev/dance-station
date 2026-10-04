@@ -15,8 +15,8 @@ permissions:
 env:
   IMAGE: ghcr.io/the-faceless-dev/faceless-ltx-video-worker
   MODEL_REPOSITORY: comfyicu/LTX-2.5
-  TEXT_ENCODER_REPOSITORY: FusionCow/Gemma-3-12b-Abliterated-LTX2
-  TEXT_ENCODER_FILE: gemma_ablit_fixed_bf16.safetensors
+  TEXT_ENCODER_REPOSITORY: DeepNeuralNerd/Gemma-4-12B-it-uncensored-heretic-DeepNeuralNerd-LTX_2.5_ComfyUI
+  TEXT_ENCODER_FILE: Gemma-4-12B-it-uncensored-heretic - DeepNeuralNerd -LTX 2.5-ComfyUI-bf16.safetensors
   TAG: ltx-2.5-nvfp4-5090-r1
 
 jobs:

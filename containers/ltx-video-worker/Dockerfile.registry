@@ -7,8 +7,9 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 ARG MODEL_REPOSITORY=comfyicu/LTX-2.5
-ARG TEXT_ENCODER_REPOSITORY=FusionCow/Gemma-3-12b-Abliterated-LTX2
-ARG TEXT_ENCODER_FILE=gemma_ablit_fixed_bf16.safetensors
+ARG TEXT_ENCODER_REPOSITORY=DeepNeuralNerd/Gemma-4-12B-it-uncensored-heretic-DeepNeuralNerd-LTX_2.5_ComfyUI
+ARG TEXT_ENCODER_FILE=Gemma-4-12B-it-uncensored-heretic - DeepNeuralNerd -LTX 2.5-ComfyUI-bf16.safetensors
+ARG TEXT_ENCODER_OUTPUT=gemma_ablit_fixed_bf16.safetensors
 
 USER root
 ENV HF_HOME=/tmp/huggingface \
@@ -31,7 +32,12 @@ RUN hf download "${MODEL_REPOSITORY}" \
 RUN hf download "${TEXT_ENCODER_REPOSITORY}" \
       "${TEXT_ENCODER_FILE}" \
       --local-dir /models/ltx-2.5/text_encoders \
-    && test "$(stat -c '%s' /models/ltx-2.5/text_encoders/${TEXT_ENCODER_FILE})" = "23536831338"
+    && test "$(stat -c '%s' "/models/ltx-2.5/text_encoders/${TEXT_ENCODER_FILE}")" = "26263858647" \
+    && mv "/models/ltx-2.5/text_encoders/${TEXT_ENCODER_FILE}" "/models/ltx-2.5/text_encoders/${TEXT_ENCODER_OUTPUT}" \
+    && python /app/tools/ltx_video/patch_gemma_metadata.py \
+      /models/ltx-2.5/text_encoders/${TEXT_ENCODER_OUTPUT} \
+      --metadata-source-url \
+      https://huggingface.co/comfyicu/LTX-2.5/resolve/main/text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors
 
 RUN hf download "${MODEL_REPOSITORY}" \
       vae/ltx-2.5-video-vae-conv-bf16.safetensors \
