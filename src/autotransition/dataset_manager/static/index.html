@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Melodic Dataset Manager</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <div class="eyebrow">VEVO2 / DATASET</div>
+      <h1>Melodic Dataset Manager</h1>
+    </div>
+    <div class="top-actions">
+      <button id="exportAll" class="button secondary">Export approved</button>
+      <button id="addSong" class="button primary">Add song</button>
+    </div>
+  </header>
+  <main class="shell">
+    <section class="stats" id="stats"></section>
+    <section class="toolbar">
+      <input id="search" class="search" type="search" placeholder="Search songs, artists, filenames">
+      <select id="statusFilter"><option value="">All statuses</option><option>New</option><option>Queued</option><option>Extracting</option><option>Ready for Review</option><option>Editing</option><option>Saved</option><option>Failed</option></select>
+      <span class="toolbar-note">Newest first</span>
+    </section>
+    <section id="songList" class="song-list"></section>
+  </main>
+
+  <dialog id="addDialog">
+    <form id="addForm" method="dialog" class="dialog-form">
+      <div class="dialog-head"><div><div class="eyebrow">NEW RECORD</div><h2>Add song</h2></div><button type="button" class="icon-button" id="closeDialog" aria-label="Close">×</button></div>
+      <label class="dropzone" id="dropzone"><input id="audioFile" type="file" accept="audio/*,.wav,.flac,.mp3,.m4a,.ogg" required><span id="fileName">Choose an audio file</span><small>WAV, FLAC, MP3, M4A, OGG</small></label>
+      <div class="form-grid"><label>Title<input name="title" placeholder="Song title"></label><label>Artist<input name="artist" placeholder="Optional"></label><label>Language<input name="language" value="en"></label><label class="checkbox"><input name="vocals_only" type="checkbox"> File is already vocals-only</label></div>
+      <label>Reference lyrics<textarea name="lyrics" rows="5" placeholder="Paste the performed lyrics. This text is preserved as the alignment source."></textarea></label>
+      <div class="dialog-actions"><button type="button" class="button secondary" id="cancelAdd">Cancel</button><button class="button primary" type="submit">Import song</button></div>
+    </form>
+  </dialog>
+  <dialog id="lyricsDialog">
+    <form id="lyricsForm" method="dialog" class="dialog-form">
+      <div class="dialog-head"><div><div class="eyebrow">REALIGN AUDIO</div><h2>Re-enter lyrics</h2></div><button type="button" class="icon-button" id="closeLyricsDialog" aria-label="Close">×</button></div>
+      <p class="muted">The current draft will be replaced by a new extraction using these lyrics.</p>
+      <textarea id="lyricsInput" rows="14" aria-label="Performed lyrics"></textarea>
+      <div class="dialog-actions"><button type="button" class="button secondary" id="cancelLyrics">Cancel</button><button class="button primary" type="submit">Save lyrics and re-extract</button></div>
+    </form>
+  </dialog>
+  <script src="/static/app.js"></script>
+</body>
+</html>

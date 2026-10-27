@@ -14,14 +14,17 @@ authors = [
 dependencies = [
   "fastapi>=0.115.0",
   "faster-whisper>=1.1.1",
+  "g2p-en>=2.1.0",
   "huggingface_hub>=0.27.0",
   "imageio-ffmpeg>=0.5.0",
   "httpx>=0.27.0",
+  "librosa>=0.10.2",
   "numpy>=1.26",
   "audioop-lts>=0.2.1; python_version >= '3.13'",
   "tangoflux @ git+https://github.com/declare-lab/TangoFlux",
   "pydub>=0.25.1",
   "python-multipart>=0.0.20",
+  "soundfile>=0.12.1",
   "typer>=0.12.0",
   "uvicorn>=0.32.0"
 ]
@@ -31,8 +34,21 @@ dev = [
   "pytest>=8.0"
 ]
 
+vevo2-dataset = [
+  "librosa>=0.10.2",
+  "praat-parselmouth>=0.4.5",
+  "soundfile>=0.12.1"
+]
+
+dataset-manager = [
+  "librosa>=0.10.2",
+  "praat-parselmouth>=0.4.5",
+  "soundfile>=0.12.1"
+]
+
 [project.scripts]
 autotransition = "autotransition.cli:app"
+dataset-manager = "autotransition.dataset_manager.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -40,6 +56,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 autotransition = [
   "ui/static/*",
+  "dataset_manager/static/*",
   "ui/static/instruments/*",
   "ui/static/instruments/samples/*",
   "ui/static/instruments/samples/*/*",

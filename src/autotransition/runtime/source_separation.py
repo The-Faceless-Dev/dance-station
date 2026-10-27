@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,8 @@ from autotransition.runtime.ace_step import build_runtime_env
 
 SOURCE_SEPARATION_REPO = "https://github.com/nomadkaraoke/python-audio-separator"
 DEFAULT_MODEL_FILENAME = "UVR-MDX-NET-Inst_HQ_3.onnx"
+DEFAULT_GPU_TORCH_PACKAGE = "torch==2.6.0+cu124"
+DEFAULT_GPU_TORCH_INDEX = "https://download.pytorch.org/whl/cu124"
 FALLBACK_MODEL_CHOICES = [
     {
         "model_filename": "UVR-MDX-NET-Inst_HQ_3.onnx",
@@ -51,6 +54,11 @@ class SourceSeparationRuntimeStatus:
     install_command: str
     simple_setup_command: str
     default_model_filename: str
+    torch_version: str | None
+    torch_cuda_version: str | None
+    cuda_available: bool
+    cuda_device: str | None
+    torch_error: str
 
     def to_dict(self) -> dict[str, object]:
         data = asdict(self)
@@ -91,6 +99,46 @@ def _runtime_env() -> dict[str, str]:
     return env
 
 
+def _torch_status(python_exe: Path) -> dict[str, Any]:
+    """Probe the isolated separator environment without importing it here."""
+
+    try:
+        completed = subprocess.run(
+            [
+                str(python_exe),
+                "-c",
+                (
+                    "import json, torch; "
+                    "print(json.dumps({"
+                    "'torch_version': torch.__version__, "
+                    "'torch_cuda_version': torch.version.cuda, "
+                    "'cuda_available': bool(torch.cuda.is_available()), "
+                    "'cuda_device': (torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)"
+                    "}))"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            env=_runtime_env(),
+            timeout=30,
+        )
+        if completed.returncode == 0:
+            payload = json.loads(completed.stdout.strip() or "{}")
+            return {
+                "torch_version": str(payload.get("torch_version") or ""),
+                "torch_cuda_version": str(payload.get("torch_cuda_version") or "") or None,
+                "cuda_available": bool(payload.get("cuda_available")),
+                "cuda_device": str(payload.get("cuda_device") or "") or None,
+                "torch_error": "",
+            }
+        return {"torch_version": None, "torch_cuda_version": None, "cuda_available": False, "cuda_device": None, "torch_error": (completed.stderr or completed.stdout).strip()[-500:]}
+    except Exception as exc:
+        return {"torch_version": None, "torch_cuda_version": None, "cuda_available": False, "cuda_device": None, "torch_error": str(exc)}
+
+
 def _python_launcher_candidates() -> list[list[str]]:
     if sys.platform == "win32":
         return [["py", "-3.11"], ["py", "-3.10"], ["py", "-3"]]
@@ -116,9 +164,17 @@ def _resolve_python_launcher() -> list[str]:
 
 def _install_command(config: RuntimeConfig = RuntimeConfig()) -> str:
     python_exe = _runtime_python_executable(config)
+    torch_package = os.getenv(
+        "AUTOTRANSITION_SOURCE_SEPARATION_TORCH_PACKAGE", DEFAULT_GPU_TORCH_PACKAGE
+    )
+    torch_index = os.getenv(
+        "AUTOTRANSITION_SOURCE_SEPARATION_TORCH_INDEX_URL", DEFAULT_GPU_TORCH_INDEX
+    )
     return (
         f'"{python_exe}" -m pip install --upgrade pip setuptools wheel '
-        f'&& "{python_exe}" -m pip install "audio-separator[cpu]"'
+        f'&& "{python_exe}" -m pip install --upgrade --index-url "{torch_index}" '
+        f'--extra-index-url https://pypi.org/simple "{torch_package}" '
+        f'&& "{python_exe}" -m pip install --upgrade "audio-separator[gpu]"'
     )
 
 
@@ -127,6 +183,13 @@ def runtime_status(config: RuntimeConfig = RuntimeConfig()) -> SourceSeparationR
     python_exe = _runtime_python_executable(config)
     cli_exe = _runtime_cli_executable(config)
     venv_present = python_exe.exists() and cli_exe.exists()
+    torch_info = _torch_status(python_exe) if venv_present else {
+        "torch_version": None,
+        "torch_cuda_version": None,
+        "cuda_available": False,
+        "cuda_device": None,
+        "torch_error": "",
+    }
     ready = False
     if venv_present:
         try:
@@ -140,14 +203,14 @@ def runtime_status(config: RuntimeConfig = RuntimeConfig()) -> SourceSeparationR
                 env=_runtime_env(),
                 timeout=60,
             )
-            ready = completed.returncode == 0
+            ready = completed.returncode == 0 and bool(torch_info["cuda_available"])
         except subprocess.TimeoutExpired:
             ready = False
     installed = install_dir.exists() and venv_present
     if ready:
-        message = "Source separation runtime is ready."
+        message = f"Source separation runtime is ready on {torch_info['cuda_device']}."
     elif installed:
-        message = "Source separation runtime is installed but not ready."
+        message = "Source separation runtime is installed but CUDA is unavailable."
     else:
         message = f"Source separation runtime is not installed at {install_dir}."
     return SourceSeparationRuntimeStatus(
@@ -161,6 +224,7 @@ def runtime_status(config: RuntimeConfig = RuntimeConfig()) -> SourceSeparationR
         install_command=_install_command(config),
         simple_setup_command="autotransition runtime setup-source-separation",
         default_model_filename=DEFAULT_MODEL_FILENAME,
+        **torch_info,
     )
 
 
@@ -184,8 +248,33 @@ def run_install(config: RuntimeConfig = RuntimeConfig()) -> None:
         check=True,
         env=_runtime_env(),
     )
+    torch_package = os.getenv(
+        "AUTOTRANSITION_SOURCE_SEPARATION_TORCH_PACKAGE", DEFAULT_GPU_TORCH_PACKAGE
+    )
+    torch_index = os.getenv(
+        "AUTOTRANSITION_SOURCE_SEPARATION_TORCH_INDEX_URL", DEFAULT_GPU_TORCH_INDEX
+    )
     subprocess.run(
-        [str(python_exe), "-m", "pip", "install", "audio-separator[cpu]"],
+        [
+            str(python_exe),
+            "-m",
+            "pip",
+            "install",
+            "--upgrade",
+            "--index-url",
+            torch_index,
+            "--extra-index-url",
+            "https://pypi.org/simple",
+            torch_package,
+            "torchvision==0.21.0+cu124",
+            "torchaudio==2.6.0+cu124",
+        ],
+        cwd=install_dir,
+        check=True,
+        env=_runtime_env(),
+    )
+    subprocess.run(
+        [str(python_exe), "-m", "pip", "install", "--upgrade", "audio-separator[gpu]"],
         cwd=install_dir,
         check=True,
         env=_runtime_env(),
@@ -263,6 +352,11 @@ def separate_audio(
     cli_exe = _runtime_cli_executable(config)
     if not python_exe.exists() or not cli_exe.exists():
         raise RuntimeError("Source separation runtime is not installed. Run Install Runtime.")
+    torch_info = _torch_status(python_exe)
+    require_cuda = os.getenv("AUTOTRANSITION_SOURCE_SEPARATION_REQUIRE_CUDA", "1").strip().lower() not in {"0", "false", "no"}
+    if require_cuda and not torch_info["cuda_available"]:
+        detail = torch_info["torch_error"] or "CUDA is not available in the isolated Torch environment."
+        raise RuntimeError(f"GPU source separation is required but unavailable: {detail}")
     source_path = source_path.expanduser().resolve()
     output_dir = output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -327,10 +421,26 @@ print(json.dumps({"result": result}, default=str))
     if completed.returncode != 0:
         stderr = completed.stderr.strip() or completed.stdout.strip() or "Source separation failed."
         raise RuntimeError(stderr)
-    try:
-        payload = json.loads(completed.stdout.strip() or "{}")
-    except Exception as exc:
-        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "Source separation returned invalid output.") from exc
+    payload = None
+    # audio-separator writes progress bars and informational logs around the
+    # worker's JSON result. Parse the result object instead of assuming the
+    # entire stdout stream is JSON.
+    for stream in (completed.stdout, completed.stderr):
+        for line in reversed(stream.splitlines()):
+            start = line.find("{")
+            if start < 0:
+                continue
+            try:
+                candidate = json.loads(line[start:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(candidate, dict) and "result" in candidate:
+                payload = candidate
+                break
+        if payload is not None:
+            break
+    if payload is None:
+        raise RuntimeError(completed.stderr.strip() or completed.stdout.strip() or "Source separation returned invalid output.")
     result = payload.get("result")
     audio_files: list[Path] = []
     if isinstance(result, list):
@@ -351,4 +461,7 @@ print(json.dumps({"result": result}, default=str))
         "stderr": completed.stderr,
         "audio_files": [str(path) for path in sorted(audio_files, key=lambda item: item.stat().st_mtime, reverse=True)],
         "returncode": completed.returncode,
+        "device": torch_info["cuda_device"] if torch_info["cuda_available"] else "cpu",
+        "torch_version": torch_info["torch_version"],
+        "torch_cuda_version": torch_info["torch_cuda_version"],
     }
